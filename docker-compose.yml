@@ -12,7 +12,7 @@ services:
       - RUST_LOG=info
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      test: ["CMD-SHELL", "cat < /dev/tcp/localhost/8080 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

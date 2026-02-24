@@ -255,24 +255,27 @@ impl ManagerState {
                                     match session_add_and_wait(
                                         &self, add, &mut torrent_download, &torrent_cancel
                                     ).await {
-                                        Ok(()) => {
-                                            torrent_download.status = DownloadStatus::Completed;
-                                            torrent_download.progress = 100.0;
-                                            torrent_download.speed = 0;
-                                            torrent_download.upload_speed = 0;
-                                            self.update_download(&torrent_download).await;
-                                        }
-                                        Err(e) => {
-                                            if !torrent_cancel.is_cancelled() {
-                                                torrent_download.status = DownloadStatus::Failed;
-                                                torrent_download.error_message = Some(e.to_string());
+                                        Ok(()) | Err(_) => {
+                                            if torrent_cancel.is_cancelled() {
+                                                let current_status = {
+                                                    let downloads = self.downloads.read().await;
+                                                    downloads.get(&torrent_download.id).map(|d| d.status.clone())
+                                                };
+                                                match current_status {
+                                                    Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) => {}
+                                                    _ => {
+                                                        torrent_download.status = DownloadStatus::Completed;
+                                                        torrent_download.progress = 100.0;
+                                                        torrent_download.speed = 0;
+                                                        torrent_download.upload_speed = 0;
+                                                        self.update_download(&torrent_download).await;
+                                                    }
+                                                }
                                             } else {
-                                                torrent_download.status = DownloadStatus::Completed;
-                                                torrent_download.progress = 100.0;
-                                                torrent_download.speed = 0;
-                                                torrent_download.upload_speed = 0;
+                                                torrent_download.status = DownloadStatus::Failed;
+                                                torrent_download.error_message = Some("Torrent download failed".to_string());
+                                                self.update_download(&torrent_download).await;
                                             }
-                                            self.update_download(&torrent_download).await;
                                         }
                                     }
                                 }
@@ -340,25 +343,30 @@ impl ManagerState {
                 };
 
                 match session_add_and_wait(&self, add, &mut download, &cancel_token).await {
-                    Ok(()) => {
-                        // Seeding was stopped (cancelled) — mark as completed
-                        download.status = DownloadStatus::Completed;
-                        download.progress = 100.0;
-                        download.speed = 0;
-                        download.upload_speed = 0;
-                        self.update_download(&download).await;
-                    }
-                    Err(e) => {
-                        if !cancel_token.is_cancelled() {
-                            download.status = DownloadStatus::Failed;
-                            download.error_message = Some(e.to_string());
-                            self.update_download(&download).await;
+                    Ok(()) | Err(_) => {
+                        if cancel_token.is_cancelled() {
+                            // Check current status — pause_download already set it to Paused
+                            let current_status = {
+                                let downloads = self.downloads.read().await;
+                                downloads.get(&download.id).map(|d| d.status.clone())
+                            };
+                            match current_status {
+                                Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) => {
+                                    // Already handled by pause/cancel — don't overwrite
+                                }
+                                _ => {
+                                    // Stopped seeding — mark completed
+                                    download.status = DownloadStatus::Completed;
+                                    download.progress = 100.0;
+                                    download.speed = 0;
+                                    download.upload_speed = 0;
+                                    self.update_download(&download).await;
+                                }
+                            }
                         } else {
-                            // Cancelled while seeding — mark as completed
-                            download.status = DownloadStatus::Completed;
-                            download.progress = 100.0;
-                            download.speed = 0;
-                            download.upload_speed = 0;
+                            // Real error (not cancelled)
+                            download.status = DownloadStatus::Failed;
+                            download.error_message = Some("Torrent download failed".to_string());
                             self.update_download(&download).await;
                         }
                     }

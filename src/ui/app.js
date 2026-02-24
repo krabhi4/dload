@@ -3,7 +3,6 @@ var token = localStorage.getItem('dload_token') || '';
 var refreshInterval = null;
 var lastDownloads = [];
 var openMenuId = null;
-var currentFilter = 'all';
 var expandedId = null;
 
 // ─── Toast Notifications ────────────────────────────
@@ -116,11 +115,11 @@ function formatSpeed(bytesPerSec) {
 
 // ─── Views ──────────────────────────────────────────
 
+var currentPage = 'downloads';
+
 function showDownloads() {
     return '<div class="stats-bar">'
         + '<span class="stat-val" id="active-count">0</span> Active'
-        + ' <span class="stat-sep">&middot;</span> '
-        + '<span class="stat-val" id="completed-count">0</span> Completed'
         + ' <span class="stat-sep">&middot;</span> '
         + '&darr; <span class="stat-val speed-val" id="total-speed">0 B/s</span>'
         + '</div>'
@@ -130,11 +129,13 @@ function showDownloads() {
         + '<button type="submit" class="btn-primary">Download</button>'
         + '</form>'
         + '</div>'
-        + '<div class="filter-tabs">'
-        + '<button class="filter-tab active" data-filter="all" onclick="setFilter(\'all\')">All <span class="count">0</span></button>'
-        + '<button class="filter-tab" data-filter="downloading" onclick="setFilter(\'downloading\')">Downloading <span class="count">0</span></button>'
-        + '<button class="filter-tab" data-filter="completed" onclick="setFilter(\'completed\')">Completed <span class="count">0</span></button>'
-        + '<button class="filter-tab" data-filter="failed" onclick="setFilter(\'failed\')">Failed <span class="count">0</span></button>'
+        + '<div id="downloads-list"></div>';
+}
+
+function showCompleted() {
+    return '<div class="page-header">'
+        + '<h1>Completed</h1>'
+        + '<p>Finished downloads</p>'
         + '</div>'
         + '<div id="downloads-list"></div>';
 }
@@ -166,12 +167,6 @@ function showSettings() {
 
 // ─── Filter & Detail ────────────────────────────────
 
-function setFilter(filter) {
-    currentFilter = filter;
-    lastDownloads = [];
-    loadDownloads();
-}
-
 function sortDownloads(downloads) {
     var statusOrder = {
         'Downloading': 0,
@@ -191,13 +186,13 @@ function sortDownloads(downloads) {
     });
 }
 
-function filterDownloads(downloads, filter) {
+function getPageDownloads(downloads) {
     var sorted = sortDownloads(downloads);
-    if (filter === 'all') return sorted;
-    if (filter === 'downloading') return sorted.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued' || d.status === 'Seeding'; });
-    if (filter === 'completed') return sorted.filter(function(d) { return d.status === 'Completed'; });
-    if (filter === 'failed') return sorted.filter(function(d) { return d.status === 'Failed' || d.status === 'Stopped' || d.status === 'Paused'; });
-    return sorted;
+    if (currentPage === 'completed') {
+        return sorted.filter(function(d) { return d.status === 'Completed'; });
+    }
+    // Downloads page: everything except completed
+    return sorted.filter(function(d) { return d.status !== 'Completed'; });
 }
 
 function toggleDetail(id, event) {
@@ -364,26 +359,11 @@ function renderDownloads(downloads) {
     var container = document.getElementById('downloads-list');
     if (!container) return;
 
-    var filtered = filterDownloads(downloads, currentFilter);
+    var filtered = getPageDownloads(downloads);
 
-    // Update filter tab counts and active state
-    var allCount = downloads.length;
-    var downloadingCount = downloads.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued' || d.status === 'Seeding'; }).length;
-    var completedCount = downloads.filter(function(d) { return d.status === 'Completed'; }).length;
-    var failedCount = downloads.filter(function(d) { return d.status === 'Failed' || d.status === 'Stopped' || d.status === 'Paused'; }).length;
-
-    var tabs = document.querySelectorAll('.filter-tab');
-    tabs.forEach(function(tab) {
-        var f = tab.getAttribute('data-filter');
-        tab.classList.toggle('active', f === currentFilter);
-        var countEl = tab.querySelector('.count');
-        if (countEl) {
-            if (f === 'all') countEl.textContent = allCount;
-            else if (f === 'downloading') countEl.textContent = downloadingCount;
-            else if (f === 'completed') countEl.textContent = completedCount;
-            else if (f === 'failed') countEl.textContent = failedCount;
-        }
-    });
+    var emptyMsg = currentPage === 'completed'
+        ? '<p>No completed downloads</p><span>Finished downloads will appear here</span>'
+        : '<p>No active downloads</p><span>Add a URL above to start downloading</span>';
 
     if (filtered.length === 0) {
         safeRender(container, '<div class="empty-state">'
@@ -392,8 +372,7 @@ function renderDownloads(downloads) {
             + '<polyline points="7 10 12 15 17 10"/>'
             + '<line x1="12" y1="15" x2="12" y2="3"/>'
             + '</svg>'
-            + '<p>No downloads yet</p>'
-            + '<span>Add a URL above to start downloading</span>'
+            + emptyMsg
             + '</div>');
         lastDownloads = filtered;
         return;
@@ -467,7 +446,6 @@ function renderDownloads(downloads) {
 
 function updateStats(downloads) {
     var active = downloads.filter(function(d) { return d.status === 'Downloading' || d.status === 'Seeding'; }).length;
-    var completed = downloads.filter(function(d) { return d.status === 'Completed'; }).length;
     var totalSpeed = downloads.reduce(function(sum, d) {
         return sum + (d.status === 'Downloading' ? (d.speed || 0) : 0);
     }, 0);
@@ -475,8 +453,6 @@ function updateStats(downloads) {
     var el;
     el = document.getElementById('active-count');
     if (el) el.textContent = active;
-    el = document.getElementById('completed-count');
-    if (el) el.textContent = completed;
     el = document.getElementById('total-speed');
     if (el) el.textContent = formatSpeed(totalSpeed);
 }
@@ -619,12 +595,13 @@ async function saveSettings() {
 function navigate(hash) {
     var routes = {
         '#downloads': showDownloads,
+        '#completed': showCompleted,
         '#settings': showSettings
     };
 
     var render = routes[hash] || showDownloads;
+    currentPage = hash === '#completed' ? 'completed' : 'downloads';
     lastDownloads = [];
-    currentFilter = 'all';
     expandedId = null;
     safeRender(document.getElementById('main-content'), render());
 

@@ -5,10 +5,9 @@ services:
     image: ghcr.io/krabhi4/dload:latest
     container_name: dload
     ports:
-      - "8080:8080"
+      - "3007:8080"
     volumes:
-      - ./downloads:/data
-      - ./dload.db:/app/dload.db
+      - ./data:/data
     environment:
       - RUST_LOG=info
     restart: unless-stopped

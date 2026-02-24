@@ -178,11 +178,17 @@ function renderDownloads(downloads, containerId) {
             +   '<div class="download-meta">'
             +     '<span class="protocol-badge">' + safeProtocol + '</span>'
             +     '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
-            +     '<button class="delete-btn" onclick="deleteDownload(\'' + safeId + '\')" title="Remove">'
-            +       '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-            +         '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
-            +       '</svg>'
-            +     '</button>'
+            +     '<div class="delete-dropdown">'
+            +       '<button class="delete-btn" onclick="toggleDeleteMenu(\'' + safeId + '\')" title="Remove">'
+            +         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            +           '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
+            +         '</svg>'
+            +       '</button>'
+            +       '<div class="delete-menu" id="delete-menu-' + safeId + '">'
+            +         '<button onclick="deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
+            +         '<button class="danger" onclick="deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
+            +       '</div>'
+            +     '</div>'
             +   '</div>'
             + '</div>'
             + '<div class="download-progress-row">'
@@ -271,9 +277,18 @@ async function addDownload(url) {
     }
 }
 
-async function deleteDownload(id) {
+function toggleDeleteMenu(id) {
+    // Close all other menus first
+    document.querySelectorAll('.delete-menu.show').forEach(function(m) { m.classList.remove('show'); });
+    var menu = document.getElementById('delete-menu-' + id);
+    if (menu) menu.classList.toggle('show');
+}
+
+async function deleteDownload(id, deleteFiles) {
     try {
-        await apiRequest('/downloads/' + encodeURIComponent(id), { method: 'DELETE' });
+        var qs = deleteFiles ? '?delete_files=true' : '';
+        await apiRequest('/downloads/' + encodeURIComponent(id) + qs, { method: 'DELETE' });
+        lastDownloadsJson = ''; // Force re-render
         loadDownloads();
     } catch (e) {
         console.error('Failed to delete download:', e);
@@ -438,5 +453,12 @@ function startApp() {
     if (refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(loadDownloads, 2000);
 }
+
+// Close delete menus when clicking outside
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.delete-dropdown')) {
+        document.querySelectorAll('.delete-menu.show').forEach(function(m) { m.classList.remove('show'); });
+    }
+});
 
 document.addEventListener('DOMContentLoaded', init);

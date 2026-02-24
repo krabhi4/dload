@@ -1,12 +1,18 @@
 use crate::domain::Download;
 use crate::manager::SharedState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::Json,
-    routing::{delete, get, post},
+    routing::{delete, get},
     Router,
 };
 use std::sync::Arc;
+
+#[derive(serde::Deserialize)]
+pub struct DeleteParams {
+    #[serde(default)]
+    delete_files: bool,
+}
 
 pub fn router(state: SharedState) -> Router {
     Router::new()
@@ -27,22 +33,27 @@ async fn add_download(
     let settings = state.settings.read().await;
     let download_dir = settings.download_dir.clone();
     drop(settings);
-    
+
     let mut download = Download::new(url, &download_dir);
     download.status = crate::domain::DownloadStatus::Downloading;
-    
+
     state.add_download(download.clone()).await;
-    
+
     let state_clone = Arc::clone(&state);
     state_clone.start_download(download.clone()).await;
-    
+
     Json(download)
 }
 
 async fn remove_download(
     State(state): State<SharedState>,
     Path(id): Path<String>,
+    Query(params): Query<DeleteParams>,
 ) -> Json<serde_json::Value> {
-    state.remove(&id).await;
+    if params.delete_files {
+        state.remove_with_files(&id).await;
+    } else {
+        state.remove(&id).await;
+    }
     Json(serde_json::json!({ "success": true }))
 }

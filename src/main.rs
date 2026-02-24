@@ -33,7 +33,15 @@ async fn main() {
 
     // Load settings from DB, falling back to defaults for first run
     let settings = match repo.get_settings() {
-        Ok(s) => s,
+        Ok(mut s) => {
+            // Migrate old default download_dir from /data to /downloads
+            if s.download_dir == "/data" {
+                tracing::info!("Migrating download_dir from /data to /downloads");
+                s.download_dir = "/downloads".to_string();
+                repo.save_settings(&s).ok();
+            }
+            s
+        }
         Err(_) => {
             let defaults = domain::Settings::default();
             repo.save_settings(&defaults).ok();

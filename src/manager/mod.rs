@@ -1,3 +1,4 @@
+use crate::db::repository::Repository;
 use crate::domain::{Download, DownloadStatus, Protocol, Settings};
 use crate::worker::http::HttpDownloader;
 use librqbit::Session;
@@ -11,12 +12,14 @@ pub struct ManagerState {
     pub downloads: Arc<RwLock<HashMap<String, Download>>>,
     pub settings: Arc<RwLock<Settings>>,
     pub tx: broadcast::Sender<DownloadEvent>,
+    pub repo: Arc<Repository>,
     torrent_session: Arc<OnceCell<Arc<Session>>>,
     download_dir: String,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum DownloadEvent {
     Progress(Download),
     Completed(String),
@@ -24,14 +27,38 @@ pub enum DownloadEvent {
 }
 
 impl ManagerState {
-    pub fn new(settings: Settings) -> Self {
+    pub fn new(settings: Settings, repo: Arc<Repository>) -> Self {
         let (tx, _) = broadcast::channel(100);
         let download_dir = settings.download_dir.clone();
 
+        // Load existing downloads from DB
+        let downloads = match repo.get_all_downloads() {
+            Ok(dl_list) => {
+                let mut map = HashMap::new();
+                for mut dl in dl_list {
+                    // Downloads that were in-progress when the app stopped are now paused
+                    if dl.status == DownloadStatus::Downloading {
+                        dl.status = DownloadStatus::Paused;
+                        dl.speed = 0;
+                        dl.upload_speed = 0;
+                        let _ = repo.update_download(&dl);
+                    }
+                    map.insert(dl.id.clone(), dl);
+                }
+                tracing::info!("Restored {} downloads from database", map.len());
+                map
+            }
+            Err(e) => {
+                tracing::error!("Failed to load downloads from database: {}", e);
+                HashMap::new()
+            }
+        };
+
         Self {
-            downloads: Arc::new(RwLock::new(HashMap::new())),
+            downloads: Arc::new(RwLock::new(downloads)),
             settings: Arc::new(RwLock::new(settings)),
             tx,
+            repo,
             torrent_session: Arc::new(OnceCell::new()),
             download_dir,
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
@@ -48,17 +75,24 @@ impl ManagerState {
         Ok(session.clone())
     }
 
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<DownloadEvent> {
         self.tx.subscribe()
     }
 
     pub async fn add_download(&self, download: Download) {
+        if let Err(e) = self.repo.insert_download(&download) {
+            tracing::error!("Failed to persist download to DB: {}", e);
+        }
         let mut downloads = self.downloads.write().await;
         downloads.insert(download.id.clone(), download.clone());
         let _ = self.tx.send(DownloadEvent::Progress(download));
     }
 
     pub async fn update_download(&self, download: &Download) {
+        if let Err(e) = self.repo.update_download(download) {
+            tracing::error!("Failed to update download in DB: {}", e);
+        }
         let mut downloads = self.downloads.write().await;
         if let Some(d) = downloads.get_mut(&download.id) {
             *d = download.clone();
@@ -74,6 +108,9 @@ impl ManagerState {
     pub async fn remove(&self, id: &str) {
         // Cancel any running task first
         self.cancel_download(id).await;
+        if let Err(e) = self.repo.delete_download(id) {
+            tracing::error!("Failed to delete download from DB: {}", e);
+        }
         let mut downloads = self.downloads.write().await;
         downloads.remove(id);
     }

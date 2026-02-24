@@ -22,3 +22,6 @@ Thumbs.db
 
 # Downloads
 downloads/
+
+#MCP
+.playwright-mcp/

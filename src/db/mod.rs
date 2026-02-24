@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use std::sync::Mutex;
 
 pub struct Database {
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
 }
 
 impl Database {

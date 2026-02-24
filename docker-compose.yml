@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   dload:
     image: ghcr.io/krabhi4/dload:latest

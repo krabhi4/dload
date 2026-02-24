@@ -253,22 +253,56 @@ impl ManagerState {
 }
 
 async fn session_add_and_wait(
-    _state: &ManagerState,
+    state: &ManagerState,
     add: librqbit::AddTorrent<'_>,
-    _download: &mut Download,
+    download: &mut Download,
 ) -> anyhow::Result<()> {
-    let session = _state.get_torrent_session().await?;
+    let session = state.get_torrent_session().await?;
+
+    let opts = librqbit::AddTorrentOptions {
+        overwrite: true,
+        ..Default::default()
+    };
+
     let handle = session
-        .add_torrent(add, None)
+        .add_torrent(add, Some(opts))
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add torrent: {}", e))?
         .into_handle()
         .ok_or_else(|| anyhow::anyhow!("Torrent was a duplicate or couldn't get handle"))?;
 
-    handle
-        .wait_until_completed()
-        .await
-        .map_err(|e| anyhow::anyhow!("Torrent download failed: {}", e))?;
+    // Update name and save_path from torrent metadata
+    if let Some(name) = handle.name() {
+        download.filename = name.clone();
+        download.save_path = format!("{}/{}", state.download_dir, name);
+    }
+
+    // Poll progress until finished
+    loop {
+        let stats = handle.stats();
+
+        download.total_size = stats.total_bytes;
+        download.downloaded_size = stats.progress_bytes;
+        if stats.total_bytes > 0 {
+            download.progress =
+                (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0;
+        }
+
+        // Get live download speed
+        if let Some(live) = &stats.live {
+            // mbps is megabits/s, convert to bytes/s: mbps * 1_000_000 / 8 = mbps * 125_000
+            download.speed = (live.download_speed.mbps * 125_000.0) as u64;
+        }
+
+        state.update_download(download).await;
+
+        if stats.finished {
+            download.speed = 0;
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 
     Ok(())
 }

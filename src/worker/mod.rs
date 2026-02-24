@@ -1,4 +1,5 @@
 pub mod http;
+pub mod torrent;
 
 use crate::domain::Protocol;
 

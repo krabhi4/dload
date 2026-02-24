@@ -6,6 +6,49 @@ var openMenuId = null;
 var currentFilter = 'all';
 var expandedId = null;
 
+// ─── Toast Notifications ────────────────────────────
+
+var toastCounter = 0;
+
+function showToast(type, title, message, duration) {
+    duration = duration || 5000;
+    var container = document.getElementById('toast-container');
+    if (!container) return;
+
+    var id = 'toast-' + (++toastCounter);
+    var icons = {
+        error: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+        success: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+        info: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
+    };
+
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.id = id;
+    toast.innerHTML = '<div class="toast-icon">' + (icons[type] || icons.info) + '</div>'
+        + '<div class="toast-body">'
+        + '<div class="toast-title">' + escapeHtml(title) + '</div>'
+        + (message ? '<div class="toast-message">' + escapeHtml(message) + '</div>' : '')
+        + '</div>'
+        + '<button class="toast-close" onclick="dismissToast(\'' + id + '\')">'
+        + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
+        + '</button>'
+        + '<div class="toast-progress" style="animation-duration: ' + duration + 'ms"></div>';
+
+    container.appendChild(toast);
+
+    setTimeout(function() { dismissToast(id); }, duration);
+}
+
+function dismissToast(id) {
+    var toast = document.getElementById(id);
+    if (!toast || toast.classList.contains('removing')) return;
+    toast.classList.add('removing');
+    setTimeout(function() {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 250);
+}
+
 // ─── API ────────────────────────────────────────────
 
 async function apiRequest(endpoint, options) {
@@ -34,6 +77,11 @@ async function apiRequest(endpoint, options) {
     if (response.status === 401) {
         logout();
         throw new Error('Unauthorized');
+    }
+
+    if (!response.ok) {
+        var errText = await response.text().catch(function() { return 'Unknown error'; });
+        throw new Error(errText || 'Request failed (' + response.status + ')');
     }
 
     return response.json();
@@ -127,11 +175,12 @@ function setFilter(filter) {
 function sortDownloads(downloads) {
     var statusOrder = {
         'Downloading': 0,
-        'Queued': 1,
-        'Paused': 2,
-        'Stopped': 3,
-        'Failed': 4,
-        'Completed': 5
+        'Seeding': 1,
+        'Queued': 2,
+        'Paused': 3,
+        'Stopped': 4,
+        'Failed': 5,
+        'Completed': 6
     };
     return downloads.slice().sort(function(a, b) {
         var oa = statusOrder[a.status] !== undefined ? statusOrder[a.status] : 99;
@@ -145,7 +194,7 @@ function sortDownloads(downloads) {
 function filterDownloads(downloads, filter) {
     var sorted = sortDownloads(downloads);
     if (filter === 'all') return sorted;
-    if (filter === 'downloading') return sorted.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued'; });
+    if (filter === 'downloading') return sorted.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued' || d.status === 'Seeding'; });
     if (filter === 'completed') return sorted.filter(function(d) { return d.status === 'Completed'; });
     if (filter === 'failed') return sorted.filter(function(d) { return d.status === 'Failed' || d.status === 'Stopped' || d.status === 'Paused'; });
     return sorted;
@@ -212,7 +261,8 @@ function buildDownloadItem(d) {
     }
 
     // Speed display
-    var displaySpeed = isActive ? formatSpeed(d.speed) : '--';
+    var isSeeding = d.status === 'Seeding';
+    var displaySpeed = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
 
     // ETA display
     var etaDisplay = (isActive && d.eta) ? escapeHtml(d.eta) : '';
@@ -225,6 +275,14 @@ function buildDownloadItem(d) {
             + '</button>'
             + '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' + safeId + '\')" title="Cancel">'
             + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
+            + '</button>';
+    } else if (d.status === 'Seeding') {
+        actions = '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' + safeId + '\')" title="Stop Seeding">'
+            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>'
+            + '</button>';
+    } else if (d.status === 'Paused' || d.status === 'Failed' || d.status === 'Stopped') {
+        actions = '<button class="action-btn resume-btn" onclick="event.stopPropagation(); resumeDownload(\'' + safeId + '\')" title="Resume">'
+            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>'
             + '</button>';
     }
 
@@ -310,7 +368,7 @@ function renderDownloads(downloads) {
 
     // Update filter tab counts and active state
     var allCount = downloads.length;
-    var downloadingCount = downloads.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued'; }).length;
+    var downloadingCount = downloads.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued' || d.status === 'Seeding'; }).length;
     var completedCount = downloads.filter(function(d) { return d.status === 'Completed'; }).length;
     var failedCount = downloads.filter(function(d) { return d.status === 'Failed' || d.status === 'Stopped' || d.status === 'Paused'; }).length;
 
@@ -346,14 +404,14 @@ function renderDownloads(downloads) {
     var prevIds = lastDownloads.map(function(d) { return d.id + ':' + d.status; }).join(',');
 
     if (currentIds !== prevIds) {
+        // Skip full rebuild if a menu is open (user is interacting)
+        if (openMenuId) {
+            lastDownloads = filtered;
+            return;
+        }
         // Full rebuild
         var html = filtered.map(buildDownloadItem).join('');
         safeRender(container, html);
-        // Restore open menu
-        if (openMenuId) {
-            var menu = document.getElementById('delete-menu-' + openMenuId);
-            if (menu) menu.classList.add('show');
-        }
         // Restore expanded detail
         if (expandedId !== null) {
             var detail = document.getElementById('detail-' + expandedId);
@@ -392,7 +450,8 @@ function renderDownloads(downloads) {
             // Update speed
             var speedEl = el.querySelector('.speed');
             if (speedEl) {
-                speedEl.textContent = isActive ? formatSpeed(d.speed) : '--';
+                var isSeeding = d.status === 'Seeding';
+                speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
             }
 
             // Update ETA
@@ -407,7 +466,7 @@ function renderDownloads(downloads) {
 }
 
 function updateStats(downloads) {
-    var active = downloads.filter(function(d) { return d.status === 'Downloading'; }).length;
+    var active = downloads.filter(function(d) { return d.status === 'Downloading' || d.status === 'Seeding'; }).length;
     var completed = downloads.filter(function(d) { return d.status === 'Completed'; }).length;
     var totalSpeed = downloads.reduce(function(sum, d) {
         return sum + (d.status === 'Downloading' ? (d.speed || 0) : 0);
@@ -427,10 +486,21 @@ function updateStats(downloads) {
 async function loadDownloads() {
     try {
         var downloads = await apiRequest('/downloads');
+        // Detect newly failed downloads
+        if (lastDownloads.length > 0) {
+            downloads.forEach(function(d) {
+                if (d.status === 'Failed') {
+                    var prev = lastDownloads.find(function(p) { return p.id === d.id; });
+                    if (prev && prev.status !== 'Failed') {
+                        showToast('error', 'Download failed', d.filename + (d.error_message ? ': ' + d.error_message : ''));
+                    }
+                }
+            });
+        }
         renderDownloads(downloads);
         updateStats(downloads);
     } catch (e) {
-        console.error('Failed to load downloads:', e);
+        // Silently ignore polling errors to avoid toast spam
     }
 }
 
@@ -460,7 +530,7 @@ async function addDownload(url) {
         lastDownloads = [];
         loadDownloads();
     } catch (e) {
-        console.error('Failed to add download:', e);
+        showToast('error', 'Failed to add download', e.message);
     }
 }
 
@@ -489,7 +559,7 @@ async function deleteDownload(id, deleteFiles) {
         lastDownloads = [];
         loadDownloads();
     } catch (e) {
-        console.error('Failed to delete download:', e);
+        showToast('error', 'Failed to delete', e.message);
     }
 }
 
@@ -499,7 +569,7 @@ async function pauseDownload(id) {
         lastDownloads = [];
         loadDownloads();
     } catch (e) {
-        console.error('Failed to pause download:', e);
+        showToast('error', 'Failed to pause', e.message);
     }
 }
 
@@ -509,7 +579,17 @@ async function cancelDownload(id) {
         lastDownloads = [];
         loadDownloads();
     } catch (e) {
-        console.error('Failed to cancel download:', e);
+        showToast('error', 'Failed to cancel', e.message);
+    }
+}
+
+async function resumeDownload(id) {
+    try {
+        await apiRequest('/downloads/' + encodeURIComponent(id) + '/resume', { method: 'POST' });
+        lastDownloads = [];
+        loadDownloads();
+    } catch (e) {
+        showToast('error', 'Failed to resume', e.message);
     }
 }
 
@@ -528,8 +608,9 @@ async function saveSettings() {
             method: 'PUT',
             body: JSON.stringify(settings)
         });
+        showToast('success', 'Settings saved');
     } catch (e) {
-        console.error('Failed to save settings:', e);
+        showToast('error', 'Failed to save settings', e.message);
     }
 }
 
@@ -619,11 +700,12 @@ function init() {
                     document.getElementById('login-modal').style.display = 'none';
                     startApp();
                 } else {
+                    showToast('error', 'Login failed', 'Invalid username or password');
                     document.getElementById('login-password').value = '';
                     document.getElementById('login-password').focus();
                 }
             } catch (e) {
-                console.error('Login failed:', e);
+                showToast('error', 'Login failed', e.message);
             }
         });
     }

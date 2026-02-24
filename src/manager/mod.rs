@@ -33,6 +33,12 @@ impl ManagerState {
                         dl.upload_speed = 0;
                         let _ = repo.update_download(&dl);
                     }
+                    // Torrents that were seeding when the app stopped are now completed
+                    if dl.status == DownloadStatus::Seeding {
+                        dl.status = DownloadStatus::Completed;
+                        dl.upload_speed = 0;
+                        let _ = repo.update_download(&dl);
+                    }
                     map.insert(dl.id.clone(), dl);
                 }
                 tracing::info!("Restored {} downloads from database", map.len());
@@ -135,12 +141,35 @@ impl ManagerState {
 
     pub async fn pause_download(&self, id: &str) {
         self.cancel_download(id).await;
-        let mut downloads = self.downloads.write().await;
-        if let Some(d) = downloads.get_mut(id) {
-            if d.status == DownloadStatus::Downloading {
-                d.status = DownloadStatus::Paused;
-                d.speed = 0;
-                d.upload_speed = 0;
+        let download = {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(id) {
+                if d.status == DownloadStatus::Downloading {
+                    d.status = DownloadStatus::Paused;
+                    d.speed = 0;
+                    d.upload_speed = 0;
+                }
+                Some(d.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(d) = download {
+            if let Err(e) = self.repo.update_download(&d) {
+                tracing::error!("Failed to persist pause state: {}", e);
+            }
+        }
+    }
+
+    pub async fn resume_download(self: &Arc<Self>, id: &str) {
+        let download = {
+            let downloads = self.downloads.read().await;
+            downloads.get(id).cloned()
+        };
+        if let Some(d) = download {
+            if d.status == DownloadStatus::Paused || d.status == DownloadStatus::Failed || d.status == DownloadStatus::Stopped {
+                let state = Arc::clone(self);
+                state.start_download(d).await;
             }
         }
     }
@@ -237,8 +266,13 @@ impl ManagerState {
                                             if !torrent_cancel.is_cancelled() {
                                                 torrent_download.status = DownloadStatus::Failed;
                                                 torrent_download.error_message = Some(e.to_string());
-                                                self.update_download(&torrent_download).await;
+                                            } else {
+                                                torrent_download.status = DownloadStatus::Completed;
+                                                torrent_download.progress = 100.0;
+                                                torrent_download.speed = 0;
+                                                torrent_download.upload_speed = 0;
                                             }
+                                            self.update_download(&torrent_download).await;
                                         }
                                     }
                                 }
@@ -307,6 +341,7 @@ impl ManagerState {
 
                 match session_add_and_wait(&self, add, &mut download, &cancel_token).await {
                     Ok(()) => {
+                        // Seeding was stopped (cancelled) — mark as completed
                         download.status = DownloadStatus::Completed;
                         download.progress = 100.0;
                         download.speed = 0;
@@ -317,6 +352,13 @@ impl ManagerState {
                         if !cancel_token.is_cancelled() {
                             download.status = DownloadStatus::Failed;
                             download.error_message = Some(e.to_string());
+                            self.update_download(&download).await;
+                        } else {
+                            // Cancelled while seeding — mark as completed
+                            download.status = DownloadStatus::Completed;
+                            download.progress = 100.0;
+                            download.speed = 0;
+                            download.upload_speed = 0;
                             self.update_download(&download).await;
                         }
                     }
@@ -395,15 +437,36 @@ async fn session_add_and_wait(
         state.update_download(download).await;
 
         if stats.finished {
+            // Switch to seeding mode
+            download.status = DownloadStatus::Seeding;
             download.speed = 0;
-            download.upload_speed = 0;
-            break;
+            download.progress = 100.0;
+            state.update_download(download).await;
+
+            // Keep seeding until cancelled
+            loop {
+                if cancel_token.is_cancelled() {
+                    let _ = session.delete(handle.id().into(), false).await;
+                    return Ok(());
+                }
+
+                let stats = handle.stats();
+                if let Some(live) = &stats.live {
+                    download.upload_speed = (live.upload_speed.mbps * 1_048_576.0) as u64;
+                    let ps = &live.snapshot.peer_stats;
+                    download.peers = ps.live as u32;
+                    download.seeds = ps.seen as u32;
+                } else {
+                    download.upload_speed = 0;
+                }
+                state.update_download(download).await;
+
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-
-    Ok(())
 }
 
 pub type SharedState = Arc<ManagerState>;

@@ -20,6 +20,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/downloads/{id}", delete(remove_download))
         .route("/api/downloads/{id}/pause", post(pause_download))
         .route("/api/downloads/{id}/cancel", post(cancel_download))
+        .route("/api/downloads/{id}/resume", post(resume_download))
         .with_state(state)
 }
 
@@ -73,12 +74,28 @@ async fn cancel_download(
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
     state.cancel_download(&id).await;
-    // Mark as stopped
-    let mut downloads = state.downloads.write().await;
-    if let Some(d) = downloads.get_mut(&id) {
-        d.status = crate::domain::DownloadStatus::Stopped;
-        d.speed = 0;
-        d.upload_speed = 0;
+    // Mark as stopped and persist
+    let download = {
+        let mut downloads = state.downloads.write().await;
+        if let Some(d) = downloads.get_mut(&id) {
+            d.status = crate::domain::DownloadStatus::Stopped;
+            d.speed = 0;
+            d.upload_speed = 0;
+            Some(d.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(d) = download {
+        state.update_download(&d).await;
     }
+    Json(serde_json::json!({ "success": true }))
+}
+
+async fn resume_download(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    state.resume_download(&id).await;
     Json(serde_json::json!({ "success": true }))
 }

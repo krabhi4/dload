@@ -1,6 +1,7 @@
 const API_BASE = '/api';
 let token = localStorage.getItem('dload_token') || '';
 let refreshInterval = null;
+let lastDownloadsJson = '';
 
 // ─── API ────────────────────────────────────────────
 
@@ -161,8 +162,14 @@ function renderDownloads(downloads, containerId) {
         var safeProtocol = escapeHtml(d.protocol);
         var safeStatus = escapeHtml(d.status);
         var progress = Math.min(d.progress, 100);
+        // Show speed only for active downloads
+        var displaySpeed = (d.status === 'Downloading') ? formatSpeed(d.speed) : '--';
+        // Completed with unknown total: show downloaded as total, 100%
+        if (d.status === 'Completed' && d.total_size === 0 && d.downloaded_size > 0) {
+            progress = 100;
+        }
 
-        return '<div class="download-item ' + statusClass + '" style="animation-delay: ' + (i * 40) + 'ms">'
+        return '<div class="download-item ' + statusClass + '">'
             + '<div class="download-top">'
             +   '<div>'
             +     '<div class="download-name">' + safeName + '</div>'
@@ -183,9 +190,9 @@ function renderDownloads(downloads, containerId) {
             +     '<div class="progress-fill ' + progressClass + '" style="width: ' + progress + '%"></div>'
             +   '</div>'
             +   '<div class="download-stats">'
-            +     '<span>' + formatSize(d.downloaded_size) + ' / ' + formatSize(d.total_size) + '</span>'
-            +     '<span class="speed">' + formatSpeed(d.speed) + '</span>'
-            +     '<span class="percent">' + d.progress.toFixed(1) + '%</span>'
+            +     '<span>' + formatSize(d.downloaded_size) + (d.total_size > 0 ? ' / ' + formatSize(d.total_size) : '') + '</span>'
+            +     '<span class="speed">' + displaySpeed + '</span>'
+            +     '<span class="percent">' + progress.toFixed(1) + '%</span>'
             +   '</div>'
             + '</div>'
             + '</div>';
@@ -197,7 +204,9 @@ function renderDownloads(downloads, containerId) {
 function updateStats(downloads) {
     var active = downloads.filter(function(d) { return d.status === 'Downloading'; }).length;
     var completed = downloads.filter(function(d) { return d.status === 'Completed'; }).length;
-    var totalSpeed = downloads.reduce(function(sum, d) { return sum + (d.speed || 0); }, 0);
+    var totalSpeed = downloads.reduce(function(sum, d) {
+        return sum + (d.status === 'Downloading' ? (d.speed || 0) : 0);
+    }, 0);
 
     var el;
     el = document.getElementById('active-count');
@@ -213,6 +222,12 @@ function updateStats(downloads) {
 async function loadDownloads() {
     try {
         var downloads = await apiRequest('/downloads');
+        var json = JSON.stringify(downloads);
+
+        // Skip re-render if nothing changed — prevents flicker
+        if (json === lastDownloadsJson) return;
+        lastDownloadsJson = json;
+
         var hash = window.location.hash || '#dashboard';
 
         if (hash === '#torrents') {
@@ -311,6 +326,7 @@ function navigate(hash) {
     };
 
     var render = routes[hash] || showDashboard;
+    lastDownloadsJson = ''; // Reset cache on navigation
     safeRender(document.getElementById('main-content'), render());
 
     // Update active nav

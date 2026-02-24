@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   dload:
-    image: ghcr.io/${GITHUB_REPOSITORY:-yourusername/dload}:latest
+    image: ghcr.io/krabhi4/dload:latest
     container_name: dload
     ports:
       - "8080:8080"

@@ -462,6 +462,55 @@ input:focus {
     color: var(--danger);
 }
 
+.delete-dropdown {
+    position: relative;
+}
+
+.delete-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 100%;
+    margin-top: 4px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    z-index: 100;
+    min-width: 160px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.delete-menu.show {
+    display: block;
+}
+
+.delete-menu button {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    font-size: 13px;
+    white-space: nowrap;
+    transition: background var(--transition);
+}
+
+.delete-menu button:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.delete-menu button.danger {
+    color: var(--danger);
+}
+
+.delete-menu button.danger:hover {
+    background: var(--danger-dim);
+}
+
 .download-progress-row {
     display: flex;
     align-items: center;

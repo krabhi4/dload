@@ -73,6 +73,28 @@ impl ManagerState {
         downloads.remove(id);
     }
 
+    pub async fn remove_with_files(&self, id: &str) {
+        let download = {
+            let downloads = self.downloads.read().await;
+            downloads.get(id).cloned()
+        };
+
+        if let Some(d) = download {
+            let path = std::path::Path::new(&d.save_path);
+            if path.exists() {
+                if path.is_dir() {
+                    if let Err(e) = tokio::fs::remove_dir_all(path).await {
+                        tracing::warn!("Failed to delete directory {}: {}", d.save_path, e);
+                    }
+                } else if let Err(e) = tokio::fs::remove_file(path).await {
+                    tracing::warn!("Failed to delete file {}: {}", d.save_path, e);
+                }
+            }
+        }
+
+        self.remove(id).await;
+    }
+
     pub async fn start_download(self: Arc<Self>, download: Download) {
         let settings = self.settings.read().await;
         let _chunk_size = settings.chunk_size as usize;

@@ -1,0 +1,11 @@
+/Users/apricot/codes/PERSONAL/dload/target/debug/deps/tokio_socks-c2e7fe6657ce4228.d: /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/lib.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/error.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/io/mod.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/io/tokio.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/mod.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/socks4.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/socks5.rs
+
+/Users/apricot/codes/PERSONAL/dload/target/debug/deps/libtokio_socks-c2e7fe6657ce4228.rmeta: /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/lib.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/error.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/io/mod.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/io/tokio.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/mod.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/socks4.rs /Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/socks5.rs
+
+/Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/lib.rs:
+/Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/error.rs:
+/Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/io/mod.rs:
+/Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/io/tokio.rs:
+/Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/mod.rs:
+/Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/socks4.rs:
+/Users/apricot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.2/src/tcp/socks5.rs:

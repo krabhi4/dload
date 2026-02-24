@@ -17,10 +17,10 @@ pub struct DeleteParams {
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/api/downloads", get(list_downloads).post(add_download))
-        .route("/api/downloads/{id}", delete(remove_download))
-        .route("/api/downloads/{id}/pause", post(pause_download))
-        .route("/api/downloads/{id}/cancel", post(cancel_download))
-        .route("/api/downloads/{id}/resume", post(resume_download))
+        .route("/api/downloads/:id", delete(remove_download))
+        .route("/api/downloads/:id/pause", post(pause_download))
+        .route("/api/downloads/:id/cancel", post(cancel_download))
+        .route("/api/downloads/:id/resume", post(resume_download))
         .with_state(state)
 }
 

@@ -4,3 +4,4 @@ target
 !README.md
 .DS_Store
 docs/
+rust-toolchain.toml

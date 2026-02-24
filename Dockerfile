@@ -31,9 +31,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/dload /usr/local/bin/
 
-RUN mkdir /data && chown nobody:nogroup /data
-
-USER nobody
+RUN mkdir -p /data
 
 EXPOSE 8080
 

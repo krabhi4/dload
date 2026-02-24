@@ -2,11 +2,13 @@ use crate::domain::{Download, DownloadStatus};
 use librqbit::{AddTorrent, Session};
 use std::sync::Arc;
 
+#[allow(dead_code)]
 pub struct TorrentDownloader {
     download: Download,
     session: Arc<Session>,
 }
 
+#[allow(dead_code)]
 impl TorrentDownloader {
     pub fn new(download: Download, session: Arc<Session>) -> Self {
         Self { download, session }

@@ -71,6 +71,7 @@ impl Download {
         }
     }
     
+    #[allow(dead_code)]
     pub fn with_protocol(mut self, protocol: Protocol) -> Self {
         self.protocol = protocol;
         self

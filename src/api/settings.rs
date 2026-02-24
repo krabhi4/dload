@@ -3,7 +3,7 @@ use crate::manager::SharedState;
 use axum::{
     extract::State,
     response::Json,
-    routing::{get, put},
+    routing::get,
     Router,
 };
 
@@ -22,6 +22,9 @@ async fn update_settings(
     State(state): State<SharedState>,
     Json(settings): Json<Settings>,
 ) -> Json<serde_json::Value> {
+    if let Err(e) = state.repo.save_settings(&settings) {
+        tracing::error!("Failed to persist settings to DB: {}", e);
+    }
     let mut current = state.settings.write().await;
     *current = settings;
     Json(serde_json::json!({ "success": true }))

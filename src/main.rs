@@ -28,13 +28,20 @@ static APP_JS: &str = include_str!("ui/app.js");
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let settings = domain::Settings::default();
     let db = Arc::new(db::Database::new("/data/dload.db").expect("Failed to create database"));
+    let repo = Arc::new(db::repository::Repository::new(db.clone()));
 
-    let repo = db::repository::Repository::new(db.clone());
-    repo.save_settings(&settings).ok();
+    // Load settings from DB, falling back to defaults for first run
+    let settings = match repo.get_settings() {
+        Ok(s) => s,
+        Err(_) => {
+            let defaults = domain::Settings::default();
+            repo.save_settings(&defaults).ok();
+            defaults
+        }
+    };
 
-    let manager_state = manager::ManagerState::new(settings);
+    let manager_state = manager::ManagerState::new(settings, repo);
 
     let state = Arc::new(AppState {
         manager: Arc::new(manager_state),

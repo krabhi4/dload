@@ -4,31 +4,21 @@ use crate::worker::http::HttpDownloader;
 use librqbit::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock, OnceCell};
+use tokio::sync::{RwLock, OnceCell};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct ManagerState {
     pub downloads: Arc<RwLock<HashMap<String, Download>>>,
     pub settings: Arc<RwLock<Settings>>,
-    pub tx: broadcast::Sender<DownloadEvent>,
     pub repo: Arc<Repository>,
     torrent_session: Arc<OnceCell<Arc<Session>>>,
     download_dir: String,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum DownloadEvent {
-    Progress(Download),
-    Completed(String),
-    Failed(String, String),
-}
-
 impl ManagerState {
     pub fn new(settings: Settings, repo: Arc<Repository>) -> Self {
-        let (tx, _) = broadcast::channel(100);
         let download_dir = settings.download_dir.clone();
 
         // Load existing downloads from DB
@@ -57,7 +47,6 @@ impl ManagerState {
         Self {
             downloads: Arc::new(RwLock::new(downloads)),
             settings: Arc::new(RwLock::new(settings)),
-            tx,
             repo,
             torrent_session: Arc::new(OnceCell::new()),
             download_dir,
@@ -75,18 +64,12 @@ impl ManagerState {
         Ok(session.clone())
     }
 
-    #[allow(dead_code)]
-    pub fn subscribe(&self) -> broadcast::Receiver<DownloadEvent> {
-        self.tx.subscribe()
-    }
-
     pub async fn add_download(&self, download: Download) {
         if let Err(e) = self.repo.insert_download(&download) {
             tracing::error!("Failed to persist download to DB: {}", e);
         }
         let mut downloads = self.downloads.write().await;
-        downloads.insert(download.id.clone(), download.clone());
-        let _ = self.tx.send(DownloadEvent::Progress(download));
+        downloads.insert(download.id.clone(), download);
     }
 
     pub async fn update_download(&self, download: &Download) {
@@ -97,7 +80,6 @@ impl ManagerState {
         if let Some(d) = downloads.get_mut(&download.id) {
             *d = download.clone();
         }
-        let _ = self.tx.send(DownloadEvent::Progress(download.clone()));
     }
 
     pub async fn get_all(&self) -> Vec<Download> {
@@ -159,7 +141,6 @@ impl ManagerState {
                 d.status = DownloadStatus::Paused;
                 d.speed = 0;
                 d.upload_speed = 0;
-                let _ = self.tx.send(DownloadEvent::Progress(d.clone()));
             }
         }
     }

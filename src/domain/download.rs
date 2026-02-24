@@ -70,10 +70,4 @@ impl Download {
             error_message: None,
         }
     }
-    
-    #[allow(dead_code)]
-    pub fn with_protocol(mut self, protocol: Protocol) -> Self {
-        self.protocol = protocol;
-        self
-    }
 }

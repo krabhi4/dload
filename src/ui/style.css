@@ -471,12 +471,6 @@ input:focus {
 .actions {
     display: flex;
     gap: 4px;
-    opacity: 0;
-    transition: opacity var(--transition);
-}
-
-.download-item:hover .actions {
-    opacity: 1;
 }
 
 .protocol-badge {

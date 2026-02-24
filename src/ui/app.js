@@ -124,12 +124,31 @@ function setFilter(filter) {
     loadDownloads();
 }
 
+function sortDownloads(downloads) {
+    var statusOrder = {
+        'Downloading': 0,
+        'Queued': 1,
+        'Paused': 2,
+        'Stopped': 3,
+        'Failed': 4,
+        'Completed': 5
+    };
+    return downloads.slice().sort(function(a, b) {
+        var oa = statusOrder[a.status] !== undefined ? statusOrder[a.status] : 99;
+        var ob = statusOrder[b.status] !== undefined ? statusOrder[b.status] : 99;
+        if (oa !== ob) return oa - ob;
+        // Within same status, newest first
+        return new Date(b.created_at) - new Date(a.created_at);
+    });
+}
+
 function filterDownloads(downloads, filter) {
-    if (filter === 'all') return downloads;
-    if (filter === 'downloading') return downloads.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued'; });
-    if (filter === 'completed') return downloads.filter(function(d) { return d.status === 'Completed'; });
-    if (filter === 'failed') return downloads.filter(function(d) { return d.status === 'Failed' || d.status === 'Stopped' || d.status === 'Paused'; });
-    return downloads;
+    var sorted = sortDownloads(downloads);
+    if (filter === 'all') return sorted;
+    if (filter === 'downloading') return sorted.filter(function(d) { return d.status === 'Downloading' || d.status === 'Queued'; });
+    if (filter === 'completed') return sorted.filter(function(d) { return d.status === 'Completed'; });
+    if (filter === 'failed') return sorted.filter(function(d) { return d.status === 'Failed' || d.status === 'Stopped' || d.status === 'Paused'; });
+    return sorted;
 }
 
 function toggleDetail(id, event) {
@@ -201,10 +220,10 @@ function buildDownloadItem(d) {
     // Action buttons
     var actions = '';
     if (isActive) {
-        actions = '<button class="action-btn pause-btn" onclick="pauseDownload(\'' + safeId + '\')" title="Pause">'
+        actions = '<button class="action-btn pause-btn" onclick="event.stopPropagation(); pauseDownload(\'' + safeId + '\')" title="Pause">'
             + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
             + '</button>'
-            + '<button class="action-btn cancel-btn" onclick="cancelDownload(\'' + safeId + '\')" title="Cancel">'
+            + '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' + safeId + '\')" title="Cancel">'
             + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
             + '</button>';
     }
@@ -262,8 +281,8 @@ function buildDownloadItem(d) {
         +         '</svg>'
         +       '</button>'
         +       '<div class="delete-menu" id="delete-menu-' + safeId + '">'
-        +         '<button onclick="deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
-        +         '<button class="danger" onclick="deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
+        +         '<button onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
+        +         '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
         +       '</div>'
         +     '</div>'
         +   '</div>'

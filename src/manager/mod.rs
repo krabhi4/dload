@@ -1,6 +1,7 @@
 use crate::db::repository::Repository;
 use crate::domain::{Download, DownloadStatus, Protocol, Settings};
 use crate::worker::http::HttpDownloader;
+use librqbit::api::TorrentIdOrHash;
 use librqbit::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,6 +16,8 @@ pub struct ManagerState {
     torrent_session: Arc<OnceCell<Arc<Session>>>,
     download_dir: String,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Maps download ID -> librqbit torrent handle ID for pause/resume
+    torrent_handles: Arc<RwLock<HashMap<String, usize>>>,
 }
 
 impl ManagerState {
@@ -57,6 +60,7 @@ impl ManagerState {
             torrent_session: Arc::new(OnceCell::new()),
             download_dir,
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+            torrent_handles: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -96,6 +100,18 @@ impl ManagerState {
     pub async fn remove(&self, id: &str) {
         // Cancel any running task first
         self.cancel_download(id).await;
+
+        // Clean up torrent handle and delete from session
+        let torrent_id = {
+            let mut handles = self.torrent_handles.write().await;
+            handles.remove(id)
+        };
+        if let Some(tid) = torrent_id {
+            if let Ok(session) = self.get_torrent_session().await {
+                let _ = session.delete(TorrentIdOrHash::Id(tid), false).await;
+            }
+        }
+
         if let Err(e) = self.repo.delete_download(id) {
             tracing::error!("Failed to delete download from DB: {}", e);
         }
@@ -140,11 +156,29 @@ impl ManagerState {
     }
 
     pub async fn pause_download(&self, id: &str) {
-        self.cancel_download(id).await;
+        // Check if this is a torrent with a live handle — use native pause
+        let torrent_id = {
+            let handles = self.torrent_handles.read().await;
+            handles.get(id).copied()
+        };
+
+        if let Some(tid) = torrent_id {
+            if let Ok(session) = self.get_torrent_session().await {
+                if let Some(handle) = session.get(TorrentIdOrHash::Id(tid)) {
+                    if let Err(e) = session.pause(&handle).await {
+                        tracing::error!("Failed to pause torrent via librqbit: {}", e);
+                    }
+                }
+            }
+        } else {
+            // HTTP download — cancel the token (no native pause support)
+            self.cancel_download(id).await;
+        }
+
         let download = {
             let mut downloads = self.downloads.write().await;
             if let Some(d) = downloads.get_mut(id) {
-                if d.status == DownloadStatus::Downloading {
+                if d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Seeding {
                     d.status = DownloadStatus::Paused;
                     d.speed = 0;
                     d.upload_speed = 0;
@@ -166,12 +200,56 @@ impl ManagerState {
             let downloads = self.downloads.read().await;
             downloads.get(id).cloned()
         };
-        if let Some(d) = download {
-            if d.status == DownloadStatus::Paused || d.status == DownloadStatus::Failed || d.status == DownloadStatus::Stopped {
-                let state = Arc::clone(self);
-                state.start_download(d).await;
+        let Some(d) = download else { return };
+
+        if d.status != DownloadStatus::Paused && d.status != DownloadStatus::Failed && d.status != DownloadStatus::Stopped {
+            return;
+        }
+
+        // Try native librqbit unpause first (torrent was paused, not removed)
+        let torrent_id = {
+            let handles = self.torrent_handles.read().await;
+            handles.get(id).copied()
+        };
+
+        if let Some(tid) = torrent_id {
+            if let Ok(session) = self.get_torrent_session().await {
+                if let Some(handle) = session.get(TorrentIdOrHash::Id(tid)) {
+                    if handle.is_paused() {
+                        if let Err(e) = session.unpause(&handle).await {
+                            tracing::error!("Failed to unpause torrent: {}", e);
+                            // Fall through to start_download as fallback
+                        } else {
+                            // Successfully unpaused — update status and re-monitor
+                            {
+                                let mut downloads = self.downloads.write().await;
+                                if let Some(dl) = downloads.get_mut(id) {
+                                    dl.status = DownloadStatus::Downloading;
+                                    dl.error_message = None;
+                                }
+                            }
+                            let mut d = d.clone();
+                            d.status = DownloadStatus::Downloading;
+                            d.error_message = None;
+                            self.update_download(&d).await;
+
+                            // Spawn a monitoring task
+                            let state = Arc::clone(self);
+                            let cancel_token = state.register_cancel_token(id).await;
+                            let id = id.to_string();
+                            tokio::spawn(async move {
+                                state.monitor_torrent(id, tid, cancel_token).await;
+                            });
+                            return;
+                        }
+                    }
+                }
             }
         }
+
+        // Fallback: re-start from scratch (for HTTP, failed torrents, etc.)
+        let state = Arc::clone(self);
+        state.start_download(d).await;
     }
 
     pub async fn start_download(self: Arc<Self>, download: Download) {
@@ -252,28 +330,18 @@ impl ManagerState {
                             match self.get_torrent_session().await {
                                 Ok(_session) => {
                                     let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
-                                    match session_add_and_wait(
+                                    if let Err(e) = session_add_and_wait(
                                         &self, add, &mut torrent_download, &torrent_cancel
                                     ).await {
-                                        Ok(()) | Err(_) => {
-                                            if torrent_cancel.is_cancelled() {
-                                                let current_status = {
-                                                    let downloads = self.downloads.read().await;
-                                                    downloads.get(&torrent_download.id).map(|d| d.status.clone())
-                                                };
-                                                match current_status {
-                                                    Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) => {}
-                                                    _ => {
-                                                        torrent_download.status = DownloadStatus::Completed;
-                                                        torrent_download.progress = 100.0;
-                                                        torrent_download.speed = 0;
-                                                        torrent_download.upload_speed = 0;
-                                                        self.update_download(&torrent_download).await;
-                                                    }
-                                                }
-                                            } else {
+                                        let current_status = {
+                                            let downloads = self.downloads.read().await;
+                                            downloads.get(&torrent_download.id).map(|d| d.status.clone())
+                                        };
+                                        match current_status {
+                                            Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
+                                            _ => {
                                                 torrent_download.status = DownloadStatus::Failed;
-                                                torrent_download.error_message = Some("Torrent download failed".to_string());
+                                                torrent_download.error_message = Some(format!("Torrent failed: {}", e));
                                                 self.update_download(&torrent_download).await;
                                             }
                                         }
@@ -342,31 +410,19 @@ impl ManagerState {
                     }
                 };
 
-                match session_add_and_wait(&self, add, &mut download, &cancel_token).await {
-                    Ok(()) | Err(_) => {
-                        if cancel_token.is_cancelled() {
-                            // Check current status — pause_download already set it to Paused
-                            let current_status = {
-                                let downloads = self.downloads.read().await;
-                                downloads.get(&download.id).map(|d| d.status.clone())
-                            };
-                            match current_status {
-                                Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) => {
-                                    // Already handled by pause/cancel — don't overwrite
-                                }
-                                _ => {
-                                    // Stopped seeding — mark completed
-                                    download.status = DownloadStatus::Completed;
-                                    download.progress = 100.0;
-                                    download.speed = 0;
-                                    download.upload_speed = 0;
-                                    self.update_download(&download).await;
-                                }
-                            }
-                        } else {
-                            // Real error (not cancelled)
+                if let Err(e) = session_add_and_wait(&self, add, &mut download, &cancel_token).await {
+                    // Only mark as failed if not already handled (paused/stopped/completed)
+                    let current_status = {
+                        let downloads = self.downloads.read().await;
+                        downloads.get(&download.id).map(|d| d.status.clone())
+                    };
+                    match current_status {
+                        Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {
+                            // Already handled by monitor_torrent
+                        }
+                        _ => {
                             download.status = DownloadStatus::Failed;
-                            download.error_message = Some("Torrent download failed".to_string());
+                            download.error_message = Some(format!("Torrent failed: {}", e));
                             self.update_download(&download).await;
                         }
                     }
@@ -381,8 +437,133 @@ impl ManagerState {
     }
 }
 
+impl ManagerState {
+    /// Monitor an existing torrent handle (used after adding or unpausing).
+    /// Returns when torrent is paused, cancelled, or errors out.
+    async fn monitor_torrent(
+        self: Arc<Self>,
+        download_id: String,
+        torrent_id: usize,
+        cancel_token: CancellationToken,
+    ) {
+        let session = match self.get_torrent_session().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to get torrent session for monitoring: {}", e);
+                return;
+            }
+        };
+
+        let handle = match session.get(TorrentIdOrHash::Id(torrent_id)) {
+            Some(h) => h,
+            None => {
+                tracing::error!("Torrent handle {} not found in session", torrent_id);
+                let mut downloads = self.downloads.write().await;
+                if let Some(d) = downloads.get_mut(&download_id) {
+                    d.status = DownloadStatus::Failed;
+                    d.error_message = Some("Torrent handle lost".to_string());
+                    let _ = self.repo.update_download(d);
+                }
+                return;
+            }
+        };
+
+        loop {
+            // Check if cancelled (stop/remove)
+            if cancel_token.is_cancelled() {
+                // Check if this was a pause (don't delete from session)
+                let current_status = {
+                    let downloads = self.downloads.read().await;
+                    downloads.get(&download_id).map(|d| d.status.clone())
+                };
+                match current_status {
+                    Some(DownloadStatus::Paused) => {
+                        // Paused via native librqbit pause — don't delete, just stop monitoring
+                        return;
+                    }
+                    _ => {
+                        // Actually stopped/removed — delete from session
+                        let _ = session.delete(handle.id().into(), false).await;
+                        {
+                            let mut handles = self.torrent_handles.write().await;
+                            handles.remove(&download_id);
+                        }
+
+                        let current_status = {
+                            let downloads = self.downloads.read().await;
+                            downloads.get(&download_id).map(|d| d.status.clone())
+                        };
+                        match current_status {
+                            Some(DownloadStatus::Stopped) => {}
+                            _ => {
+                                // Stopped seeding — mark completed
+                                let mut downloads = self.downloads.write().await;
+                                if let Some(d) = downloads.get_mut(&download_id) {
+                                    d.status = DownloadStatus::Completed;
+                                    d.progress = 100.0;
+                                    d.speed = 0;
+                                    d.upload_speed = 0;
+                                    let _ = self.repo.update_download(d);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // Check if paused via librqbit
+            if handle.is_paused() {
+                // Update status and stop monitoring
+                let mut downloads = self.downloads.write().await;
+                if let Some(d) = downloads.get_mut(&download_id) {
+                    d.status = DownloadStatus::Paused;
+                    d.speed = 0;
+                    d.upload_speed = 0;
+                    let _ = self.repo.update_download(d);
+                }
+                return;
+            }
+
+            let stats = handle.stats();
+
+            {
+                let mut downloads = self.downloads.write().await;
+                if let Some(download) = downloads.get_mut(&download_id) {
+                    download.total_size = stats.total_bytes;
+                    download.downloaded_size = stats.progress_bytes;
+                    if stats.total_bytes > 0 {
+                        download.progress =
+                            (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0;
+                    }
+
+                    if let Some(live) = &stats.live {
+                        download.speed = (live.download_speed.mbps * 1_048_576.0) as u64;
+                        download.upload_speed = (live.upload_speed.mbps * 1_048_576.0) as u64;
+                        let ps = &live.snapshot.peer_stats;
+                        download.peers = ps.live as u32;
+                        download.seeds = ps.seen as u32;
+                        download.eta = live.time_remaining.as_ref().map(|t| format!("{}", t));
+                    }
+
+                    if stats.finished && download.status != DownloadStatus::Seeding {
+                        download.status = DownloadStatus::Seeding;
+                        download.speed = 0;
+                        download.progress = 100.0;
+                    }
+
+                    let _ = self.repo.update_download(download);
+                }
+            }
+
+            let sleep_dur = if stats.finished { 2 } else { 1 };
+            tokio::time::sleep(std::time::Duration::from_secs(sleep_dur)).await;
+        }
+    }
+}
+
 async fn session_add_and_wait(
-    state: &ManagerState,
+    state: &Arc<ManagerState>,
     add: librqbit::AddTorrent<'_>,
     download: &mut Download,
     cancel_token: &CancellationToken,
@@ -401,80 +582,38 @@ async fn session_add_and_wait(
         .into_handle()
         .ok_or_else(|| anyhow::anyhow!("Torrent was a duplicate or couldn't get handle"))?;
 
+    let torrent_id = handle.id();
+
+    // Store the handle mapping for pause/resume
+    {
+        let mut handles = state.torrent_handles.write().await;
+        handles.insert(download.id.clone(), torrent_id);
+    }
+
     // Update name and save_path from torrent metadata
     if let Some(name) = handle.name() {
         download.filename = name.clone();
         download.save_path = format!("{}/{}", state.download_dir, name);
     }
 
-    // Poll progress until finished or cancelled
-    loop {
-        if cancel_token.is_cancelled() {
-            // Try to delete the torrent from the session
-            let _ = session.delete(
-                handle.id().into(),
-                false,
-            ).await;
-            return Err(anyhow::anyhow!("Download cancelled"));
-        }
+    state.update_download(download).await;
 
-        let stats = handle.stats();
+    // Use the shared monitor
+    let state_clone = Arc::clone(state);
+    let dl_id = download.id.clone();
+    let ct = cancel_token.clone();
+    state_clone.monitor_torrent(dl_id, torrent_id, ct).await;
 
-        download.total_size = stats.total_bytes;
-        download.downloaded_size = stats.progress_bytes;
-        if stats.total_bytes > 0 {
-            download.progress =
-                (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0;
-        }
-
-        // Get live stats: speed, peers, ETA
-        if let Some(live) = &stats.live {
-            // mbps is actually MiB/s in librqbit — convert to bytes/s
-            download.speed = (live.download_speed.mbps * 1_048_576.0) as u64;
-            download.upload_speed = (live.upload_speed.mbps * 1_048_576.0) as u64;
-
-            // Peer stats
-            let ps = &live.snapshot.peer_stats;
-            download.peers = ps.live as u32;
-            download.seeds = ps.seen as u32;
-
-            // ETA
-            download.eta = live.time_remaining.as_ref().map(|t| format!("{}", t));
-        }
-
-        state.update_download(download).await;
-
-        if stats.finished {
-            // Switch to seeding mode
-            download.status = DownloadStatus::Seeding;
-            download.speed = 0;
-            download.progress = 100.0;
-            state.update_download(download).await;
-
-            // Keep seeding until cancelled
-            loop {
-                if cancel_token.is_cancelled() {
-                    let _ = session.delete(handle.id().into(), false).await;
-                    return Ok(());
-                }
-
-                let stats = handle.stats();
-                if let Some(live) = &stats.live {
-                    download.upload_speed = (live.upload_speed.mbps * 1_048_576.0) as u64;
-                    let ps = &live.snapshot.peer_stats;
-                    download.peers = ps.live as u32;
-                    download.seeds = ps.seen as u32;
-                } else {
-                    download.upload_speed = 0;
-                }
-                state.update_download(download).await;
-
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // After monitoring ends, read back the latest status
+    let latest = {
+        let downloads = state.downloads.read().await;
+        downloads.get(&download.id).cloned()
+    };
+    if let Some(latest) = latest {
+        *download = latest;
     }
+
+    Ok(())
 }
 
 pub type SharedState = Arc<ManagerState>;

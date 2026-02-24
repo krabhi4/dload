@@ -23,7 +23,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
     
     let settings = domain::Settings::default();
-    let db = Arc::new(db::Database::new("dload.db").expect("Failed to create database"));
+    let db = Arc::new(db::Database::new("/data/dload.db").expect("Failed to create database"));
     
     let repo = db::repository::Repository::new(db.clone());
     repo.save_settings(&settings).ok();

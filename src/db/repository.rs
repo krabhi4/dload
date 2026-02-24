@@ -78,7 +78,11 @@ impl Repository {
                 progress: row.get(7)?,
                 status: serde_json::from_str(&format!("\"{}\"", status_str)).unwrap_or(DownloadStatus::Queued),
                 protocol: serde_json::from_str(&format!("\"{}\"", protocol_str)).unwrap_or(Protocol::Http),
+                upload_speed: 0,
                 connections: row.get(10)?,
+                peers: 0,
+                seeds: 0,
+                eta: None,
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
                     .map(|d| d.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),

@@ -1,7 +1,8 @@
 const API_BASE = '/api';
 let token = localStorage.getItem('dload_token') || '';
 let refreshInterval = null;
-let lastDownloadsJson = '';
+let lastDownloads = [];
+let openMenuId = null;
 
 // ─── API ────────────────────────────────────────────
 
@@ -32,10 +33,6 @@ function escapeHtml(str) {
     div.textContent = str;
     return div.innerHTML;
 }
-
-// All dynamic data inserted into templates is escaped via escapeHtml()
-// to prevent XSS. The templates themselves are static strings defined
-// in this file — no user input flows into them unescaped.
 
 function safeRender(container, html) {
     container.innerHTML = html;
@@ -132,9 +129,86 @@ function showSettings() {
 
 // ─── Rendering ──────────────────────────────────────
 
+function buildDownloadItem(d) {
+    var statusClass = escapeHtml(d.status.toLowerCase());
+    var progressClass = statusClass === 'completed' ? 'completed' : statusClass === 'failed' ? 'failed' : '';
+    var safeId = escapeHtml(d.id);
+    var safeName = escapeHtml(d.filename);
+    var safeUrl = escapeHtml(d.url);
+    var safeProtocol = escapeHtml(d.protocol);
+    var safeStatus = escapeHtml(d.status);
+    var progress = Math.min(d.progress, 100);
+    var isActive = d.status === 'Downloading';
+    var isTorrent = d.protocol === 'Torrent';
+    var displaySpeed = isActive ? formatSpeed(d.speed) : '--';
+    if (d.status === 'Completed' && d.total_size === 0 && d.downloaded_size > 0) {
+        progress = 100;
+    }
+
+    // Action buttons based on status
+    var actions = '';
+    if (isActive) {
+        actions = '<button class="action-btn pause-btn" onclick="pauseDownload(\'' + safeId + '\')" title="Pause">'
+            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+            + '</button>'
+            + '<button class="action-btn cancel-btn" onclick="cancelDownload(\'' + safeId + '\')" title="Cancel">'
+            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
+            + '</button>';
+    }
+
+    // Torrent peer info line
+    var peerInfo = '';
+    if (isTorrent && isActive) {
+        var parts = [];
+        if (d.peers > 0) parts.push(d.peers + ' peers');
+        if (d.seeds > 0) parts.push(d.seeds + ' seen');
+        if (d.upload_speed > 0) parts.push('↑ ' + formatSpeed(d.upload_speed));
+        if (d.eta) parts.push('ETA: ' + escapeHtml(d.eta));
+        if (parts.length > 0) {
+            peerInfo = '<div class="torrent-info">' + parts.join(' &middot; ') + '</div>';
+        }
+    }
+
+    return '<div class="download-item ' + statusClass + '" data-id="' + safeId + '">'
+        + '<div class="download-top">'
+        +   '<div>'
+        +     '<div class="download-name">' + safeName + '</div>'
+        +     '<div class="download-url" title="' + safeUrl + '">' + safeUrl + '</div>'
+        +   '</div>'
+        +   '<div class="download-meta">'
+        +     '<span class="protocol-badge">' + safeProtocol + '</span>'
+        +     '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
+        +     actions
+        +     '<div class="delete-dropdown">'
+        +       '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove">'
+        +         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        +           '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
+        +         '</svg>'
+        +       '</button>'
+        +       '<div class="delete-menu" id="delete-menu-' + safeId + '">'
+        +         '<button onclick="deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
+        +         '<button class="danger" onclick="deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
+        +       '</div>'
+        +     '</div>'
+        +   '</div>'
+        + '</div>'
+        + '<div class="download-progress-row">'
+        +   '<div class="progress-bar">'
+        +     '<div class="progress-fill ' + progressClass + '" style="width: ' + progress + '%"></div>'
+        +   '</div>'
+        +   '<div class="download-stats">'
+        +     '<span>' + formatSize(d.downloaded_size) + (d.total_size > 0 ? ' / ' + formatSize(d.total_size) : '') + '</span>'
+        +     '<span class="speed" data-speed="' + safeId + '">' + displaySpeed + '</span>'
+        +     '<span class="percent">' + progress.toFixed(1) + '%</span>'
+        +   '</div>'
+        + '</div>'
+        + peerInfo
+        + '</div>';
+}
+
 function renderDownloads(downloads, containerId) {
     containerId = containerId || 'downloads-list';
-    const container = document.getElementById(containerId);
+    var container = document.getElementById(containerId);
     if (!container) return;
 
     if (downloads.length === 0) {
@@ -152,59 +226,74 @@ function renderDownloads(downloads, containerId) {
         return;
     }
 
-    // All dynamic values (d.filename, d.url, d.id, etc.) are escaped
-    var html = downloads.map(function(d, i) {
-        var statusClass = escapeHtml(d.status.toLowerCase());
-        var progressClass = statusClass === 'completed' ? 'completed' : statusClass === 'failed' ? 'failed' : '';
-        var safeId = escapeHtml(d.id);
-        var safeName = escapeHtml(d.filename);
-        var safeUrl = escapeHtml(d.url);
-        var safeProtocol = escapeHtml(d.protocol);
-        var safeStatus = escapeHtml(d.status);
-        var progress = Math.min(d.progress, 100);
-        // Show speed only for active downloads
-        var displaySpeed = (d.status === 'Downloading') ? formatSpeed(d.speed) : '--';
-        // Completed with unknown total: show downloaded as total, 100%
-        if (d.status === 'Completed' && d.total_size === 0 && d.downloaded_size > 0) {
-            progress = 100;
+    // Check if the set of download IDs or their statuses changed — if so, full rebuild
+    var currentIds = downloads.map(function(d) { return d.id + ':' + d.status; }).join(',');
+    var prevIds = lastDownloads.map(function(d) { return d.id + ':' + d.status; }).join(',');
+
+    if (currentIds !== prevIds) {
+        // Full rebuild
+        var html = downloads.map(buildDownloadItem).join('');
+        safeRender(container, html);
+        // Restore open menu
+        if (openMenuId) {
+            var menu = document.getElementById('delete-menu-' + openMenuId);
+            if (menu) menu.classList.add('show');
         }
+    } else {
+        // Incremental update — only update changing values in-place
+        downloads.forEach(function(d) {
+            var el = container.querySelector('[data-id="' + CSS.escape(d.id) + '"]');
+            if (!el) return;
 
-        return '<div class="download-item ' + statusClass + '">'
-            + '<div class="download-top">'
-            +   '<div>'
-            +     '<div class="download-name">' + safeName + '</div>'
-            +     '<div class="download-url" title="' + safeUrl + '">' + safeUrl + '</div>'
-            +   '</div>'
-            +   '<div class="download-meta">'
-            +     '<span class="protocol-badge">' + safeProtocol + '</span>'
-            +     '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
-            +     '<div class="delete-dropdown">'
-            +       '<button class="delete-btn" onclick="toggleDeleteMenu(\'' + safeId + '\')" title="Remove">'
-            +         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-            +           '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
-            +         '</svg>'
-            +       '</button>'
-            +       '<div class="delete-menu" id="delete-menu-' + safeId + '">'
-            +         '<button onclick="deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
-            +         '<button class="danger" onclick="deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
-            +       '</div>'
-            +     '</div>'
-            +   '</div>'
-            + '</div>'
-            + '<div class="download-progress-row">'
-            +   '<div class="progress-bar">'
-            +     '<div class="progress-fill ' + progressClass + '" style="width: ' + progress + '%"></div>'
-            +   '</div>'
-            +   '<div class="download-stats">'
-            +     '<span>' + formatSize(d.downloaded_size) + (d.total_size > 0 ? ' / ' + formatSize(d.total_size) : '') + '</span>'
-            +     '<span class="speed">' + displaySpeed + '</span>'
-            +     '<span class="percent">' + progress.toFixed(1) + '%</span>'
-            +   '</div>'
-            + '</div>'
-            + '</div>';
-    }).join('');
+            var progress = Math.min(d.progress, 100);
+            if (d.status === 'Completed' && d.total_size === 0 && d.downloaded_size > 0) {
+                progress = 100;
+            }
+            var isActive = d.status === 'Downloading';
 
-    safeRender(container, html);
+            // Update progress bar width
+            var fill = el.querySelector('.progress-fill');
+            if (fill) fill.style.width = progress + '%';
+
+            // Update stats text
+            var statsSpans = el.querySelectorAll('.download-stats > span');
+            if (statsSpans[0]) {
+                statsSpans[0].textContent = formatSize(d.downloaded_size) + (d.total_size > 0 ? ' / ' + formatSize(d.total_size) : '');
+            }
+
+            // Update speed
+            var speedEl = el.querySelector('.speed');
+            if (speedEl) {
+                speedEl.textContent = isActive ? formatSpeed(d.speed) : '--';
+            }
+
+            // Update percent
+            var pctEl = el.querySelector('.percent');
+            if (pctEl) pctEl.textContent = progress.toFixed(1) + '%';
+
+            // Update torrent peer info
+            var isTorrent = d.protocol === 'Torrent';
+            var torrentInfo = el.querySelector('.torrent-info');
+            if (isTorrent && isActive) {
+                var parts = [];
+                if (d.peers > 0) parts.push(d.peers + ' peers');
+                if (d.seeds > 0) parts.push(d.seeds + ' seen');
+                if (d.upload_speed > 0) parts.push('\u2191 ' + formatSpeed(d.upload_speed));
+                if (d.eta) parts.push('ETA: ' + d.eta);
+                var infoText = parts.join(' \u00b7 ');
+                if (torrentInfo) {
+                    torrentInfo.innerHTML = infoText;
+                } else if (parts.length > 0) {
+                    var div = document.createElement('div');
+                    div.className = 'torrent-info';
+                    div.innerHTML = infoText;
+                    el.appendChild(div);
+                }
+            } else if (torrentInfo) {
+                torrentInfo.remove();
+            }
+        });
+    }
 }
 
 function updateStats(downloads) {
@@ -228,20 +317,16 @@ function updateStats(downloads) {
 async function loadDownloads() {
     try {
         var downloads = await apiRequest('/downloads');
-        var json = JSON.stringify(downloads);
-
-        // Skip re-render if nothing changed — prevents flicker
-        if (json === lastDownloadsJson) return;
-        lastDownloadsJson = json;
-
         var hash = window.location.hash || '#dashboard';
 
         if (hash === '#torrents') {
             var torrents = downloads.filter(function(d) { return d.protocol === 'Torrent'; });
             renderDownloads(torrents, 'torrents-list');
+            lastDownloads = torrents;
         } else {
             renderDownloads(downloads, 'downloads-list');
             updateStats(downloads);
+            lastDownloads = downloads;
         }
     } catch (e) {
         console.error('Failed to load downloads:', e);
@@ -271,27 +356,59 @@ async function addDownload(url) {
             method: 'POST',
             body: JSON.stringify({ url: url })
         });
+        lastDownloads = [];
         loadDownloads();
     } catch (e) {
         console.error('Failed to add download:', e);
     }
 }
 
-function toggleDeleteMenu(id) {
-    // Close all other menus first
+function toggleDeleteMenu(event, id) {
+    event.stopPropagation();
+    // Close all other menus
     document.querySelectorAll('.delete-menu.show').forEach(function(m) { m.classList.remove('show'); });
+
+    if (openMenuId === id) {
+        openMenuId = null;
+        return;
+    }
+
     var menu = document.getElementById('delete-menu-' + id);
-    if (menu) menu.classList.toggle('show');
+    if (menu) {
+        menu.classList.add('show');
+        openMenuId = id;
+    }
 }
 
 async function deleteDownload(id, deleteFiles) {
+    openMenuId = null;
     try {
         var qs = deleteFiles ? '?delete_files=true' : '';
         await apiRequest('/downloads/' + encodeURIComponent(id) + qs, { method: 'DELETE' });
-        lastDownloadsJson = ''; // Force re-render
+        lastDownloads = [];
         loadDownloads();
     } catch (e) {
         console.error('Failed to delete download:', e);
+    }
+}
+
+async function pauseDownload(id) {
+    try {
+        await apiRequest('/downloads/' + encodeURIComponent(id) + '/pause', { method: 'POST' });
+        lastDownloads = [];
+        loadDownloads();
+    } catch (e) {
+        console.error('Failed to pause download:', e);
+    }
+}
+
+async function cancelDownload(id) {
+    try {
+        await apiRequest('/downloads/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
+        lastDownloads = [];
+        loadDownloads();
+    } catch (e) {
+        console.error('Failed to cancel download:', e);
     }
 }
 
@@ -341,7 +458,7 @@ function navigate(hash) {
     };
 
     var render = routes[hash] || showDashboard;
-    lastDownloadsJson = ''; // Reset cache on navigation
+    lastDownloads = [];
     safeRender(document.getElementById('main-content'), render());
 
     // Update active nav
@@ -409,7 +526,6 @@ function logout() {
 // ─── Init ───────────────────────────────────────────
 
 function init() {
-    // Login form
     var loginForm = document.getElementById('login-form');
     if (loginForm) {
         loginForm.addEventListener('submit', async function(e) {
@@ -451,13 +567,14 @@ function startApp() {
     window.addEventListener('hashchange', function() { navigate(window.location.hash); });
 
     if (refreshInterval) clearInterval(refreshInterval);
-    refreshInterval = setInterval(loadDownloads, 2000);
+    refreshInterval = setInterval(loadDownloads, 1000);
 }
 
 // Close delete menus when clicking outside
 document.addEventListener('click', function(e) {
     if (!e.target.closest('.delete-dropdown')) {
         document.querySelectorAll('.delete-menu.show').forEach(function(m) { m.classList.remove('show'); });
+        openMenuId = null;
     }
 });
 

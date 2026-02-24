@@ -76,8 +76,8 @@ impl Repository {
                 downloaded_size: row.get(5)?,
                 speed: row.get(6)?,
                 progress: row.get(7)?,
-                status: serde_json::from_str(&status_str).unwrap_or(DownloadStatus::Queued),
-                protocol: serde_json::from_str(&protocol_str).unwrap_or(Protocol::Http),
+                status: serde_json::from_str(&format!("\"{}\"", status_str)).unwrap_or(DownloadStatus::Queued),
+                protocol: serde_json::from_str(&format!("\"{}\"", protocol_str)).unwrap_or(Protocol::Http),
                 connections: row.get(10)?,
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
                     .map(|d| d.with_timezone(&chrono::Utc))

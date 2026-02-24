@@ -6,6 +6,7 @@ services:
       - "3007:8080"
     volumes:
       - ./data:/data
+      - ./downloads:/downloads
     environment:
       - RUST_LOG=info
     restart: unless-stopped

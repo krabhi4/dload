@@ -13,7 +13,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            download_dir: "/data".to_string(),
+            download_dir: "/downloads".to_string(),
             max_concurrent: 3,
             max_connections_per_file: 4,
             chunk_size: 131072,

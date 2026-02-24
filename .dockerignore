@@ -1,0 +1,6 @@
+.git
+target
+Cargo.lock
+*.md
+!README.md
+.DS_Store

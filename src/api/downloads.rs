@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/api/downloads", get(list_downloads).post(add_download))
-        .route("/api/downloads/:id", delete(remove_download))
+        .route("/api/downloads/{id}", delete(remove_download))
         .with_state(state)
 }
 

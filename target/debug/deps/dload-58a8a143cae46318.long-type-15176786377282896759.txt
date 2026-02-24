@@ -1,1 +1,0 @@
-Pin<Box<(dyn futures::Future<Output = Result<Arc<librqbit::Session>, anyhow::Error>> + std::marker::Send + 'static)>>

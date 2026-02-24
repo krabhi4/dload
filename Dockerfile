@@ -31,7 +31,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/dload /usr/local/bin/
 
-RUN mkdir -p /data
+RUN mkdir -p /data /downloads
 
 EXPOSE 8080
 

@@ -505,6 +505,44 @@ impl ManagerState {
         }
     }
 
+    /// Start a torrent download from raw .torrent file bytes.
+    /// Used by the qBittorrent compat API for .torrent file uploads.
+    pub async fn start_torrent_from_bytes(self: Arc<Self>, mut download: Download, torrent_bytes: Vec<u8>) {
+        let state = Arc::clone(&self);
+        let cancel_token = state.register_cancel_token(&download.id).await;
+
+        tokio::spawn(async move {
+            download.protocol = Protocol::Torrent;
+            download.status = DownloadStatus::Downloading;
+            state.update_download(&download).await;
+
+            match state.get_torrent_session().await {
+                Ok(_session) => {
+                    let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
+                    if let Err(e) = session_add_and_wait(&state, add, &mut download, &cancel_token).await {
+                        let current_status = {
+                            let downloads = state.downloads.read().await;
+                            downloads.get(&download.id).map(|d| d.status.clone())
+                        };
+                        match current_status {
+                            Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
+                            _ => {
+                                download.status = DownloadStatus::Failed;
+                                download.error_message = Some(format!("Torrent failed: {}", e));
+                                state.update_download(&download).await;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    download.status = DownloadStatus::Failed;
+                    download.error_message = Some(format!("Failed to init torrent session: {}", e));
+                    state.update_download(&download).await;
+                }
+            }
+        });
+    }
+
     async fn handle_torrent_download(self: Arc<Self>, mut download: Download, cancel_token: CancellationToken) {
         match self.get_torrent_session().await {
             Ok(_session) => {
@@ -733,10 +771,14 @@ async fn session_add_and_wait(
         handles.insert(download.id.clone(), torrent_id);
     }
 
-    // Update name and save_path from torrent metadata
+    // Update name, save_path, and info_hash from torrent metadata
     if let Some(name) = handle.name() {
         download.filename = name.clone();
         download.save_path = format!("{}/{}", state.download_dir, name);
+    }
+    let hash_str = handle.info_hash().as_string();
+    if download.info_hash.is_none() {
+        download.info_hash = Some(hash_str);
     }
 
     state.update_download(download).await;

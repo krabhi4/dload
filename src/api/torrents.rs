@@ -1,4 +1,4 @@
-use crate::domain::{Claims, JWT_SECRET};
+use crate::domain::{Claims, jwt_secret};
 use crate::manager::SharedState;
 use axum::{
     extract::State,
@@ -22,7 +22,7 @@ fn require_auth(headers: &axum::http::HeaderMap) -> Result<Claims, String> {
 
     jsonwebtoken::decode::<Claims>(
         token,
-        &jsonwebtoken::DecodingKey::from_secret(JWT_SECRET),
+        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
         &jsonwebtoken::Validation::default(),
     )
     .map(|d| d.claims)

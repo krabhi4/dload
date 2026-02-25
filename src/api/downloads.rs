@@ -1,4 +1,4 @@
-use crate::domain::{Claims, Download, DownloadStatus, JWT_SECRET};
+use crate::domain::{Claims, Download, DownloadStatus, jwt_secret};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, Query, State},
@@ -6,6 +6,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use std::net::IpAddr;
 use std::sync::Arc;
 
 #[derive(serde::Deserialize)]
@@ -25,7 +26,7 @@ fn extract_token(headers: &axum::http::HeaderMap) -> &str {
 fn require_auth(token: &str) -> Result<Claims, String> {
     jsonwebtoken::decode::<Claims>(
         token,
-        &jsonwebtoken::DecodingKey::from_secret(JWT_SECRET),
+        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
         &jsonwebtoken::Validation::default(),
     )
     .map(|d| d.claims)
@@ -35,7 +36,7 @@ fn require_auth(token: &str) -> Result<Claims, String> {
 fn require_admin(token: &str) -> Result<Claims, String> {
     jsonwebtoken::decode::<Claims>(
         token,
-        &jsonwebtoken::DecodingKey::from_secret(JWT_SECRET),
+        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
         &jsonwebtoken::Validation::default(),
     )
     .map(|d| d.claims)
@@ -81,7 +82,14 @@ async fn add_download(
             (axum::http::StatusCode::UNAUTHORIZED, "Authentication required")
         );
     }
-    let url = payload["url"].as_str().unwrap_or("").to_string();
+    let url = payload["url"].as_str().unwrap_or("").trim().to_string();
+
+    if let Err(e) = validate_download_url(&url) {
+        return axum::response::IntoResponse::into_response(
+            (axum::http::StatusCode::BAD_REQUEST, e)
+        );
+    }
+
     let settings = state.settings.read().await;
     let download_dir = settings.download_dir.clone();
     drop(settings);
@@ -177,4 +185,72 @@ async fn resume_download(
     }
     state.resume_download(&id).await;
     Json(serde_json::json!({ "success": true }))
+}
+
+fn validate_download_url(url: &str) -> Result<(), String> {
+    if url.is_empty() {
+        return Err("URL is required".to_string());
+    }
+
+    if url.len() > 4096 {
+        return Err("URL too long".to_string());
+    }
+
+    // Allow magnet links directly
+    if url.starts_with("magnet:") {
+        return Ok(());
+    }
+
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
+
+    // Whitelist allowed schemes
+    match parsed.scheme() {
+        "http" | "https" | "ftp" => {}
+        _ => return Err(format!("Unsupported protocol: {}", parsed.scheme())),
+    }
+
+    // Block private/internal IPs (SSRF protection)
+    if let Some(host) = parsed.host_str() {
+        // Block obvious internal hostnames
+        let host_lower = host.to_lowercase();
+        if host_lower == "localhost"
+            || host_lower == "metadata.google.internal"
+            || host_lower.ends_with(".internal")
+            || host_lower.ends_with(".local")
+        {
+            return Err("Internal hosts not allowed".to_string());
+        }
+
+        // Block private IP ranges
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_private_ip(&ip) {
+                return Err("Private/internal IP addresses not allowed".to_string());
+            }
+        }
+
+        // Block URLs with embedded credentials
+        if parsed.username() != "" || parsed.password().is_some() {
+            return Err("URLs with credentials not allowed".to_string());
+        }
+    } else {
+        return Err("URL must have a host".to_string());
+    }
+
+    Ok(())
+}
+
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()                           // 127.0.0.0/8
+                || v4.is_private()                     // 10/8, 172.16/12, 192.168/16
+                || v4.is_link_local()                  // 169.254.0.0/16 (AWS metadata etc.)
+                || v4.is_broadcast()                   // 255.255.255.255
+                || v4.is_unspecified()                 // 0.0.0.0
+                || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64  // 100.64.0.0/10 (CGNAT)
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified()
+        }
+    }
 }

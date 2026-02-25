@@ -6,7 +6,8 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
-use tower_http::cors::{Any, CorsLayer};
+use axum::http::{Method, HeaderValue};
+use tower_http::cors::CorsLayer;
 
 mod api;
 mod db;
@@ -55,17 +56,28 @@ async fn main() {
         manager: Arc::new(manager_state),
     });
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let allowed_origin = std::env::var("DLOAD_CORS_ORIGIN").unwrap_or_default();
+    let cors = if allowed_origin.is_empty() {
+        // No CORS — only same-origin requests allowed (safest default)
+        CorsLayer::new()
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+    } else {
+        CorsLayer::new()
+            .allow_origin(allowed_origin.parse::<HeaderValue>().expect("Invalid DLOAD_CORS_ORIGIN"))
+            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+    };
+
+    let security_headers = axum::middleware::from_fn(security_headers_middleware);
 
     let app = Router::new()
         .route("/", get(index))
         .route("/ui/style.css", get(style_css))
         .route("/ui/app.js", get(app_js))
         .merge(api::router(state.manager.clone()))
-        .layer(cors);
+        .layer(cors)
+        .layer(security_headers);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     tracing::info!("Server starting on {}", addr);
@@ -84,4 +96,21 @@ async fn style_css() -> impl IntoResponse {
 
 async fn app_js() -> impl IntoResponse {
     (StatusCode::OK, [(header::CONTENT_TYPE, "application/javascript")], APP_JS)
+}
+
+async fn security_headers_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
+    headers.insert("X-Frame-Options", "DENY".parse().unwrap());
+    headers.insert("Referrer-Policy", "strict-origin-when-cross-origin".parse().unwrap());
+    headers.insert("X-XSS-Protection", "1; mode=block".parse().unwrap());
+    headers.insert(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'".parse().unwrap(),
+    );
+    resp
 }

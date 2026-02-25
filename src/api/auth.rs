@@ -1,4 +1,4 @@
-use crate::domain::{Claims, Role, User, JWT_SECRET};
+use crate::domain::{Claims, Role, User, jwt_secret};
 use crate::manager::SharedState;
 use axum::{
     extract::State,
@@ -51,7 +51,7 @@ struct ChangePasswordRequest {
 fn decode_token(token: &str) -> Result<Claims, String> {
     jsonwebtoken::decode::<Claims>(
         token,
-        &jsonwebtoken::DecodingKey::from_secret(JWT_SECRET),
+        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
         &jsonwebtoken::Validation::default(),
     )
     .map(|d| d.claims)
@@ -69,6 +69,19 @@ async fn register(
     State(state): State<SharedState>,
     Json(payload): Json<RegisterRequest>,
 ) -> Json<serde_json::Value> {
+    if payload.password.len() < 8 {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Password must be at least 8 characters"
+        }));
+    }
+    if payload.username.trim().is_empty() || payload.username.len() > 64 {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Username must be 1-64 characters"
+        }));
+    }
+
     let repo = &state.repo;
 
     let password_hash = match hash(&payload.password, 10) {
@@ -99,9 +112,10 @@ async fn register(
             }));
         }
         Err(e) => {
+            tracing::error!("Failed to create initial user: {}", e);
             return Json(serde_json::json!({
                 "success": false,
-                "error": format!("Failed to create user: {}", e)
+                "error": "Failed to create user"
             }));
         }
     }
@@ -115,7 +129,7 @@ async fn register(
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &claims,
-        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET),
+        &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
     )
     .unwrap();
 
@@ -165,7 +179,7 @@ async fn login(
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &claims,
-        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET),
+        &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
     )
     .unwrap();
 
@@ -180,7 +194,7 @@ async fn login(
 async fn verify_token(Json(token): Json<String>) -> Json<serde_json::Value> {
     match jsonwebtoken::decode::<Claims>(
         &token,
-        &jsonwebtoken::DecodingKey::from_secret(JWT_SECRET),
+        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
         &jsonwebtoken::Validation::default(),
     ) {
         Ok(decoded) => Json(serde_json::json!({
@@ -288,6 +302,19 @@ async fn create_user(
         }));
     }
 
+    if payload.password.len() < 8 {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Password must be at least 8 characters"
+        }));
+    }
+    if payload.username.trim().is_empty() || payload.username.len() > 64 {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Username must be 1-64 characters"
+        }));
+    }
+
     if state.repo.get_user_by_username(&payload.username).ok().flatten().is_some() {
         return Json(serde_json::json!({
             "success": false,
@@ -319,9 +346,10 @@ async fn create_user(
     };
 
     if let Err(e) = state.repo.insert_user(&user) {
+        tracing::error!("Failed to create user: {}", e);
         return Json(serde_json::json!({
             "success": false,
-            "error": format!("Failed to create user: {}", e)
+            "error": "Failed to create user"
         }));
     }
 
@@ -356,6 +384,13 @@ async fn change_password(
         }
     };
 
+    if payload.new_password.len() < 8 {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Password must be at least 8 characters"
+        }));
+    }
+
     if !verify(&payload.current_password, &user.password_hash).unwrap_or(false) {
         return Json(serde_json::json!({
             "success": false,
@@ -374,9 +409,10 @@ async fn change_password(
     };
 
     if let Err(e) = state.repo.update_user_password(&claims.sub, &new_hash) {
+        tracing::error!("Failed to update password: {}", e);
         return Json(serde_json::json!({
             "success": false,
-            "error": format!("Failed to update password: {}", e)
+            "error": "Failed to update password"
         }));
     }
 
@@ -425,9 +461,10 @@ async fn delete_user(
     }
 
     if let Err(e) = state.repo.delete_user(&id) {
+        tracing::error!("Failed to delete user: {}", e);
         return Json(serde_json::json!({
             "success": false,
-            "error": format!("Failed to delete user: {}", e)
+            "error": "Failed to delete user"
         }));
     }
 

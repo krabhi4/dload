@@ -127,7 +127,18 @@ impl ManagerState {
 
         if let Some(d) = download {
             let path = std::path::Path::new(&d.save_path);
-            if path.exists() {
+
+            // Resolve to absolute path and verify it's inside the download directory
+            let download_dir = self.download_dir.clone();
+            let safe = match path.canonicalize() {
+                Ok(canonical) => canonical.starts_with(&download_dir),
+                Err(_) => {
+                    // File doesn't exist yet or can't be resolved — check the raw path
+                    d.save_path.starts_with(&download_dir) && !d.save_path.contains("..")
+                }
+            };
+
+            if safe && path.exists() {
                 if path.is_dir() {
                     if let Err(e) = tokio::fs::remove_dir_all(path).await {
                         tracing::warn!("Failed to delete directory {}: {}", d.save_path, e);
@@ -135,6 +146,8 @@ impl ManagerState {
                 } else if let Err(e) = tokio::fs::remove_file(path).await {
                     tracing::warn!("Failed to delete file {}: {}", d.save_path, e);
                 }
+            } else if !safe {
+                tracing::warn!("Refusing to delete file outside download directory: {}", d.save_path);
             }
         }
 

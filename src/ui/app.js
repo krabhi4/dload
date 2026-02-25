@@ -982,7 +982,7 @@ async function checkFirstUser() {
     }
 }
 
-function init() {
+async function init() {
     var loginForm = document.getElementById('login-form');
     if (loginForm) {
         loginForm.addEventListener('submit', async function(e) {
@@ -993,8 +993,8 @@ function init() {
 
             if (btn.dataset.mode === 'register') {
                 // First user registration
-                if (password.length < 6) {
-                    showToast('error', 'Weak password', 'Password must be at least 6 characters');
+                if (password.length < 8) {
+                    showToast('error', 'Weak password', 'Password must be at least 8 characters');
                     return;
                 }
                 try {
@@ -1060,21 +1060,22 @@ function init() {
         return;
     }
 
-    startApp();
+    await startApp();
 }
 
-function startApp() {
+async function startApp() {
+    // Must resolve user role BEFORE rendering anything, otherwise
+    // admin buttons won't appear until the next refresh cycle
+    if (!window.currentUserRole) {
+        await updateUserInformation();
+    }
+
     navigate(window.location.hash || '#downloads');
 
     // Only add hashchange listener once
     if (!window._hashListenerAdded) {
         window.addEventListener('hashchange', function() { navigate(window.location.hash); });
         window._hashListenerAdded = true;
-    }
-
-    // Update user information in sidebar (skip if already loaded this session)
-    if (!window.currentUserRole) {
-        updateUserInformation();
     }
 
     if (refreshInterval) clearInterval(refreshInterval);

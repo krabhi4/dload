@@ -36,10 +36,11 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         .unwrap_or(8640000);
 
     let content_path = d.content_path.as_deref().unwrap_or(&d.save_path);
-    let save_path = std::path::Path::new(&d.save_path)
+    let save_path = format!("{}/", std::path::Path::new(&d.save_path)
         .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy())
+        .unwrap_or(std::borrow::Cow::Borrowed(&d.save_path)));
 
     serde_json::json!({
         "hash": d.info_hash.as_deref().unwrap_or(&d.id),
@@ -95,6 +96,10 @@ fn parse_eta_to_secs(eta: &str) -> i64 {
             }
         }
     }
+    // Flush trailing digits without a unit suffix as seconds
+    if let Ok(n) = num.parse::<i64>() {
+        secs += n;
+    }
     secs
 }
 
@@ -118,7 +123,7 @@ pub async fn info(
 
     let mut torrents: Vec<&Download> = all
         .iter()
-        .filter(|d| d.protocol == Protocol::Torrent)
+        .filter(|d| d.protocol == Protocol::Torrent && d.info_hash.is_some())
         .collect();
 
     // Filter by hashes
@@ -135,7 +140,11 @@ pub async fn info(
 
     // Filter by category
     if let Some(ref cat) = query.category {
-        torrents.retain(|d| d.category.as_deref() == Some(cat.as_str()));
+        if cat.is_empty() {
+            torrents.retain(|d| d.category.is_none());
+        } else {
+            torrents.retain(|d| d.category.as_deref() == Some(cat.as_str()));
+        }
     }
 
     // Filter by state
@@ -184,7 +193,7 @@ pub async fn properties(
             Json(serde_json::json!({
                 "hash": d.info_hash.as_deref().unwrap_or(&d.id),
                 "name": d.filename,
-                "save_path": std::path::Path::new(&d.save_path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                "save_path": format!("{}/", std::path::Path::new(&d.save_path).parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_string_lossy()).unwrap_or(std::borrow::Cow::Borrowed(&d.save_path))),
                 "creation_date": d.created_at.timestamp(),
                 "addition_date": d.created_at.timestamp(),
                 "completion_date": d.completed_at.map(|c| c.timestamp()).unwrap_or(-1),
@@ -238,28 +247,34 @@ pub async fn files(
 
     match download {
         Some(d) => {
-            let path = std::path::Path::new(&d.save_path);
-            let mut file_list = Vec::new();
+            let save_path = d.save_path.clone();
+            let filename = d.filename.clone();
+            let total_size = d.total_size;
             let progress = if d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
             let is_seed = d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed;
 
-            if path.is_dir() {
-                let mut index = 0;
-                collect_files_recursive(path, path, progress, is_seed, &mut file_list, &mut index);
-            } else if path.exists() {
-                let size = tokio::fs::metadata(path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(d.total_size);
-                file_list.push(serde_json::json!({
-                    "index": 0,
-                    "name": d.filename,
-                    "size": size,
-                    "progress": progress,
-                    "priority": 1,
-                    "is_seed": is_seed,
-                }));
-            }
+            // Run blocking filesystem I/O off the async runtime
+            let file_list = tokio::task::spawn_blocking(move || {
+                let path = std::path::Path::new(&save_path);
+                let mut file_list = Vec::new();
+                if path.is_dir() {
+                    let mut index = 0;
+                    collect_files_recursive(path, path, progress, is_seed, &mut file_list, &mut index);
+                } else if path.exists() {
+                    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(total_size);
+                    file_list.push(serde_json::json!({
+                        "index": 0,
+                        "name": filename,
+                        "size": size,
+                        "progress": progress,
+                        "priority": 1,
+                        "is_seed": is_seed,
+                    }));
+                }
+                file_list
+            })
+            .await
+            .unwrap_or_default();
 
             Json(serde_json::json!(file_list)).into_response()
         }
@@ -278,10 +293,11 @@ fn collect_files_recursive(
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
         let path = entry.path();
-        if path.is_dir() {
+        if ft.is_dir() {
             collect_files_recursive(base, &path, progress, is_seed, file_list, index);
-        } else {
+        } else if ft.is_file() {
             let rel = path.strip_prefix(base).unwrap_or(&path);
             let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             file_list.push(serde_json::json!({
@@ -316,6 +332,12 @@ pub async fn categories(State(state): State<QbitState>) -> impl IntoResponse {
         }
     }
     Json(serde_json::json!(cats))
+}
+
+pub async fn create_category(_body: String) -> impl IntoResponse {
+    // Sonarr calls this to ensure a category exists. We don't need to persist categories
+    // since they're derived from downloads, but we accept the request to avoid errors.
+    (StatusCode::OK, "Ok.")
 }
 
 pub async fn add(
@@ -353,7 +375,11 @@ async fn handle_add(
                 }
             }
             "torrents" => {
+                const MAX_TORRENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
                 let bytes = field.bytes().await?;
+                if bytes.len() > MAX_TORRENT_BYTES {
+                    anyhow::bail!("Torrent file too large");
+                }
                 if !bytes.is_empty() {
                     torrent_bytes.push(bytes.to_vec());
                 }
@@ -483,6 +509,9 @@ pub async fn pause(State(state): State<QbitState>, body: String) -> impl IntoRes
 
     for hash in hashes.split('|') {
         let hash = hash.trim();
+        if hash.is_empty() {
+            continue;
+        }
         if hash == "all" {
             for d in &all {
                 if d.protocol == Protocol::Torrent {
@@ -516,6 +545,9 @@ pub async fn resume(State(state): State<QbitState>, body: String) -> impl IntoRe
 
     for hash in hashes.split('|') {
         let hash = hash.trim();
+        if hash.is_empty() {
+            continue;
+        }
         if hash == "all" {
             for d in &all {
                 if d.protocol == Protocol::Torrent {
@@ -553,6 +585,9 @@ pub async fn set_category(State(state): State<QbitState>, body: String) -> impl 
 
     for hash in hashes.split('|') {
         let hash = hash.trim();
+        if hash.is_empty() {
+            continue;
+        }
         if let Some(d) = all
             .iter()
             .find(|d| d.info_hash.as_deref() == Some(hash) || d.id == hash)

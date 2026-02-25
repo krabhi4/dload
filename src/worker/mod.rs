@@ -24,17 +24,16 @@ pub fn extract_info_hash(url: &str) -> Option<String> {
         return None;
     }
 
-    // Look for xt=urn:btih:<hash>
-    for part in url.split('&') {
+    // Look for xt=urn:btih:<hash> (case-insensitive parameter matching)
+    for part in url_lower.split('&') {
         let part = part.strip_prefix("magnet:?").unwrap_or(part);
         if let Some(hash) = part.strip_prefix("xt=urn:btih:") {
-            let hash = hash.to_lowercase();
             if hash.len() >= 40 {
                 return Some(hash[..40].to_string());
             } else if hash.len() == 32 {
                 return base32_to_hex(&hash);
             }
-            return Some(hash);
+            return None;
         }
     }
     None

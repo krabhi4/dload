@@ -10,6 +10,11 @@ use std::sync::Arc;
 use super::QbitState;
 use crate::domain::{Download, DownloadStatus, Protocol};
 
+/// No-op handler for endpoints we accept but don't act on (setShareLimits, topPrio, etc.)
+pub async fn noop(_body: String) -> impl IntoResponse {
+    (StatusCode::OK, "Ok.")
+}
+
 /// Map dload DownloadStatus to qBittorrent state string
 fn to_qbit_state(status: &DownloadStatus) -> &'static str {
     match status {
@@ -42,6 +47,14 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         .map(|p| p.to_string_lossy())
         .unwrap_or(std::borrow::Cow::Borrowed(&d.save_path)));
 
+    let now = chrono::Utc::now();
+    let time_active = (now - d.created_at).num_seconds();
+    let seeding_time = if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
+        d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
+    } else {
+        0
+    };
+
     serde_json::json!({
         "hash": d.info_hash.as_deref().unwrap_or(&d.id),
         "name": d.filename,
@@ -51,6 +64,7 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "upspeed": d.upload_speed,
         "state": to_qbit_state(&d.status),
         "category": d.category.as_deref().unwrap_or(""),
+        "label": d.category.as_deref().unwrap_or(""),
         "tags": "",
         "save_path": save_path,
         "content_path": content_path,
@@ -61,7 +75,12 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "num_leechs": d.peers,
         "num_complete": d.seeds,
         "num_incomplete": d.peers,
-        "ratio": 0,
+        "ratio": 0.0,
+        "ratio_limit": -2,
+        "seeding_time": seeding_time,
+        "seeding_time_limit": -2,
+        "inactive_seeding_time_limit": -2,
+        "last_activity": now.timestamp(),
         "downloaded": d.downloaded_size,
         "uploaded": 0,
         "dl_limit": -1,
@@ -69,7 +88,7 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "amount_left": d.total_size.saturating_sub(d.downloaded_size),
         "completed": d.downloaded_size,
         "total_size": d.total_size,
-        "time_active": (chrono::Utc::now() - d.created_at).num_seconds(),
+        "time_active": time_active,
         "tracker": "",
         "magnet_uri": if d.url.starts_with("magnet:") { &d.url } else { "" },
         "priority": 0,
@@ -179,7 +198,7 @@ pub async fn properties(
 ) -> impl IntoResponse {
     let hash = match query.hash {
         Some(h) => h,
-        None => return (StatusCode::NOT_FOUND, "hash required").into_response(),
+        None => return (StatusCode::NOT_FOUND, "").into_response(),
     };
 
     let all = state.manager.get_all().await;
@@ -227,7 +246,7 @@ pub async fn properties(
             }))
             .into_response()
         }
-        None => (StatusCode::NOT_FOUND, "torrent not found").into_response(),
+        None => (StatusCode::NOT_FOUND, "").into_response(),
     }
 }
 
@@ -381,7 +400,7 @@ async fn handle_add(
     let mut category: Option<String> = None;
     let mut savepath: Option<String> = None;
 
-    while let Some(field) = multipart.next_field().await? {
+    while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "urls" => {
@@ -416,8 +435,10 @@ async fn handle_add(
                 }
             }
             _ => {
-                // Ignore unknown fields (paused, tags, dlLimit, etc.)
-                let _ = field.bytes().await;
+                // Consume unknown fields (stopped, tags, dlLimit, etc.) to advance the stream
+                if let Err(e) = field.bytes().await {
+                    tracing::warn!("Failed to consume multipart field '{}': {}", name, e);
+                }
             }
         }
     }

@@ -55,7 +55,17 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/resume", post(torrents::resume))
         .route("/api/v2/torrents/start", post(torrents::resume))
         .route("/api/v2/torrents/stop", post(torrents::pause))
-        .route("/api/v2/torrents/setCategory", post(torrents::set_category));
+        .route("/api/v2/torrents/setCategory", post(torrents::set_category))
+        .route("/api/v2/torrents/setShareLimits", post(torrents::noop))
+        .route("/api/v2/torrents/topPrio", post(torrents::noop))
+        .route("/api/v2/torrents/setForceStart", post(torrents::noop))
+        .route("/api/v2/torrents/bottomPrio", post(torrents::noop))
+        .route("/api/v2/torrents/increasePrio", post(torrents::noop))
+        .route("/api/v2/torrents/decreasePrio", post(torrents::noop))
+        .route("/api/v2/torrents/setLocation", post(torrents::noop))
+        .route("/api/v2/torrents/rename", post(torrents::noop))
+        .route("/api/v2/torrents/setSuperSeeding", post(torrents::noop))
+        .route("/api/v2/torrents/setAutoManagement", post(torrents::noop));
 
     // Protected routes need session middleware
     let protected = app_routes

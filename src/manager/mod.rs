@@ -83,12 +83,14 @@ impl ManagerState {
     }
 
     pub async fn update_download(&self, download: &Download) {
+        {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(&download.id) {
+                *d = download.clone();
+            }
+        } // lock released before DB call
         if let Err(e) = self.repo.update_download(download) {
             tracing::error!("Failed to update download in DB: {}", e);
-        }
-        let mut downloads = self.downloads.write().await;
-        if let Some(d) = downloads.get_mut(&download.id) {
-            *d = download.clone();
         }
     }
 
@@ -312,14 +314,14 @@ impl ManagerState {
             worker.run().await
         });
 
-        // Monitor loop — poll atomics every second, update state + DB
+        // Monitor loop — poll atomics every second, persist to DB less often
         let mut last_downloaded: u64 = 0;
         let mut last_time = std::time::Instant::now();
+        let mut db_tick: u32 = 0;
 
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-            // Check if download task finished
             if download_task.is_finished() {
                 break;
             }
@@ -344,7 +346,8 @@ impl ManagerState {
             last_downloaded = current_downloaded;
             last_time = now;
 
-            {
+            // Update in-memory state (quick — just a HashMap write)
+            let snapshot = {
                 let mut downloads = self.downloads.write().await;
                 if let Some(d) = downloads.get_mut(&download_id) {
                     d.downloaded_size = current_downloaded;
@@ -372,7 +375,18 @@ impl ManagerState {
                             d.eta = None;
                         }
                     }
-                    let _ = self.repo.update_download(d);
+                    Some(d.clone())
+                } else {
+                    None
+                }
+            }; // write lock released here
+
+            // Persist to DB every 5 seconds (not every second)
+            db_tick += 1;
+            if db_tick >= 5 {
+                db_tick = 0;
+                if let Some(snap) = snapshot {
+                    let _ = self.repo.update_download(&snap);
                 }
             }
         }
@@ -578,21 +592,20 @@ impl ManagerState {
             }
         };
 
+        let mut db_tick: u32 = 0;
+
         loop {
             // Check if cancelled (stop/remove)
             if cancel_token.is_cancelled() {
-                // Check if this was a pause (don't delete from session)
                 let current_status = {
                     let downloads = self.downloads.read().await;
                     downloads.get(&download_id).map(|d| d.status.clone())
                 };
                 match current_status {
                     Some(DownloadStatus::Paused) => {
-                        // Paused via native librqbit pause — don't delete, just stop monitoring
                         return;
                     }
                     _ => {
-                        // Actually stopped/removed — delete from session
                         let _ = session.delete(handle.id().into(), false).await;
                         {
                             let mut handles = self.torrent_handles.write().await;
@@ -603,18 +616,21 @@ impl ManagerState {
                             let downloads = self.downloads.read().await;
                             downloads.get(&download_id).map(|d| d.status.clone())
                         };
-                        match current_status {
-                            Some(DownloadStatus::Stopped) => {}
-                            _ => {
-                                // Stopped seeding — mark completed
+                        if !matches!(current_status, Some(DownloadStatus::Stopped)) {
+                            let snap = {
                                 let mut downloads = self.downloads.write().await;
                                 if let Some(d) = downloads.get_mut(&download_id) {
                                     d.status = DownloadStatus::Completed;
                                     d.progress = 100.0;
                                     d.speed = 0;
                                     d.upload_speed = 0;
-                                    let _ = self.repo.update_download(d);
+                                    Some(d.clone())
+                                } else {
+                                    None
                                 }
+                            };
+                            if let Some(snap) = snap {
+                                let _ = self.repo.update_download(&snap);
                             }
                         }
                         return;
@@ -624,20 +640,26 @@ impl ManagerState {
 
             // Check if paused via librqbit
             if handle.is_paused() {
-                // Update status and stop monitoring
-                let mut downloads = self.downloads.write().await;
-                if let Some(d) = downloads.get_mut(&download_id) {
-                    d.status = DownloadStatus::Paused;
-                    d.speed = 0;
-                    d.upload_speed = 0;
-                    let _ = self.repo.update_download(d);
+                let snap = {
+                    let mut downloads = self.downloads.write().await;
+                    if let Some(d) = downloads.get_mut(&download_id) {
+                        d.status = DownloadStatus::Paused;
+                        d.speed = 0;
+                        d.upload_speed = 0;
+                        Some(d.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(snap) = snap {
+                    let _ = self.repo.update_download(&snap);
                 }
                 return;
             }
 
             let stats = handle.stats();
 
-            {
+            let snapshot = {
                 let mut downloads = self.downloads.write().await;
                 if let Some(download) = downloads.get_mut(&download_id) {
                     download.total_size = stats.total_bytes;
@@ -662,7 +684,18 @@ impl ManagerState {
                         download.progress = 100.0;
                     }
 
-                    let _ = self.repo.update_download(download);
+                    Some(download.clone())
+                } else {
+                    None
+                }
+            }; // write lock released
+
+            // DB write every 5 ticks (seeding: every 5*2=10s, downloading: every 5s)
+            db_tick += 1;
+            if db_tick >= 5 {
+                db_tick = 0;
+                if let Some(snap) = snapshot {
+                    let _ = self.repo.update_download(&snap);
                 }
             }
 

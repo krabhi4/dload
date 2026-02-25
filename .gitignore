@@ -23,6 +23,9 @@ Thumbs.db
 # Downloads
 downloads/
 
+# Worktrees
+.worktrees/
+
 #MCP
 .playwright-mcp/
 docs/

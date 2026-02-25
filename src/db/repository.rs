@@ -40,9 +40,11 @@ impl Repository {
     pub fn update_download(&self, download: &Download) -> anyhow::Result<()> {
         let conn = self.db.conn.lock().unwrap();
         conn.execute(
-            "UPDATE downloads SET total_size=?1, downloaded_size=?2, speed=?3, progress=?4, 
-             status=?5, completed_at=?6, error_message=?7 WHERE id=?8",
+            "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
+             speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9 WHERE id=?10",
             params![
+                download.filename,
+                download.save_path,
                 download.total_size,
                 download.downloaded_size,
                 download.speed,

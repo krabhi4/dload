@@ -10,7 +10,7 @@ pub struct Database {
 impl Database {
     pub fn new(path: &str) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
-        
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS downloads (
                 id TEXT PRIMARY KEY,
@@ -32,9 +32,19 @@ impl Database {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            );"
+            );
+
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'USER',
+                created_at TEXT NOT NULL
+            );",
         )?;
-        
-        Ok(Self { conn: Mutex::new(conn) })
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 }

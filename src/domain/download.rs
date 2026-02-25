@@ -70,6 +70,9 @@ pub struct Download {
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub error_message: Option<String>,
+    pub info_hash: Option<String>,
+    pub category: Option<String>,
+    pub content_path: Option<String>,
 }
 
 impl Download {
@@ -100,6 +103,9 @@ impl Download {
             created_at: Utc::now(),
             completed_at: None,
             error_message: None,
+            info_hash: None,
+            category: None,
+            content_path: None,
         }
     }
 }

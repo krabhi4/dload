@@ -14,9 +14,10 @@ impl Repository {
     pub fn insert_download(&self, download: &Download) -> anyhow::Result<()> {
         let conn = self.db.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO downloads (id, url, filename, save_path, total_size, downloaded_size, 
-             speed, progress, status, protocol, connections, created_at, completed_at, error_message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO downloads (id, url, filename, save_path, total_size, downloaded_size,
+             speed, progress, status, protocol, connections, created_at, completed_at, error_message,
+             info_hash, category, content_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 download.id,
                 download.url,
@@ -32,6 +33,9 @@ impl Repository {
                 download.created_at.to_rfc3339(),
                 download.completed_at.map(|d| d.to_rfc3339()),
                 download.error_message,
+                download.info_hash,
+                download.category,
+                download.content_path,
             ],
         )?;
         Ok(())
@@ -41,7 +45,8 @@ impl Repository {
         let conn = self.db.conn.lock().unwrap();
         conn.execute(
             "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
-             speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10 WHERE id=?11",
+             speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10,
+             info_hash=?11, category=?12, content_path=?13 WHERE id=?14",
             params![
                 download.filename,
                 download.save_path,
@@ -53,6 +58,9 @@ impl Repository {
                 download.completed_at.map(|d| d.to_rfc3339()),
                 download.error_message,
                 download.connections,
+                download.info_hash,
+                download.category,
+                download.content_path,
                 download.id,
             ],
         )?;
@@ -62,8 +70,9 @@ impl Repository {
     pub fn get_all_downloads(&self) -> anyhow::Result<Vec<Download>> {
         let conn = self.db.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, url, filename, save_path, total_size, downloaded_size, speed, 
-             progress, status, protocol, connections, created_at, completed_at, error_message 
+            "SELECT id, url, filename, save_path, total_size, downloaded_size, speed,
+             progress, status, protocol, connections, created_at, completed_at, error_message,
+             info_hash, category, content_path
              FROM downloads ORDER BY created_at DESC",
         )?;
 
@@ -97,6 +106,9 @@ impl Repository {
                         .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
                         .map(|d| d.with_timezone(&chrono::Utc)),
                     error_message: row.get(13)?,
+                    info_hash: row.get(14)?,
+                    category: row.get(15)?,
+                    content_path: row.get(16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

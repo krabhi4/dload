@@ -43,6 +43,15 @@ impl Database {
             );",
         )?;
 
+        let _ = conn.execute_batch(
+            "ALTER TABLE downloads ADD COLUMN info_hash TEXT;
+             ALTER TABLE downloads ADD COLUMN category TEXT;
+             ALTER TABLE downloads ADD COLUMN content_path TEXT;"
+        );
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);"
+        )?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })

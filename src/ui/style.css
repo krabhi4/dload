@@ -775,6 +775,12 @@ input:focus {
     color: var(--text-secondary);
 }
 
+#create-user-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
 .form-row {
     display: flex;
     gap: 12px;

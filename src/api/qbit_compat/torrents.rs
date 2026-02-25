@@ -320,6 +320,19 @@ pub async fn trackers(Query(_query): Query<HashQuery>) -> impl IntoResponse {
 pub async fn categories(State(state): State<QbitState>) -> impl IntoResponse {
     let all = state.manager.get_all().await;
     let mut cats = std::collections::HashMap::new();
+
+    // Include categories registered via createCategory
+    for cat in state.categories.read().await.iter() {
+        cats.entry(cat.clone())
+            .or_insert_with(|| {
+                serde_json::json!({
+                    "name": cat,
+                    "savePath": "",
+                })
+            });
+    }
+
+    // Include categories from existing downloads
     for d in &all {
         if let Some(ref cat) = d.category {
             cats.entry(cat.clone())
@@ -334,9 +347,15 @@ pub async fn categories(State(state): State<QbitState>) -> impl IntoResponse {
     Json(serde_json::json!(cats))
 }
 
-pub async fn create_category(_body: String) -> impl IntoResponse {
-    // Sonarr calls this to ensure a category exists. We don't need to persist categories
-    // since they're derived from downloads, but we accept the request to avoid errors.
+pub async fn create_category(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    if let Some(cat) = params.iter().find(|(k, _)| k == "category").map(|(_, v)| v.clone()) {
+        if !cat.is_empty() {
+            state.categories.write().await.insert(cat);
+        }
+    }
     (StatusCode::OK, "Ok.")
 }
 

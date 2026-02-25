@@ -1,4 +1,4 @@
-use crate::domain::Download;
+use crate::domain::{Download, DownloadStatus};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, Query, State},
@@ -74,11 +74,15 @@ async fn cancel_download(
     Path(id): Path<String>,
 ) -> Json<serde_json::Value> {
     state.cancel_download(&id).await;
-    // Mark as stopped and persist
     let download = {
         let mut downloads = state.downloads.write().await;
         if let Some(d) = downloads.get_mut(&id) {
-            d.status = crate::domain::DownloadStatus::Stopped;
+            if d.status == DownloadStatus::Seeding {
+                d.status = DownloadStatus::Completed;
+                d.progress = 100.0;
+            } else {
+                d.status = DownloadStatus::Stopped;
+            }
             d.speed = 0;
             d.upload_speed = 0;
             Some(d.clone())

@@ -340,11 +340,11 @@ function buildDownloadItem(d) {
 
     if (isTorrent) {
         detailRows += '<span class="detail-label">Peers</span>'
-            + '<span class="detail-value">' + (d.peers || 0) + '</span>'
+            + '<span class="detail-value detail-peers">' + (d.peers || 0) + '</span>'
             + '<span class="detail-label">Seeds</span>'
-            + '<span class="detail-value">' + (d.seeds || 0) + '</span>'
+            + '<span class="detail-value detail-seeds">' + (d.seeds || 0) + '</span>'
             + '<span class="detail-label">Upload Speed</span>'
-            + '<span class="detail-value">' + formatSpeed(d.upload_speed) + '</span>';
+            + '<span class="detail-value detail-upload-speed">' + formatSpeed(d.upload_speed) + '</span>';
     }
 
     if (d.error_message) {
@@ -450,6 +450,17 @@ function renderDownloads(downloads) {
             }
             var isActive = d.status === 'Downloading';
 
+            // Update filename and URL (e.g. magnet resolved to real name)
+            var nameEl = el.querySelector('.download-name');
+            if (nameEl && nameEl.textContent !== d.filename) {
+                nameEl.textContent = d.filename;
+            }
+            var urlEl = el.querySelector('.download-url');
+            if (urlEl && urlEl.textContent !== d.url) {
+                urlEl.textContent = d.url;
+                urlEl.title = d.url;
+            }
+
             // Update progress bar width
             var fill = el.querySelector('.progress-fill');
             if (fill) fill.style.width = progress + '%';
@@ -480,6 +491,14 @@ function renderDownloads(downloads) {
             if (etaEl) {
                 etaEl.textContent = (isActive && d.eta) ? d.eta : '';
             }
+
+            // Update torrent detail fields
+            var peersEl = el.querySelector('.detail-peers');
+            if (peersEl) peersEl.textContent = d.peers || 0;
+            var seedsEl = el.querySelector('.detail-seeds');
+            if (seedsEl) seedsEl.textContent = d.seeds || 0;
+            var uploadSpeedEl = el.querySelector('.detail-upload-speed');
+            if (uploadSpeedEl) uploadSpeedEl.textContent = formatSpeed(d.upload_speed);
         });
     }
 
@@ -943,6 +962,10 @@ function init() {
 
             if (btn.dataset.mode === 'register') {
                 // First user registration
+                if (password.length < 6) {
+                    showToast('error', 'Weak password', 'Password must be at least 6 characters');
+                    return;
+                }
                 try {
                     var result = await apiRequest('/auth/register', {
                         method: 'POST',
@@ -1011,10 +1034,17 @@ function init() {
 
 function startApp() {
     navigate(window.location.hash || '#downloads');
-    window.addEventListener('hashchange', function() { navigate(window.location.hash); });
-    
-    // Update user information in sidebar
-    updateUserInformation();
+
+    // Only add hashchange listener once
+    if (!window._hashListenerAdded) {
+        window.addEventListener('hashchange', function() { navigate(window.location.hash); });
+        window._hashListenerAdded = true;
+    }
+
+    // Update user information in sidebar (skip if already loaded this session)
+    if (!window.currentUserRole) {
+        updateUserInformation();
+    }
 
     if (refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(loadDownloads, 1000);

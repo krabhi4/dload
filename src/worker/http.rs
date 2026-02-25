@@ -1,4 +1,4 @@
-use crate::domain::{Download, DownloadStatus};
+use crate::domain::{Download, DownloadStatus, sanitize_filename};
 use futures::stream::StreamExt;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -60,7 +60,8 @@ impl HttpDownloader {
         // Extract filename from Content-Disposition
         if let Some(disposition) = headers.get("content-disposition") {
             if let Ok(val) = disposition.to_str() {
-                if let Some(fname) = extract_filename_from_disposition(val) {
+                if let Some(raw_fname) = extract_filename_from_disposition(val) {
+                    let fname = sanitize_filename(&raw_fname);
                     self.download.filename = fname.clone();
                     let dir = std::path::Path::new(&self.download.save_path)
                         .parent()
@@ -78,8 +79,7 @@ impl HttpDownloader {
             .unwrap_or("")
             .to_lowercase();
 
-        let is_torrent_from_header = content_type.contains("application/x-bittorrent")
-            || content_type.contains("application/octet-stream");
+        let is_torrent_from_header = content_type.contains("application/x-bittorrent");
 
         self.download.total_size = content_length;
         self.total_size.store(content_length, Ordering::Relaxed);
@@ -138,7 +138,8 @@ impl HttpDownloader {
         }
         if let Some(disposition) = response.headers().get("content-disposition") {
             if let Ok(val) = disposition.to_str() {
-                if let Some(fname) = extract_filename_from_disposition(val) {
+                if let Some(raw_fname) = extract_filename_from_disposition(val) {
+                    let fname = sanitize_filename(&raw_fname);
                     self.download.filename = fname.clone();
                     let dir = std::path::Path::new(&self.download.save_path)
                         .parent()

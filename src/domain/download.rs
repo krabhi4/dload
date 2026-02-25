@@ -1,6 +1,36 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
+/// Strip path traversal, null bytes, and dangerous characters from filenames.
+pub fn sanitize_filename(name: &str) -> String {
+    // URL-decode first (in case of %2F etc.)
+    let decoded = urlencoding::decode(name).unwrap_or(std::borrow::Cow::Borrowed(name));
+
+    // Take only the last path component (strips ../ and absolute paths)
+    let base = decoded
+        .rsplit('/')
+        .next()
+        .unwrap_or(&decoded)
+        .rsplit('\\')
+        .next()
+        .unwrap_or(&decoded);
+
+    // Remove null bytes, control characters
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && *c != '\0')
+        .collect();
+
+    // Remove leading dots (hidden files) and any remaining ..
+    let cleaned = cleaned.trim_start_matches('.').replace("..", "");
+
+    if cleaned.is_empty() {
+        format!("download-{}", uuid::Uuid::new_v4())
+    } else {
+        cleaned
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DownloadStatus {
     Queued,
@@ -44,12 +74,13 @@ pub struct Download {
 
 impl Download {
     pub fn new(url: String, save_dir: &str) -> Self {
-        let filename = url
+        let raw_filename = url
             .split('/')
             .last()
             .unwrap_or("download")
             .to_string();
-        
+        let filename = sanitize_filename(&raw_filename);
+
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             url,

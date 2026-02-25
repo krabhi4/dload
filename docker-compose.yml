@@ -9,6 +9,8 @@ services:
       - ./downloads:/downloads
     environment:
       - RUST_LOG=info
+      - DLOAD_JWT_SECRET=changeme-generate-a-random-secret
+      # - DLOAD_CORS_ORIGIN=https://your-domain.com
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "cat < /dev/tcp/localhost/8080 || exit 1"]

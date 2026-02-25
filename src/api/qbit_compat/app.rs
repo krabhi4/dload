@@ -28,5 +28,23 @@ pub async fn preferences(State(state): State<QbitState>) -> impl IntoResponse {
         "lsd": true,
         "encryption": 0,
         "queueing_enabled": true,
+        "max_ratio_enabled": false,
+        "max_ratio": -1,
+        "max_ratio_act": 0,
+        "max_seeding_time_enabled": false,
+        "max_seeding_time": -1,
+    }))
+}
+
+pub async fn transfer_info() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "dl_info_speed": 0,
+        "dl_info_data": 0,
+        "up_info_speed": 0,
+        "up_info_data": 0,
+        "dl_rate_limit": 0,
+        "up_rate_limit": 0,
+        "dht_nodes": 0,
+        "connection_status": "connected",
     }))
 }

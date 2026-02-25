@@ -30,15 +30,30 @@ pub async fn login(
         return (StatusCode::FORBIDDEN, "Fails.").into_response();
     }
 
-    // Validate against the same user database as native auth
-    let user = match state.manager.repo.get_user_by_username(username) {
-        Ok(Some(u)) => u,
-        _ => return (StatusCode::FORBIDDEN, "Fails.").into_response(),
-    };
+    // Always run bcrypt to prevent timing oracle on username existence.
+    // Run DB lookup + bcrypt off the async runtime to avoid blocking the executor.
+    const DUMMY_HASH: &str = "$2b$12$000000000000000000000uGKWMKFz95uGKWMKFz95uGKWMKFz9.";
+    let repo = state.manager.repo.clone();
+    let username_owned = username.to_string();
+    let password_owned = password.to_string();
+    let auth_result = tokio::task::spawn_blocking(move || {
+        let (user, hash) = match repo.get_user_by_username(&username_owned) {
+            Ok(Some(u)) => {
+                let h = u.password_hash.clone();
+                (Some(u), h)
+            }
+            _ => (None, DUMMY_HASH.to_string()),
+        };
+        let valid = bcrypt::verify(&password_owned, &hash).unwrap_or(false) && user.is_some();
+        if valid { user } else { None }
+    })
+    .await
+    .unwrap_or(None);
 
-    if !bcrypt::verify(password, &user.password_hash).unwrap_or(false) {
-        return (StatusCode::FORBIDDEN, "Fails.").into_response();
-    }
+    let user = match auth_result {
+        Some(u) => u,
+        None => return (StatusCode::FORBIDDEN, "Fails.").into_response(),
+    };
 
     let sid = state
         .sessions
@@ -47,7 +62,7 @@ pub async fn login(
 
     (
         StatusCode::OK,
-        [(header::SET_COOKIE, format!("SID={}; path=/; HttpOnly; SameSite=Strict", sid))],
+        [(header::SET_COOKIE, format!("SID={}; path=/; HttpOnly; SameSite=Lax", sid))],
         "Ok.",
     )
         .into_response()

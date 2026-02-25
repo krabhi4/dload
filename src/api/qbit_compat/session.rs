@@ -36,17 +36,14 @@ impl SessionStore {
     }
 
     pub async fn validate(&self, sid: &str) -> Option<(String, String)> {
-        // Check with read lock first
-        {
-            let sessions = self.sessions.read().await;
-            let session = sessions.get(sid)?;
-            if session.created_at.elapsed().as_secs() <= SESSION_TTL_SECS {
-                return Some((session.username.clone(), session.role.clone()));
-            }
+        let mut sessions = self.sessions.write().await;
+        let session = sessions.get(sid)?;
+        if session.created_at.elapsed().as_secs() <= SESSION_TTL_SECS {
+            Some((session.username.clone(), session.role.clone()))
+        } else {
+            sessions.remove(sid);
+            None
         }
-        // Expired — remove with write lock
-        self.sessions.write().await.remove(sid);
-        None
     }
 
     pub async fn remove(&self, sid: &str) {

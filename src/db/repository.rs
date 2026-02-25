@@ -1,4 +1,4 @@
-use crate::domain::{Download, DownloadStatus, Protocol, Settings};
+use crate::domain::{Download, DownloadStatus, Protocol, Role, Settings, User};
 use rusqlite::params;
 use std::sync::Arc;
 
@@ -61,38 +61,43 @@ impl Repository {
         let mut stmt = conn.prepare(
             "SELECT id, url, filename, save_path, total_size, downloaded_size, speed, 
              progress, status, protocol, connections, created_at, completed_at, error_message 
-             FROM downloads ORDER BY created_at DESC"
+             FROM downloads ORDER BY created_at DESC",
         )?;
-        
-        let downloads = stmt.query_map([], |row| {
-            let status_str: String = row.get(8)?;
-            let protocol_str: String = row.get(9)?;
-            Ok(Download {
-                id: row.get(0)?,
-                url: row.get(1)?,
-                filename: row.get(2)?,
-                save_path: row.get(3)?,
-                total_size: row.get(4)?,
-                downloaded_size: row.get(5)?,
-                speed: row.get(6)?,
-                progress: row.get(7)?,
-                status: serde_json::from_str(&format!("\"{}\"", status_str)).unwrap_or(DownloadStatus::Queued),
-                protocol: serde_json::from_str(&format!("\"{}\"", protocol_str)).unwrap_or(Protocol::Http),
-                upload_speed: 0,
-                connections: row.get(10)?,
-                peers: 0,
-                seeds: 0,
-                eta: None,
-                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
-                    .map(|d| d.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                completed_at: row.get::<_, Option<String>>(12)?
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-                    .map(|d| d.with_timezone(&chrono::Utc)),
-                error_message: row.get(13)?,
-            })
-        })?.collect::<Result<Vec<_>, _>>()?;
-        
+
+        let downloads = stmt
+            .query_map([], |row| {
+                let status_str: String = row.get(8)?;
+                let protocol_str: String = row.get(9)?;
+                Ok(Download {
+                    id: row.get(0)?,
+                    url: row.get(1)?,
+                    filename: row.get(2)?,
+                    save_path: row.get(3)?,
+                    total_size: row.get(4)?,
+                    downloaded_size: row.get(5)?,
+                    speed: row.get(6)?,
+                    progress: row.get(7)?,
+                    status: serde_json::from_str(&format!("\"{}\"", status_str))
+                        .unwrap_or(DownloadStatus::Queued),
+                    protocol: serde_json::from_str(&format!("\"{}\"", protocol_str))
+                        .unwrap_or(Protocol::Http),
+                    upload_speed: 0,
+                    connections: row.get(10)?,
+                    peers: 0,
+                    seeds: 0,
+                    eta: None,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    completed_at: row
+                        .get::<_, Option<String>>(12)?
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                        .map(|d| d.with_timezone(&chrono::Utc)),
+                    error_message: row.get(13)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(downloads)
     }
 
@@ -108,14 +113,16 @@ impl Repository {
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        
+
         let mut settings = Settings::default();
         for row in rows {
             let (key, value) = row?;
             match key.as_str() {
                 "download_dir" => settings.download_dir = value,
                 "max_concurrent" => settings.max_concurrent = value.parse().unwrap_or(3),
-                "max_connections_per_file" => settings.max_connections_per_file = value.parse().unwrap_or(4),
+                "max_connections_per_file" => {
+                    settings.max_connections_per_file = value.parse().unwrap_or(4)
+                }
                 "chunk_size" => settings.chunk_size = value.parse().unwrap_or(131072),
                 "username" => settings.username = value,
                 "port" => settings.port = value.parse().unwrap_or(8080),
@@ -130,18 +137,136 @@ impl Repository {
         let pairs = [
             ("download_dir", settings.download_dir.clone()),
             ("max_concurrent", settings.max_concurrent.to_string()),
-            ("max_connections_per_file", settings.max_connections_per_file.to_string()),
+            (
+                "max_connections_per_file",
+                settings.max_connections_per_file.to_string(),
+            ),
             ("chunk_size", settings.chunk_size.to_string()),
             ("username", settings.username.clone()),
             ("port", settings.port.to_string()),
         ];
-        
+
         for (key, value) in pairs {
             conn.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
                 params![key, value],
             )?;
         }
+        Ok(())
+    }
+
+    pub fn insert_user(&self, user: &User) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                user.id,
+                user.username,
+                user.password_hash,
+                user.role.as_str(),
+                user.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Atomically insert the first user only if no users exist yet.
+    /// Returns Ok(true) if inserted, Ok(false) if users already exist.
+    pub fn insert_first_user(&self, user: &User) -> anyhow::Result<bool> {
+        let conn = self.db.conn.lock().unwrap();
+        let rows = conn.execute(
+            "INSERT INTO users (id, username, password_hash, role, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE NOT EXISTS (SELECT 1 FROM users)",
+            params![
+                user.id,
+                user.username,
+                user.password_hash,
+                user.role.as_str(),
+                user.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn get_user_by_username(&self, username: &str) -> anyhow::Result<Option<User>> {
+        let conn = self.db.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?1",
+        )?;
+        let mut rows = stmt.query(params![username])?;
+
+        if let Some(row) = rows.next()? {
+            Ok(Some(User {
+                id: row.get(0)?,
+                username: row.get(1)?,
+                password_hash: row.get(2)?,
+                role: Role::from_str(&row.get::<_, String>(3)?),
+                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_user_by_id(&self, id: &str) -> anyhow::Result<Option<User>> {
+        let conn = self.db.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id])?;
+
+        if let Some(row) = rows.next()? {
+            Ok(Some(User {
+                id: row.get(0)?,
+                username: row.get(1)?,
+                password_hash: row.get(2)?,
+                role: Role::from_str(&row.get::<_, String>(3)?),
+                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_all_users(&self) -> anyhow::Result<Vec<User>> {
+        let conn = self.db.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, username, password_hash, role, created_at FROM users ORDER BY created_at ASC")?;
+        let users = stmt
+            .query_map([], |row| {
+                Ok(User {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    password_hash: row.get(2)?,
+                    role: Role::from_str(&row.get::<_, String>(3)?),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(users)
+    }
+
+    pub fn update_user_password(&self, username: &str, password_hash: &str) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE username = ?2",
+            params![password_hash, username],
+        )?;
+        if rows == 0 {
+            anyhow::bail!("User not found");
+        }
+        Ok(())
+    }
+
+    pub fn delete_user(&self, id: &str) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute("DELETE FROM users WHERE id = ?1", params![id])?;
         Ok(())
     }
 }

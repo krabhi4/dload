@@ -8,7 +8,7 @@ use axum::Router;
 
 pub fn router(state: SharedState) -> Router {
     Router::new()
-        .merge(auth::router())
+        .merge(auth::router(state.clone()))
         .merge(downloads::router(state.clone()))
         .merge(torrents::router(state.clone()))
         .merge(settings::router(state))

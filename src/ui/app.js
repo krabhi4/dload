@@ -162,7 +162,46 @@ function showSettings() {
         + '<div class="settings-actions">'
         + '<button type="submit" class="btn-primary">Save Settings</button>'
         + '</div>'
-        + '</form>';
+        + '</form>'
+        + '<div id="user-management-section"></div>';
+}
+
+function showProfile() {
+    return '<div class="page-header">'
+        + '<h1>Profile</h1>'
+        + '<p>Manage your account settings</p>'
+        + '</div>'
+        + '<div class="profile-section">'
+        + '<div class="form-field">'
+        + '<label>Username</label>'
+        + '<input type="text" id="profile-username" readonly>'
+        + '</div>'
+        + '<div class="form-field">'
+        + '<label>Role</label>'
+        + '<input type="text" id="profile-role" readonly>'
+        + '</div>'
+        + '<div class="form-field">'
+        + '<label>Member Since</label>'
+        + '<input type="text" id="profile-created" readonly>'
+        + '</div>'
+        + '<hr>'
+        + '<h2>Change Password</h2>'
+        + '<form id="change-password-form">'
+        + '<div class="form-field">'
+        + '<label for="current-password">Current Password</label>'
+        + '<input type="password" id="current-password" required>'
+        + '</div>'
+        + '<div class="form-field">'
+        + '<label for="new-password">New Password</label>'
+        + '<input type="password" id="new-password" required>'
+        + '</div>'
+        + '<div class="form-field">'
+        + '<label for="confirm-password">Confirm New Password</label>'
+        + '<input type="password" id="confirm-password" required>'
+        + '</div>'
+        + '<button type="submit" class="btn-primary">Update Password</button>'
+        + '</form>'
+        + '</div>';
 }
 
 // ─── Filter & Detail ────────────────────────────────
@@ -262,23 +301,26 @@ function buildDownloadItem(d) {
     // ETA display
     var etaDisplay = (isActive && d.eta) ? escapeHtml(d.eta) : '';
 
-    // Action buttons
+    // Action buttons (admin only)
     var actions = '';
-    if (isActive) {
-        actions = '<button class="action-btn pause-btn" onclick="event.stopPropagation(); pauseDownload(\'' + safeId + '\')" title="Pause">'
-            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
-            + '</button>'
-            + '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' + safeId + '\')" title="Cancel">'
-            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
-            + '</button>';
-    } else if (d.status === 'Seeding') {
-        actions = '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' + safeId + '\')" title="Stop Seeding">'
-            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>'
-            + '</button>';
-    } else if (d.status === 'Paused' || d.status === 'Failed' || d.status === 'Stopped') {
-        actions = '<button class="action-btn resume-btn" onclick="event.stopPropagation(); resumeDownload(\'' + safeId + '\')" title="Resume">'
-            + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>'
-            + '</button>';
+    var isAdmin = window.currentUserRole === 'ADMIN';
+    if (isAdmin) {
+        if (isActive) {
+            actions = '<button class="action-btn pause-btn" onclick="event.stopPropagation(); pauseDownload(\'' + safeId + '\')" title="Pause">'
+                + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+                + '</button>'
+                + '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' + safeId + '\')" title="Cancel">'
+                + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
+                + '</button>';
+        } else if (d.status === 'Seeding') {
+            actions = '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' + safeId + '\')" title="Stop Seeding">'
+                + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>'
+                + '</button>';
+        } else if (d.status === 'Paused' || d.status === 'Failed' || d.status === 'Stopped') {
+            actions = '<button class="action-btn resume-btn" onclick="event.stopPropagation(); resumeDownload(\'' + safeId + '\')" title="Resume">'
+                + '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>'
+                + '</button>';
+        }
     }
 
     // Detail panel
@@ -327,7 +369,7 @@ function buildDownloadItem(d) {
         +   '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
         +   '<div class="actions">'
         +     actions
-        +     '<div class="delete-dropdown">'
+        +     (isAdmin ? '<div class="delete-dropdown">'
         +       '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove">'
         +         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
         +           '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
@@ -337,7 +379,7 @@ function buildDownloadItem(d) {
         +         '<button onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
         +         '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
         +       '</div>'
-        +     '</div>'
+        +     '</div>' : '')
         +   '</div>'
         + '</div>'
         + '<div class="download-progress">'
@@ -480,6 +522,61 @@ async function loadDownloads() {
     }
 }
 
+// ─── Profile ────────────────────────────────────────
+
+async function loadProfile() {
+    try {
+        var result = await apiRequest('/auth/me', {
+            method: 'POST',
+            body: JSON.stringify(token)
+        });
+
+        if (result.success) {
+            document.getElementById('profile-username').value = result.user.username;
+            document.getElementById('profile-role').value = result.user.role;
+            document.getElementById('profile-created').value = new Date(result.user.created_at).toLocaleDateString();
+        }
+    } catch (e) {
+        console.error('Failed to load profile:', e);
+    }
+}
+
+async function changePassword() {
+    var currentPassword = document.getElementById('current-password').value;
+    var newPassword = document.getElementById('new-password').value;
+    var confirmPassword = document.getElementById('confirm-password').value;
+
+    if (newPassword !== confirmPassword) {
+        showToast('error', 'Password mismatch', 'New passwords do not match');
+        return;
+    }
+
+    if (newPassword.length < 6) {
+        showToast('error', 'Weak password', 'Password must be at least 6 characters');
+        return;
+    }
+
+    try {
+        var result = await apiRequest('/auth/profile', {
+            method: 'POST',
+            body: JSON.stringify({
+                token: token,
+                current_password: currentPassword,
+                new_password: newPassword
+            })
+        });
+
+        if (result.success) {
+            showToast('success', 'Password updated', 'Your password has been changed successfully');
+            document.getElementById('change-password-form').reset();
+        } else {
+            showToast('error', 'Failed to update password', result.error);
+        }
+    } catch (e) {
+        showToast('error', 'Failed to update password', e.message);
+    }
+}
+
 async function loadSettings() {
     try {
         var settings = await apiRequest('/settings');
@@ -490,8 +587,138 @@ async function loadSettings() {
         if (el) el.value = settings.max_concurrent;
         el = document.getElementById('settings-connections');
         if (el) el.value = settings.max_connections_per_file;
+        
+        // Load user management for admin users
+        if (window.currentUserRole === 'ADMIN') {
+            loadUserManagement();
+        }
     } catch (e) {
         console.error('Failed to load settings:', e);
+    }
+}
+
+async function loadUserManagement() {
+    try {
+        var result = await apiRequest('/auth/users');
+        var userSection = document.getElementById('user-management-section');
+        if (!userSection) return;
+        
+        var userTable = '<div class="user-management">'
+            + '<h2>User Management</h2>'
+            + '<div class="form-field">'
+            + '<h3>Create New User</h3>'
+            + '<form id="create-user-form">'
+            + '<div class="form-row">'
+            + '<div class="form-field-half">'
+            + '<label for="new-username">Username</label>'
+            + '<input type="text" id="new-username" required>'
+            + '</div>'
+            + '<div class="form-field-half">'
+            + '<label for="create-user-password">Password</label>'
+            + '<input type="password" id="create-user-password" required>'
+            + '</div>'
+            + '</div>'
+            + '<div class="form-field">'
+            + '<label for="new-role">Role</label>'
+            + '<select id="new-role">'
+            + '<option value="USER">User</option>'
+            + '<option value="ADMIN">Admin</option>'
+            + '</select>'
+            + '</div>'
+            + '<button type="submit" class="btn-primary">Create User</button>'
+            + '</form>'
+            + '</div>'
+            + '<div class="form-field">'
+            + '<h3>Existing Users</h3>'
+            + '<table class="user-table">'
+            + '<thead>'
+            + '<tr>'
+            + '<th>Username</th>'
+            + '<th>Role</th>'
+            + '<th>Created</th>'
+            + '<th>Actions</th>'
+            + '</tr>'
+            + '</thead>'
+            + '<tbody id="users-table-body">';
+        
+        if (result.users && result.users.length > 0) {
+            result.users.forEach(function(user) {
+                userTable += '<tr>'
+                    + '<td>' + escapeHtml(user.username) + '</td>'
+                    + '<td><span class="role-badge ' + user.role.toLowerCase() + '">' + user.role + '</span></td>'
+                    + '<td>' + new Date(user.created_at).toLocaleDateString() + '</td>'
+                    + '<td>' + (user.id !== window.currentUserId ?
+                        '<button class="btn-danger btn-small" onclick="deleteUser(\'' + escapeHtml(user.id) + '\')">Delete</button>' :
+                        'Current User') + '</td>'
+                    + '</tr>';
+            });
+        }
+        
+        userTable += '</tbody>'
+            + '</table>'
+            + '</div>'
+            + '</div>';
+            
+        userSection.innerHTML = userTable;
+        
+        // Bind the create user form
+        var createUserForm = document.getElementById('create-user-form');
+        if (createUserForm) {
+            createUserForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                createUser();
+            });
+        }
+    } catch (e) {
+        console.error('Failed to load user management:', e);
+    }
+}
+
+async function createUser() {
+    var username = document.getElementById('new-username').value.trim();
+    var password = document.getElementById('create-user-password').value;
+    var role = document.getElementById('new-role').value;
+
+    if (!username || !password) {
+        showToast('error', 'Missing fields', 'Username and password are required');
+        return;
+    }
+
+    if (password.length < 6) {
+        showToast('error', 'Weak password', 'Password must be at least 6 characters');
+        return;
+    }
+
+    try {
+        var result = await apiRequest('/auth/users', {
+            method: 'POST',
+            body: JSON.stringify({ token: token, username: username, password: password, role: role })
+        });
+        if (result.success) {
+            showToast('success', 'User created', username + ' has been created');
+            loadUserManagement();
+        } else {
+            showToast('error', 'Failed to create user', result.error);
+        }
+    } catch (e) {
+        showToast('error', 'Failed to create user', e.message);
+    }
+}
+
+async function deleteUser(id) {
+    if (!confirm('Are you sure you want to delete this user?')) return;
+    try {
+        var result = await apiRequest('/auth/users/' + encodeURIComponent(id), {
+            method: 'DELETE'
+        });
+        if (result.success) {
+            showToast('success', 'User deleted');
+            loadUserManagement();
+        } else {
+            showToast('error', 'Failed to delete user', result.error);
+        }
+    } catch (e) {
+        showToast('error', 'Failed to delete user', e.message);
     }
 }
 
@@ -528,6 +755,13 @@ function toggleDeleteMenu(event, id) {
 }
 
 async function deleteDownload(id, deleteFiles) {
+    // Check if user has admin permissions
+    if (window.currentUserRole !== 'ADMIN') {
+        showToast('error', 'Permission denied', 'Only administrators can delete downloads');
+        openMenuId = null;
+        return;
+    }
+    
     openMenuId = null;
     try {
         var qs = deleteFiles ? '?delete_files=true' : '';
@@ -570,16 +804,18 @@ async function resumeDownload(id) {
 }
 
 async function saveSettings() {
-    var settings = {
-        download_dir: document.getElementById('settings-dir').value,
-        max_concurrent: parseInt(document.getElementById('settings-max-concurrent').value),
-        max_connections_per_file: parseInt(document.getElementById('settings-connections').value),
-        chunk_size: 131072,
-        username: 'admin',
-        port: 8080,
-    };
-
     try {
+        // Fetch current settings to preserve non-UI fields
+        var current = await apiRequest('/settings');
+        var settings = {
+            download_dir: document.getElementById('settings-dir').value,
+            max_concurrent: parseInt(document.getElementById('settings-max-concurrent').value),
+            max_connections_per_file: parseInt(document.getElementById('settings-connections').value),
+            chunk_size: current.chunk_size || 131072,
+            username: current.username || '',
+            port: current.port || 8080,
+        };
+
         await apiRequest('/settings', {
             method: 'PUT',
             body: JSON.stringify(settings)
@@ -596,11 +832,12 @@ function navigate(hash) {
     var routes = {
         '#downloads': showDownloads,
         '#completed': showCompleted,
-        '#settings': showSettings
+        '#settings': showSettings,
+        '#profile': showProfile
     };
 
     var render = routes[hash] || showDownloads;
-    currentPage = hash === '#completed' ? 'completed' : 'downloads';
+    currentPage = hash === '#completed' ? 'completed' : hash === '#profile' ? 'profile' : 'downloads';
     lastDownloads = [];
     expandedId = null;
     safeRender(document.getElementById('main-content'), render());
@@ -616,6 +853,8 @@ function navigate(hash) {
     // Load data
     if (hash === '#settings') {
         loadSettings();
+    } else if (hash === '#profile') {
+        loadProfile();
     } else {
         loadDownloads();
     }
@@ -641,21 +880,57 @@ function bindForms() {
             saveSettings();
         });
     }
+
+    var changePasswordForm = document.getElementById('change-password-form');
+    if (changePasswordForm) {
+        changePasswordForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            changePassword();
+        });
+    }
 }
 
 // ─── Auth ───────────────────────────────────────────
 
 function logout() {
+    if (!token) return; // already logged out
     token = '';
     localStorage.removeItem('dload_token');
+    window.currentUserRole = null;
+    window.currentUserId = null;
     if (refreshInterval) {
         clearInterval(refreshInterval);
         refreshInterval = null;
     }
+
+    // Reset login form to Sign In state
+    var loginForm = document.getElementById('login-form');
+    if (loginForm) {
+        loginForm.reset();
+        var btn = loginForm.querySelector('button[type="submit"]');
+        if (btn) {
+            btn.textContent = 'Sign In';
+            delete btn.dataset.mode;
+        }
+    }
+    var hint = document.getElementById('login-hint');
+    if (hint) hint.textContent = 'Sign in to continue';
+    var subtitle = document.querySelector('.login-subtitle');
+    if (subtitle) subtitle.textContent = 'Sign in to your download manager';
+
     document.getElementById('login-modal').style.display = 'flex';
 }
 
 // ─── Init ───────────────────────────────────────────
+
+async function checkFirstUser() {
+    try {
+        var result = await apiRequest('/auth/status');
+        return result.needs_setup === true;
+    } catch (e) {
+        return false;
+    }
+}
 
 function init() {
     var loginForm = document.getElementById('login-form');
@@ -664,31 +939,70 @@ function init() {
             e.preventDefault();
             var username = document.getElementById('login-username').value;
             var password = document.getElementById('login-password').value;
+            var btn = loginForm.querySelector('button[type="submit"]');
 
-            try {
-                var result = await apiRequest('/auth/login', {
-                    method: 'POST',
-                    body: JSON.stringify({ username: username, password: password })
-                });
+            if (btn.dataset.mode === 'register') {
+                // First user registration
+                try {
+                    var result = await apiRequest('/auth/register', {
+                        method: 'POST',
+                        body: JSON.stringify({ username: username, password: password })
+                    });
 
-                if (result.success) {
-                    token = result.token;
-                    localStorage.setItem('dload_token', token);
-                    document.getElementById('login-modal').style.display = 'none';
-                    startApp();
-                } else {
-                    showToast('error', 'Login failed', 'Invalid username or password');
-                    document.getElementById('login-password').value = '';
-                    document.getElementById('login-password').focus();
+                    if (result.success) {
+                        token = result.token;
+                        localStorage.setItem('dload_token', token);
+                        document.getElementById('login-modal').style.display = 'none';
+                        await updateUserInformation();
+                        startApp();
+                    } else {
+                        showToast('error', 'Registration failed', result.error);
+                    }
+                } catch (e) {
+                    showToast('error', 'Registration failed', e.message);
                 }
-            } catch (e) {
-                showToast('error', 'Login failed', e.message);
+            } else {
+                // Normal login
+                try {
+                    var result = await apiRequest('/auth/login', {
+                        method: 'POST',
+                        body: JSON.stringify({ username: username, password: password })
+                    });
+
+                    if (result.success) {
+                        token = result.token;
+                        localStorage.setItem('dload_token', token);
+                        document.getElementById('login-modal').style.display = 'none';
+                        await updateUserInformation();
+                        startApp();
+                    } else {
+                        showToast('error', 'Login failed', 'Invalid username or password');
+                        document.getElementById('login-password').value = '';
+                        document.getElementById('login-password').focus();
+                    }
+                } catch (e) {
+                    showToast('error', 'Login failed', e.message);
+                }
             }
         });
     }
 
     if (!token) {
         document.getElementById('login-modal').style.display = 'flex';
+        // Check if this is the first user
+        checkFirstUser().then(function(isFirst) {
+            if (isFirst) {
+                var hint = document.getElementById('login-hint');
+                if (hint) hint.textContent = 'Create your admin account to get started';
+                var subtitle = document.querySelector('.login-subtitle');
+                if (subtitle) subtitle.textContent = 'Set up your download manager';
+                var btn = loginForm.querySelector('button[type="submit"]');
+                if (btn) {
+                    btn.textContent = 'Create Account';
+                    btn.dataset.mode = 'register';
+                }
+            }
+        });
         return;
     }
 
@@ -698,9 +1012,40 @@ function init() {
 function startApp() {
     navigate(window.location.hash || '#downloads');
     window.addEventListener('hashchange', function() { navigate(window.location.hash); });
+    
+    // Update user information in sidebar
+    updateUserInformation();
 
     if (refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(loadDownloads, 1000);
+}
+
+async function updateUserInformation() {
+    try {
+        var result = await apiRequest('/auth/me', {
+            method: 'POST',
+            body: JSON.stringify(token)
+        });
+        
+        if (result.success) {
+            // Update username
+            document.getElementById('username').textContent = result.user.username;
+            
+            // Update avatar - use first letter of username
+            var firstLetter = result.user.username.charAt(0).toUpperCase();
+            document.getElementById('user-avatar').textContent = firstLetter;
+            
+            // Update role display
+            document.getElementById('user-role').textContent = result.user.role;
+            document.getElementById('user-role').className = 'user-role ' + result.user.role.toLowerCase();
+            
+            // Store user role and ID for permission checks
+            window.currentUserRole = result.user.role;
+            window.currentUserId = result.user.id;
+        }
+    } catch (e) {
+        console.error('Failed to update user information:', e);
+    }
 }
 
 // Close delete menus when clicking outside

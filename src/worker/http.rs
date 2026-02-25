@@ -1,6 +1,10 @@
 use crate::domain::{Download, DownloadStatus};
 use futures::stream::StreamExt;
-use tokio::io::AsyncWriteExt;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio_util::sync::CancellationToken;
 
 pub struct HttpDownloadResult {
     pub download: Download,
@@ -9,20 +13,66 @@ pub struct HttpDownloadResult {
 
 pub struct HttpDownloader {
     download: Download,
+    max_connections: usize,
+    cancel_token: CancellationToken,
+    // Shared progress — manager reads these from monitor loop
+    pub downloaded: Arc<AtomicU64>,
+    pub active_conns: Arc<AtomicU32>,
+    pub total_size: Arc<AtomicU64>,
 }
 
 impl HttpDownloader {
-    pub fn new(download: Download) -> Self {
-        Self { download }
+    pub fn new(download: Download, max_connections: usize, cancel_token: CancellationToken) -> Self {
+        Self {
+            download,
+            max_connections,
+            cancel_token,
+            downloaded: Arc::new(AtomicU64::new(0)),
+            active_conns: Arc::new(AtomicU32::new(0)),
+            total_size: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     pub async fn run(&mut self) -> anyhow::Result<HttpDownloadResult> {
-        let client = reqwest::Client::new();
-        let response = client.get(&self.download.url).send().await?;
+        let client = reqwest::Client::builder()
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(self.max_connections + 2)
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60))
+            .build()?;
 
-        // Detect torrent from content-type header
-        let content_type = response
-            .headers()
+        // HEAD request to get content-length and check range support
+        let head_resp = client.head(&self.download.url).send().await?;
+        let headers = head_resp.headers().clone();
+
+        let content_length: u64 = headers
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let accepts_ranges = headers
+            .get("accept-ranges")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.contains("bytes"))
+            .unwrap_or(false);
+
+        // Extract filename from Content-Disposition
+        if let Some(disposition) = headers.get("content-disposition") {
+            if let Ok(val) = disposition.to_str() {
+                if let Some(fname) = extract_filename_from_disposition(val) {
+                    self.download.filename = fname.clone();
+                    let dir = std::path::Path::new(&self.download.save_path)
+                        .parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "/data".to_string());
+                    self.download.save_path = format!("{}/{}", dir, fname);
+                }
+            }
+        }
+
+        // Detect torrent from content-type
+        let content_type = headers
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
@@ -31,7 +81,61 @@ impl HttpDownloader {
         let is_torrent_from_header = content_type.contains("application/x-bittorrent")
             || content_type.contains("application/octet-stream");
 
-        // Extract filename from Content-Disposition if available
+        self.download.total_size = content_length;
+        self.total_size.store(content_length, Ordering::Relaxed);
+
+        // Decide number of connections
+        let min_chunk = 1024 * 1024; // 1MB minimum per chunk
+        let num_conns = if accepts_ranges && content_length > min_chunk as u64 {
+            let possible = (content_length / min_chunk as u64) as usize;
+            possible.min(self.max_connections).max(1)
+        } else {
+            1
+        };
+
+        if num_conns <= 1 || content_length == 0 {
+            // Single-connection download
+            self.download_single(&client).await?;
+        } else {
+            // Multi-connection download
+            self.download_multi(&client, content_length, num_conns).await?;
+        }
+
+        self.download.status = DownloadStatus::Completed;
+        self.download.speed = 0;
+        self.download.downloaded_size = self.downloaded.load(Ordering::Relaxed);
+
+        // Detect torrent file
+        let is_torrent = is_torrent_from_header
+            || self.download.filename.ends_with(".torrent")
+            || self.download.save_path.ends_with(".torrent");
+
+        let is_torrent = if !is_torrent {
+            check_torrent_magic(&self.download.save_path).await
+        } else {
+            true
+        };
+
+        Ok(HttpDownloadResult {
+            download: self.download.clone(),
+            is_torrent_file: is_torrent,
+        })
+    }
+
+    async fn download_single(&mut self, client: &reqwest::Client) -> anyhow::Result<()> {
+        let response = client.get(&self.download.url).send().await?;
+
+        // Update filename/size from GET response if HEAD didn't provide them
+        if self.download.total_size == 0 {
+            if let Some(len) = response.headers().get("content-length") {
+                if let Ok(s) = len.to_str() {
+                    if let Ok(v) = s.parse::<u64>() {
+                        self.download.total_size = v;
+                        self.total_size.store(v, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
         if let Some(disposition) = response.headers().get("content-disposition") {
             if let Ok(val) = disposition.to_str() {
                 if let Some(fname) = extract_filename_from_disposition(val) {
@@ -45,62 +149,141 @@ impl HttpDownloader {
             }
         }
 
-        let total_size: u64 = response
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
-        self.download.total_size = total_size;
-
-        let mut file = tokio::fs::File::create(&self.download.save_path).await?;
+        self.active_conns.store(1, Ordering::Relaxed);
+        let file = tokio::fs::File::create(&self.download.save_path).await?;
+        let mut writer = BufWriter::with_capacity(256 * 1024, file);
         let mut stream = response.bytes_stream();
-        let mut downloaded: u64 = 0;
-        let start_time = std::time::Instant::now();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-
-            self.download.downloaded_size = downloaded;
-            if self.download.total_size > 0 {
-                self.download.progress =
-                    (downloaded as f64 / self.download.total_size as f64) * 100.0;
+            if self.cancel_token.is_cancelled() {
+                let _ = writer.flush().await;
+                self.active_conns.store(0, Ordering::Relaxed);
+                return Err(anyhow::anyhow!("Download cancelled"));
             }
+            let chunk = chunk?;
+            writer.write_all(&chunk).await?;
+            self.downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
 
-            let elapsed = start_time.elapsed().as_secs_f64();
-            if elapsed > 0.0 {
-                self.download.speed = (downloaded as f64 / elapsed) as u64;
+        writer.flush().await?;
+        self.active_conns.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn download_multi(
+        &mut self,
+        client: &reqwest::Client,
+        total_size: u64,
+        num_conns: usize,
+    ) -> anyhow::Result<()> {
+        // Pre-allocate file
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&self.download.save_path)
+            .await?;
+        file.set_len(total_size).await?;
+        drop(file);
+
+        let chunk_size = total_size / num_conns as u64;
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for i in 0..num_conns {
+            let start = i as u64 * chunk_size;
+            let end = if i == num_conns - 1 {
+                total_size - 1
+            } else {
+                start + chunk_size - 1
+            };
+
+            let client = client.clone();
+            let url = self.download.url.clone();
+            let path = self.download.save_path.clone();
+            let downloaded = Arc::clone(&self.downloaded);
+            let active_conns = Arc::clone(&self.active_conns);
+            let cancel_token = self.cancel_token.clone();
+
+            join_set.spawn(async move {
+                active_conns.fetch_add(1, Ordering::Relaxed);
+                let result = download_range(
+                    &client, &url, &path, start, end, &downloaded, &cancel_token,
+                ).await;
+                active_conns.fetch_sub(1, Ordering::Relaxed);
+                result
+            });
+        }
+
+        // Wait for all tasks
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    join_set.abort_all();
+                    self.active_conns.store(0, Ordering::Relaxed);
+                    return Err(e);
+                }
+                Err(e) => {
+                    join_set.abort_all();
+                    self.active_conns.store(0, Ordering::Relaxed);
+                    return Err(anyhow::anyhow!("Task panicked: {}", e));
+                }
             }
         }
 
-        file.flush().await?;
-        self.download.status = DownloadStatus::Completed;
-        self.download.speed = 0;
-
-        // Detect torrent by file extension or header
-        let is_torrent = is_torrent_from_header
-            || self.download.filename.ends_with(".torrent")
-            || self.download.save_path.ends_with(".torrent");
-
-        // Also check magic bytes if filename doesn't have extension
-        let is_torrent = if !is_torrent {
-            check_torrent_magic(&self.download.save_path).await
-        } else {
-            true
-        };
-
-        Ok(HttpDownloadResult {
-            download: self.download.clone(),
-            is_torrent_file: is_torrent,
-        })
+        Ok(())
     }
 }
 
+async fn download_range(
+    client: &reqwest::Client,
+    url: &str,
+    path: &str,
+    start: u64,
+    end: u64,
+    downloaded: &Arc<AtomicU64>,
+    cancel_token: &CancellationToken,
+) -> anyhow::Result<()> {
+    let resp = client
+        .get(url)
+        .header("Range", format!("bytes={}-{}", start, end))
+        .send()
+        .await?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::OK && start > 0 {
+        return Err(anyhow::anyhow!(
+            "Server ignored Range header (returned 200 instead of 206 for bytes {}-{})",
+            start, end
+        ));
+    }
+    if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
+        return Err(anyhow::anyhow!("Unexpected status {} for range request", status));
+    }
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .await?;
+    file.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut writer = BufWriter::with_capacity(256 * 1024, file);
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        if cancel_token.is_cancelled() {
+            let _ = writer.flush().await;
+            return Err(anyhow::anyhow!("Download cancelled"));
+        }
+        let chunk = chunk?;
+        writer.write_all(&chunk).await?;
+        downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+    }
+
+    writer.flush().await?;
+    Ok(())
+}
+
 fn extract_filename_from_disposition(header: &str) -> Option<String> {
-    // Parse: attachment; filename="file.torrent" or filename=file.torrent
     for part in header.split(';') {
         let part = part.trim();
         if let Some(rest) = part.strip_prefix("filename=") {
@@ -109,7 +292,6 @@ fn extract_filename_from_disposition(header: &str) -> Option<String> {
                 return Some(name.to_string());
             }
         } else if let Some(rest) = part.strip_prefix("filename*=") {
-            // Handle RFC 5987 encoded filenames: UTF-8''filename.torrent
             if let Some(fname) = rest.split("''").nth(1) {
                 let decoded = urlencoding_decode(fname);
                 if !decoded.is_empty() {
@@ -138,8 +320,6 @@ fn urlencoding_decode(s: &str) -> String {
 }
 
 async fn check_torrent_magic(path: &str) -> bool {
-    // Torrent files start with "d" (bencode dictionary) followed by common keys
-    // A more reliable check: starts with "d8:announce" or "d13:announce-list"
     if let Ok(bytes) = tokio::fs::read(path).await {
         if bytes.len() > 2 {
             return bytes[0] == b'd'

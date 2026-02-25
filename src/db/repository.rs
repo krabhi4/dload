@@ -41,7 +41,7 @@ impl Repository {
         let conn = self.db.conn.lock().unwrap();
         conn.execute(
             "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
-             speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9 WHERE id=?10",
+             speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10 WHERE id=?11",
             params![
                 download.filename,
                 download.save_path,
@@ -52,6 +52,7 @@ impl Repository {
                 format!("{:?}", download.status),
                 download.completed_at.map(|d| d.to_rfc3339()),
                 download.error_message,
+                download.connections,
                 download.id,
             ],
         )?;

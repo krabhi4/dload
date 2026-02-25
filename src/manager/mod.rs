@@ -282,15 +282,100 @@ impl ManagerState {
     }
 
     async fn handle_http_download(self: Arc<Self>, download: Download, cancel_token: CancellationToken) {
-        let mut worker = HttpDownloader::new(download.clone());
-        match worker.run().await {
-            Ok(result) => {
+        let max_conns = {
+            let settings = self.settings.read().await;
+            settings.max_connections_per_file as usize
+        };
+
+        let worker = HttpDownloader::new(download.clone(), max_conns, cancel_token.clone());
+        let downloaded_atomic = Arc::clone(&worker.downloaded);
+        let active_conns_atomic = Arc::clone(&worker.active_conns);
+        let total_size_atomic = Arc::clone(&worker.total_size);
+        let download_id = download.id.clone();
+
+        // Spawn the actual download on a separate task
+        let download_task = tokio::spawn(async move {
+            let mut worker = worker;
+            worker.run().await
+        });
+
+        // Monitor loop — poll atomics every second, update state + DB
+        let mut last_downloaded: u64 = 0;
+        let mut last_time = std::time::Instant::now();
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            // Check if download task finished
+            if download_task.is_finished() {
+                break;
+            }
+
+            if cancel_token.is_cancelled() {
+                download_task.abort();
+                break;
+            }
+
+            let current_downloaded = downloaded_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            let current_conns = active_conns_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            let current_total = total_size_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(last_time).as_secs_f64();
+
+            let speed = if elapsed > 0.0 {
+                ((current_downloaded - last_downloaded) as f64 / elapsed) as u64
+            } else {
+                0
+            };
+
+            last_downloaded = current_downloaded;
+            last_time = now;
+
+            {
+                let mut downloads = self.downloads.write().await;
+                if let Some(d) = downloads.get_mut(&download_id) {
+                    d.downloaded_size = current_downloaded;
+                    d.connections = current_conns;
+                    d.speed = speed;
+                    if current_total > 0 {
+                        d.total_size = current_total;
+                    }
+                    if d.total_size > 0 {
+                        d.progress = (current_downloaded as f64 / d.total_size as f64) * 100.0;
+                        if speed > 0 {
+                            let remaining = d.total_size.saturating_sub(current_downloaded);
+                            let eta_secs = remaining / speed;
+                            let hours = eta_secs / 3600;
+                            let mins = (eta_secs % 3600) / 60;
+                            let secs = eta_secs % 60;
+                            d.eta = if hours > 0 {
+                                Some(format!("{}h{}m{}s", hours, mins, secs))
+                            } else if mins > 0 {
+                                Some(format!("{}m{}s", mins, secs))
+                            } else {
+                                Some(format!("{}s", secs))
+                            };
+                        } else {
+                            d.eta = None;
+                        }
+                    }
+                    let _ = self.repo.update_download(d);
+                }
+            }
+        }
+
+        // Collect the result
+        match download_task.await {
+            Ok(Ok(result)) => {
                 if cancel_token.is_cancelled() {
                     return;
                 }
 
                 let mut completed = result.download;
                 completed.status = DownloadStatus::Completed;
+                completed.speed = 0;
+                completed.connections = 0;
+                completed.eta = None;
                 self.update_download(&completed).await;
 
                 // If the downloaded file is a .torrent, auto-start it
@@ -369,12 +454,24 @@ impl ManagerState {
                     }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 if !cancel_token.is_cancelled() {
                     let mut failed = download;
                     failed.status = DownloadStatus::Failed;
                     failed.error_message = Some(e.to_string());
                     failed.speed = 0;
+                    failed.connections = 0;
+                    self.update_download(&failed).await;
+                }
+            }
+            Err(_) => {
+                // Task was aborted (cancelled)
+                if !cancel_token.is_cancelled() {
+                    let mut failed = download;
+                    failed.status = DownloadStatus::Failed;
+                    failed.error_message = Some("Download task aborted".to_string());
+                    failed.speed = 0;
+                    failed.connections = 0;
                     self.update_download(&failed).await;
                 }
             }

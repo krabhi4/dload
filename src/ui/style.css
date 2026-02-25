@@ -444,6 +444,11 @@ input:focus {
     font-weight: 500;
 }
 
+.download-metrics .conn {
+    color: var(--text-secondary);
+    font-size: 0.8em;
+}
+
 .download-metrics .eta {
     color: var(--text-secondary);
 }

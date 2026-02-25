@@ -8,17 +8,13 @@ use axum::{
 use std::net::SocketAddr;
 use axum::http::{Method, HeaderValue};
 use tower_http::cors::CorsLayer;
+use api::qbit_compat::session::SessionStore;
 
 mod api;
 mod db;
 mod domain;
 mod manager;
 mod worker;
-
-#[derive(Clone)]
-struct AppState {
-    manager: manager::SharedState,
-}
 
 // Embed all UI assets at compile time — single binary, no external files needed
 static INDEX_HTML: &str = include_str!("ui/index.html");
@@ -50,11 +46,8 @@ async fn main() {
         }
     };
 
-    let manager_state = manager::ManagerState::new(settings, repo);
-
-    let state = Arc::new(AppState {
-        manager: Arc::new(manager_state),
-    });
+    let manager: manager::SharedState = Arc::new(manager::ManagerState::new(settings, repo));
+    let sessions = Arc::new(SessionStore::new());
 
     let allowed_origin = std::env::var("DLOAD_CORS_ORIGIN").unwrap_or_default();
     let cors = if allowed_origin.is_empty() {
@@ -75,7 +68,8 @@ async fn main() {
         .route("/", get(index))
         .route("/ui/style.css", get(style_css))
         .route("/ui/app.js", get(app_js))
-        .merge(api::router(state.manager.clone()))
+        .merge(api::router(manager.clone()))
+        .merge(api::qbit_compat::router(manager, sessions))
         .layer(cors)
         .layer(security_headers);
 

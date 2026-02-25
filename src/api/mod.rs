@@ -2,6 +2,7 @@ pub mod auth;
 pub mod downloads;
 pub mod torrents;
 pub mod settings;
+pub mod qbit_compat;
 
 use crate::manager::SharedState;
 use axum::Router;

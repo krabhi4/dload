@@ -298,6 +298,18 @@ function buildDownloadItem(d) {
     var isSeeding = d.status === 'Seeding';
     var displaySpeed = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
 
+    // Connections display
+    var connDisplay = '';
+    if (isActive || isSeeding) {
+        if (isTorrent) {
+            connDisplay = isSeeding
+                ? (d.seeds || 0) + ' seed' + ((d.seeds || 0) !== 1 ? 's' : '')
+                : (d.peers || 0) + ' peer' + ((d.peers || 0) !== 1 ? 's' : '');
+        } else {
+            connDisplay = (d.connections || 1) + ' conn';
+        }
+    }
+
     // ETA display
     var etaDisplay = (isActive && d.eta) ? escapeHtml(d.eta) : '';
 
@@ -364,6 +376,7 @@ function buildDownloadItem(d) {
         +   '<div class="download-metrics">'
         +     '<span>' + sizeDisplay + '</span>'
         +     '<span class="speed">' + displaySpeed + '</span>'
+        +     '<span class="conn">' + connDisplay + '</span>'
         +     '<span class="eta">' + etaDisplay + '</span>'
         +   '</div>'
         +   '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
@@ -484,6 +497,24 @@ function renderDownloads(downloads) {
             if (speedEl) {
                 var isSeeding = d.status === 'Seeding';
                 speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
+            }
+
+            // Update connections
+            var connEl = el.querySelector('.conn');
+            if (connEl) {
+                var isTorrent = d.protocol === 'Torrent';
+                var isSeeding = d.status === 'Seeding';
+                var connDisplay = '';
+                if (isActive || isSeeding) {
+                    if (isTorrent) {
+                        connDisplay = isSeeding
+                            ? (d.seeds || 0) + ' seed' + ((d.seeds || 0) !== 1 ? 's' : '')
+                            : (d.peers || 0) + ' peer' + ((d.peers || 0) !== 1 ? 's' : '');
+                    } else {
+                        connDisplay = (d.connections || 1) + ' conn';
+                    }
+                }
+                connEl.textContent = connDisplay;
             }
 
             // Update ETA

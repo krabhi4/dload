@@ -5,7 +5,7 @@ use librqbit::api::TorrentIdOrHash;
 use librqbit::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, OnceCell};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -13,8 +13,9 @@ pub struct ManagerState {
     pub downloads: Arc<RwLock<HashMap<String, Download>>>,
     pub settings: Arc<RwLock<Settings>>,
     pub repo: Arc<Repository>,
-    torrent_session: Arc<OnceCell<Arc<Session>>>,
-    download_dir: String,
+    /// Torrent session + the download_dir it was created with.
+    /// Reset when download_dir changes so torrents use the new path.
+    torrent_session: Arc<RwLock<Option<(String, Arc<Session>)>>>,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Maps download ID -> librqbit torrent handle ID for pause/resume
     torrent_handles: Arc<RwLock<HashMap<String, usize>>>,
@@ -22,8 +23,6 @@ pub struct ManagerState {
 
 impl ManagerState {
     pub fn new(settings: Settings, repo: Arc<Repository>) -> Self {
-        let download_dir = settings.download_dir.clone();
-
         // Load existing downloads from DB
         let downloads = match repo.get_all_downloads() {
             Ok(dl_list) => {
@@ -57,21 +56,41 @@ impl ManagerState {
             downloads: Arc::new(RwLock::new(downloads)),
             settings: Arc::new(RwLock::new(settings)),
             repo,
-            torrent_session: Arc::new(OnceCell::new()),
-            download_dir,
+            torrent_session: Arc::new(RwLock::new(None)),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             torrent_handles: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    /// Read the current download directory from settings (always up-to-date).
+    pub async fn download_dir(&self) -> String {
+        self.settings.read().await.download_dir.clone()
+    }
+
     async fn get_torrent_session(&self) -> anyhow::Result<Arc<Session>> {
-        let dir = self.download_dir.clone();
-        let session = self.torrent_session.get_or_try_init(|| async {
-            Session::new(dir.into())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create torrent session: {}", e))
-        }).await?;
-        Ok(session.clone())
+        let dir = self.download_dir().await;
+
+        // Return existing session if it was created for the same directory
+        {
+            let guard = self.torrent_session.read().await;
+            if let Some((ref existing_dir, ref session)) = *guard {
+                if *existing_dir == dir {
+                    return Ok(session.clone());
+                }
+            }
+        }
+
+        // Create a new session for the (possibly changed) directory
+        let session = Session::new(dir.clone().into())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create torrent session: {}", e))?;
+
+        {
+            let mut guard = self.torrent_session.write().await;
+            *guard = Some((dir, session.clone()));
+        }
+
+        Ok(session)
     }
 
     pub async fn add_download(&self, download: Download) {
@@ -127,15 +146,37 @@ impl ManagerState {
             downloads.get(id).cloned()
         };
 
-        if let Some(d) = download {
+        // Grab the torrent handle BEFORE cancelling — the monitor_torrent cancel handler
+        // would otherwise remove it from the map and call session.delete(tid, false) first.
+        let torrent_id = {
+            let mut handles = self.torrent_handles.write().await;
+            handles.remove(id)
+        };
+
+        // For torrents: tell librqbit to delete torrent + files. This stops the torrent
+        // internally so file handles are released before manual cleanup.
+        if let Some(tid) = torrent_id {
+            if let Ok(session) = self.get_torrent_session().await {
+                if let Err(e) = session.delete(TorrentIdOrHash::Id(tid), true).await {
+                    tracing::warn!("librqbit delete failed: {}", e);
+                }
+            }
+        }
+
+        // Now cancel the monitor loop (it will see the token and exit;
+        // the torrent is already deleted from the session so its delete call is a no-op).
+        self.cancel_download(id).await;
+
+        // Always do manual cleanup: librqbit only deletes individual tracked files,
+        // leaving behind the torrent folder and any untracked content (partial files,
+        // padding files, etc). remove_dir_all ensures a complete wipe.
+        if let Some(ref d) = download {
             let path = std::path::Path::new(&d.save_path);
 
-            // Resolve to absolute path and verify it's inside the download directory
-            let download_dir = self.download_dir.clone();
+            let download_dir = self.download_dir().await;
             let safe = match path.canonicalize() {
                 Ok(canonical) => canonical.starts_with(&download_dir),
                 Err(_) => {
-                    // File doesn't exist yet or can't be resolved — check the raw path
                     d.save_path.starts_with(&download_dir) && !d.save_path.contains("..")
                 }
             };
@@ -153,7 +194,12 @@ impl ManagerState {
             }
         }
 
-        self.remove(id).await;
+        // Clean up from DB and in-memory state
+        if let Err(e) = self.repo.delete_download(id) {
+            tracing::error!("Failed to delete download from DB: {}", e);
+        }
+        let mut downloads = self.downloads.write().await;
+        downloads.remove(id);
     }
 
     async fn register_cancel_token(&self, id: &str) -> CancellationToken {
@@ -753,6 +799,7 @@ async fn session_add_and_wait(
 ) -> anyhow::Result<()> {
     let session = state.get_torrent_session().await?;
 
+    let download_dir = state.download_dir().await;
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
         ..Default::default()
@@ -776,7 +823,7 @@ async fn session_add_and_wait(
     // Update name, save_path, content_path, and info_hash from torrent metadata
     if let Some(name) = handle.name() {
         download.filename = name.clone();
-        let new_path = format!("{}/{}", state.download_dir, name);
+        let new_path = format!("{}/{}", download_dir, name);
         download.save_path = new_path.clone();
         download.content_path = Some(new_path);
     }

@@ -148,7 +148,10 @@ function showSettings() {
         + '<form id="settings-form" class="settings-grid">'
         + '<div class="form-field">'
         + '<label for="settings-dir">Download Directory</label>'
+        + '<div class="input-group">'
         + '<input type="text" id="settings-dir" value="/downloads">'
+        + '<button type="button" class="btn-ghost" onclick="openFolderBrowser()">Browse</button>'
+        + '</div>'
         + '<span class="hint">Path inside the container where files are saved</span>'
         + '</div>'
         + '<div class="form-field">'
@@ -850,6 +853,173 @@ async function resumeDownload(id) {
         loadDownloads();
     } catch (e) {
         showToast('error', 'Failed to resume', e.message);
+    }
+}
+
+// ─── Folder Browser ─────────────────────────────────
+
+var folderBrowserModal = null;
+
+function openFolderBrowser() {
+    var startPath = document.getElementById('settings-dir').value || '/';
+    showFolderBrowser(startPath);
+}
+
+function showFolderBrowser(path) {
+    if (folderBrowserModal) {
+        folderBrowserModal.remove();
+    }
+
+    var modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.id = 'folder-browser-modal';
+    modal.style.display = 'flex';
+
+    var backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.onclick = closeFolderBrowser;
+    modal.appendChild(backdrop);
+
+    var content = document.createElement('div');
+    content.className = 'modal-content folder-browser';
+
+    var header = document.createElement('div');
+    header.className = 'folder-browser-header';
+    var h2 = document.createElement('h2');
+    h2.textContent = 'Select Folder';
+    var pathDiv = document.createElement('div');
+    pathDiv.className = 'folder-browser-path';
+    pathDiv.id = 'browser-path';
+    header.appendChild(h2);
+    header.appendChild(pathDiv);
+
+    var list = document.createElement('div');
+    list.className = 'folder-browser-list';
+    list.id = 'browser-list';
+
+    var actions = document.createElement('div');
+    actions.className = 'folder-browser-actions';
+    var newBtn = document.createElement('button');
+    newBtn.className = 'btn-ghost btn-small';
+    newBtn.textContent = 'New Folder';
+    newBtn.onclick = browserCreateFolder;
+    var spacer = document.createElement('div');
+    spacer.style.flex = '1';
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-ghost';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = closeFolderBrowser;
+    var selectBtn = document.createElement('button');
+    selectBtn.className = 'btn-primary';
+    selectBtn.textContent = 'Select';
+    selectBtn.id = 'browser-select-btn';
+    selectBtn.onclick = function() {
+        var sel = pathDiv.getAttribute('data-path');
+        if (sel) document.getElementById('settings-dir').value = sel;
+        closeFolderBrowser();
+    };
+    actions.appendChild(newBtn);
+    actions.appendChild(spacer);
+    actions.appendChild(cancelBtn);
+    actions.appendChild(selectBtn);
+
+    content.appendChild(header);
+    content.appendChild(list);
+    content.appendChild(actions);
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    folderBrowserModal = modal;
+
+    loadBrowserDir(path);
+}
+
+function closeFolderBrowser() {
+    if (folderBrowserModal) {
+        folderBrowserModal.remove();
+        folderBrowserModal = null;
+    }
+}
+
+function createFolderItem(label, iconSvg, onDblClick) {
+    var div = document.createElement('div');
+    div.className = 'folder-item' + (label === '..' ? ' folder-parent' : '');
+    div.ondblclick = onDblClick;
+    var iconSpan = document.createElement('span');
+    iconSpan.className = 'folder-icon';
+    iconSpan.textContent = label === '..' ? '\u2190' : '\uD83D\uDCC1';
+    var nameSpan = document.createElement('span');
+    nameSpan.textContent = label;
+    div.appendChild(iconSpan);
+    div.appendChild(nameSpan);
+    return div;
+}
+
+async function loadBrowserDir(path) {
+    var listEl = document.getElementById('browser-list');
+    var pathEl = document.getElementById('browser-path');
+    if (!listEl || !pathEl) return;
+
+    listEl.textContent = '';
+    var loading = document.createElement('div');
+    loading.className = 'folder-browser-loading';
+    loading.textContent = 'Loading...';
+    listEl.appendChild(loading);
+
+    try {
+        var result = await apiRequest('/browse?path=' + encodeURIComponent(path));
+        pathEl.textContent = result.current;
+        pathEl.setAttribute('data-path', result.current);
+
+        listEl.textContent = '';
+
+        if (result.parent !== null && result.parent !== undefined) {
+            var parentPath = result.parent;
+            listEl.appendChild(createFolderItem('..', null, function() { loadBrowserDir(parentPath); }));
+        }
+
+        for (var i = 0; i < result.dirs.length; i++) {
+            (function(d) {
+                listEl.appendChild(createFolderItem(d.name, null, function() { loadBrowserDir(d.path); }));
+            })(result.dirs[i]);
+        }
+
+        if (result.dirs.length === 0) {
+            var empty = document.createElement('div');
+            empty.className = 'folder-empty';
+            empty.textContent = result.parent ? 'Empty directory' : 'No subdirectories';
+            listEl.appendChild(empty);
+        }
+    } catch (e) {
+        listEl.textContent = '';
+        var errDiv = document.createElement('div');
+        errDiv.className = 'folder-empty';
+        errDiv.textContent = 'Error: ' + e.message;
+        listEl.appendChild(errDiv);
+    }
+}
+
+async function browserCreateFolder() {
+    var pathEl = document.getElementById('browser-path');
+    var currentPath = pathEl ? pathEl.getAttribute('data-path') : '/';
+
+    var name = prompt('New folder name:');
+    if (!name || !name.trim()) return;
+    name = name.trim();
+
+    if (name.indexOf('/') !== -1 || name.indexOf('..') !== -1) {
+        showToast('error', 'Invalid folder name');
+        return;
+    }
+
+    var newPath = currentPath.replace(/\/$/, '') + '/' + name;
+    try {
+        await apiRequest('/browse/mkdir', {
+            method: 'POST',
+            body: JSON.stringify({ path: newPath })
+        });
+        loadBrowserDir(currentPath);
+    } catch (e) {
+        showToast('error', 'Failed to create folder', e.message);
     }
 }
 

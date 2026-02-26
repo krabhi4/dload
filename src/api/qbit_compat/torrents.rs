@@ -25,18 +25,18 @@ fn hash_matches(download: &Download, hash: &str) -> bool {
         || download.id == hash
 }
 
-/// Map dload DownloadStatus to qBittorrent v5 state string.
-/// Sonarr only sets CanMoveFiles (auto-import) when state is "pausedUP" or "stoppedUP".
-/// Since we claim v5.0.0, use "stopped*" variants.
+/// Map dload DownloadStatus to qBittorrent state string.
+/// Sonarr checks `torrent.State is "pausedUP" or "stoppedUP"` for CanMoveFiles.
+/// Use "paused*" (v4) for widest arr-stack compatibility.
 fn to_qbit_state(status: &DownloadStatus) -> &'static str {
     match status {
         DownloadStatus::Queued => "queuedDL",
         DownloadStatus::Downloading => "downloading",
-        DownloadStatus::Paused => "stoppedDL",
-        DownloadStatus::Completed => "stoppedUP",
+        DownloadStatus::Paused => "pausedDL",
+        DownloadStatus::Completed => "pausedUP",
         DownloadStatus::Failed => "error",
-        DownloadStatus::Stopped => "stoppedDL",
-        DownloadStatus::Seeding => "stoppedUP",
+        DownloadStatus::Stopped => "pausedDL",
+        DownloadStatus::Seeding => "pausedUP",
     }
 }
 

@@ -33,7 +33,39 @@ pub async fn preferences(State(state): State<QbitState>) -> impl IntoResponse {
         "max_ratio_act": 0,
         "max_seeding_time_enabled": false,
         "max_seeding_time": -1,
+        "max_inactive_seeding_time_enabled": false,
+        "max_inactive_seeding_time": -1,
+        "add_trackers_enabled": false,
+        "add_trackers": "",
+        "incomplete_files_ext": false,
+        "preallocate_all": false,
+        "auto_tmm_enabled": false,
+        "torrent_content_layout": "Original",
+        "listen_port": 6881,
+        "upnp": false,
+        "dl_limit": 0,
+        "up_limit": 0,
+        "temp_path_enabled": false,
+        "temp_path": "",
+        "export_dir": "",
+        "export_dir_fin": "",
     }))
+}
+
+pub async fn build_info() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "qt": "6.7.0",
+        "libtorrent": "2.0.10.0",
+        "boost": "1.86.0",
+        "openssl": "3.3.1",
+        "zlib": "1.3.1",
+        "bitness": 64,
+    }))
+}
+
+pub async fn default_save_path(State(state): State<QbitState>) -> impl IntoResponse {
+    let settings = state.manager.settings.read().await;
+    (StatusCode::OK, settings.download_dir.clone())
 }
 
 pub async fn transfer_info() -> impl IntoResponse {

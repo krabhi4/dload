@@ -720,6 +720,8 @@ impl ManagerState {
                         download.status = DownloadStatus::Seeding;
                         download.speed = 0;
                         download.progress = 100.0;
+                        download.completed_at = Some(chrono::Utc::now());
+                        download.eta = None;
                     }
 
                     Some(download.clone())
@@ -771,10 +773,12 @@ async fn session_add_and_wait(
         handles.insert(download.id.clone(), torrent_id);
     }
 
-    // Update name, save_path, and info_hash from torrent metadata
+    // Update name, save_path, content_path, and info_hash from torrent metadata
     if let Some(name) = handle.name() {
         download.filename = name.clone();
-        download.save_path = format!("{}/{}", state.download_dir, name);
+        let new_path = format!("{}/{}", state.download_dir, name);
+        download.save_path = new_path.clone();
+        download.content_path = Some(new_path);
     }
     let hash_str = handle.info_hash().as_string();
     if download.info_hash.is_none() {

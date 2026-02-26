@@ -17,8 +17,9 @@ pub async fn webapi_version() -> impl IntoResponse {
 
 pub async fn preferences(State(state): State<QbitState>) -> impl IntoResponse {
     let settings = state.manager.settings.read().await;
+    let save_path = format!("{}/", settings.download_dir.trim_end_matches('/'));
     Json(serde_json::json!({
-        "save_path": settings.download_dir,
+        "save_path": save_path,
         "max_active_downloads": settings.max_concurrent,
         "max_active_torrents": settings.max_concurrent,
         "max_active_uploads": settings.max_concurrent,
@@ -65,7 +66,8 @@ pub async fn build_info() -> impl IntoResponse {
 
 pub async fn default_save_path(State(state): State<QbitState>) -> impl IntoResponse {
     let settings = state.manager.settings.read().await;
-    (StatusCode::OK, settings.download_dir.clone())
+    let save_path = format!("{}/", settings.download_dir.trim_end_matches('/'));
+    (StatusCode::OK, save_path)
 }
 
 pub async fn transfer_info() -> impl IntoResponse {

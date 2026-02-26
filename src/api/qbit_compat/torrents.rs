@@ -15,16 +15,28 @@ pub async fn noop(_body: String) -> impl IntoResponse {
     (StatusCode::OK, "Ok.")
 }
 
-/// Map dload DownloadStatus to qBittorrent state string
+/// Case-insensitive hash match (Sonarr sends lowercase, some clients may differ)
+fn hash_matches(download: &Download, hash: &str) -> bool {
+    download
+        .info_hash
+        .as_deref()
+        .map(|h| h.eq_ignore_ascii_case(hash))
+        .unwrap_or(false)
+        || download.id == hash
+}
+
+/// Map dload DownloadStatus to qBittorrent v5 state string.
+/// Sonarr only sets CanMoveFiles (auto-import) when state is "pausedUP" or "stoppedUP".
+/// Since we claim v5.0.0, use "stopped*" variants.
 fn to_qbit_state(status: &DownloadStatus) -> &'static str {
     match status {
         DownloadStatus::Queued => "queuedDL",
         DownloadStatus::Downloading => "downloading",
-        DownloadStatus::Paused => "pausedDL",
-        DownloadStatus::Completed => "pausedUP",
+        DownloadStatus::Paused => "stoppedDL",
+        DownloadStatus::Completed => "stoppedUP",
         DownloadStatus::Failed => "error",
         DownloadStatus::Stopped => "stoppedDL",
-        DownloadStatus::Seeding => "uploading",
+        DownloadStatus::Seeding => "stoppedUP",
     }
 }
 
@@ -55,11 +67,14 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         0
     };
 
-    serde_json::json!({
+    let progress = if d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
+    let magnet_uri = if d.url.starts_with("magnet:") { d.url.as_str() } else { "" };
+
+    let mut base = serde_json::json!({
         "hash": d.info_hash.as_deref().unwrap_or(&d.id),
         "name": d.filename,
         "size": d.total_size,
-        "progress": if d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 },
+        "progress": progress,
         "dlspeed": d.speed,
         "upspeed": d.upload_speed,
         "state": to_qbit_state(&d.status),
@@ -73,6 +88,9 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "eta": eta_secs,
         "num_seeds": d.seeds,
         "num_leechs": d.peers,
+    });
+
+    let extra = serde_json::json!({
         "num_complete": d.seeds,
         "num_incomplete": d.peers,
         "ratio": 0.0,
@@ -90,12 +108,27 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "total_size": d.total_size,
         "time_active": time_active,
         "tracker": "",
-        "magnet_uri": if d.url.starts_with("magnet:") { &d.url } else { "" },
+        "magnet_uri": magnet_uri,
         "priority": 0,
         "seq_dl": false,
         "f_l_piece_prio": false,
         "auto_tmm": false,
-    })
+        "availability": if d.progress >= 100.0 { -1.0 } else { progress },
+        "force_start": false,
+        "max_ratio": -1,
+        "max_seeding_time": -1,
+        "max_inactive_seeding_time": -1,
+        "seen_complete": completion_on,
+        "downloaded_session": d.downloaded_size,
+        "uploaded_session": 0,
+    });
+
+    if let (Some(base_map), Some(extra_map)) = (base.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra_map {
+            base_map.insert(k.clone(), v.clone());
+        }
+    }
+    base
 }
 
 fn parse_eta_to_secs(eta: &str) -> i64 {
@@ -145,15 +178,15 @@ pub async fn info(
         .filter(|d| d.protocol == Protocol::Torrent && d.info_hash.is_some())
         .collect();
 
-    // Filter by hashes
+    // Filter by hashes (case-insensitive)
     if let Some(ref hashes) = query.hashes {
-        let hash_set: Vec<&str> = hashes.split('|').collect();
+        let hash_set: Vec<String> = hashes.split('|').map(|h| h.to_ascii_lowercase()).collect();
         torrents.retain(|d| {
             d.info_hash
                 .as_deref()
-                .map(|h| hash_set.contains(&h))
+                .map(|h| hash_set.iter().any(|hs| h.eq_ignore_ascii_case(hs)))
                 .unwrap_or(false)
-                || hash_set.contains(&d.id.as_str())
+                || hash_set.contains(&d.id.to_ascii_lowercase())
         });
     }
 
@@ -204,11 +237,17 @@ pub async fn properties(
     let all = state.manager.get_all().await;
     let download = all
         .iter()
-        .find(|d| d.info_hash.as_deref() == Some(&hash) || d.id == hash);
+        .find(|d| hash_matches(d, &hash));
 
     match download {
         Some(d) => {
-            let elapsed = (chrono::Utc::now() - d.created_at).num_seconds();
+            let now = chrono::Utc::now();
+            let elapsed = (now - d.created_at).num_seconds();
+            let seeding_time = if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
+                d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
+            } else {
+                0
+            };
             Json(serde_json::json!({
                 "hash": d.info_hash.as_deref().unwrap_or(&d.id),
                 "name": d.filename,
@@ -235,14 +274,14 @@ pub async fn properties(
                 "seeds_total": d.seeds,
                 "share_ratio": 0,
                 "time_elapsed": elapsed,
-                "seeding_time": 0,
+                "seeding_time": seeding_time,
                 "dl_limit": -1,
                 "up_limit": -1,
                 "comment": "",
                 "created_by": "dload",
                 "total_wasted": 0,
                 "reannounce": 0,
-                "last_seen": chrono::Utc::now().timestamp(),
+                "last_seen": now.timestamp(),
             }))
             .into_response()
         }
@@ -262,7 +301,7 @@ pub async fn files(
     let all = state.manager.get_all().await;
     let download = all
         .iter()
-        .find(|d| d.info_hash.as_deref() == Some(&hash) || d.id == hash);
+        .find(|d| hash_matches(d, &hash));
 
     match download {
         Some(d) => {
@@ -366,6 +405,10 @@ pub async fn categories(State(state): State<QbitState>) -> impl IntoResponse {
     Json(serde_json::json!(cats))
 }
 
+pub async fn tags() -> impl IntoResponse {
+    Json(serde_json::json!([]))
+}
+
 pub async fn create_category(State(state): State<QbitState>, body: String) -> impl IntoResponse {
     let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
         .into_owned()
@@ -450,6 +493,7 @@ async fn handle_add(
     // Process magnet links / URLs
     for url in urls {
         let mut download = Download::new(url.clone(), &download_dir);
+        download.protocol = Protocol::Torrent;
         download.info_hash = crate::worker::extract_info_hash(&url);
         download.category = category.clone();
         download.content_path = Some(download.save_path.clone());
@@ -522,7 +566,7 @@ pub async fn delete(State(state): State<QbitState>, body: String) -> impl IntoRe
 
         if let Some(d) = all
             .iter()
-            .find(|d| d.info_hash.as_deref() == Some(hash) || d.id == hash)
+            .find(|d| hash_matches(d, hash))
         {
             if delete_files {
                 state.manager.remove_with_files(&d.id).await;
@@ -562,7 +606,7 @@ pub async fn pause(State(state): State<QbitState>, body: String) -> impl IntoRes
         }
         if let Some(d) = all
             .iter()
-            .find(|d| d.info_hash.as_deref() == Some(hash) || d.id == hash)
+            .find(|d| hash_matches(d, hash))
         {
             state.manager.pause_download(&d.id).await;
         }
@@ -598,7 +642,7 @@ pub async fn resume(State(state): State<QbitState>, body: String) -> impl IntoRe
         }
         if let Some(d) = all
             .iter()
-            .find(|d| d.info_hash.as_deref() == Some(hash) || d.id == hash)
+            .find(|d| hash_matches(d, hash))
         {
             state.manager.resume_download(&d.id).await;
         }
@@ -630,11 +674,38 @@ pub async fn set_category(State(state): State<QbitState>, body: String) -> impl 
         }
         if let Some(d) = all
             .iter()
-            .find(|d| d.info_hash.as_deref() == Some(hash) || d.id == hash)
+            .find(|d| hash_matches(d, hash))
         {
             let mut updated = d.clone();
             updated.category = category.clone();
             state.manager.update_download(&updated).await;
+        }
+    }
+
+    (StatusCode::OK, "Ok.")
+}
+
+pub async fn remove_completed(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let delete_files = params
+        .iter()
+        .find(|(k, _)| k == "deleteFiles")
+        .map(|(_, v)| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+
+    let all = state.manager.get_all().await;
+
+    for d in &all {
+        if d.protocol == Protocol::Torrent
+            && (d.status == DownloadStatus::Completed || d.status == DownloadStatus::Seeding)
+        {
+            if delete_files {
+                state.manager.remove_with_files(&d.id).await;
+            } else {
+                state.manager.remove(&d.id).await;
+            }
         }
     }
 

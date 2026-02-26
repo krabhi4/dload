@@ -29,13 +29,16 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
     // Auth routes (no session required)
     let auth_routes = Router::new()
         .route("/api/v2/auth/login", post(auth::login))
-        .route("/api/v2/auth/logout", post(auth::logout));
+        .route("/api/v2/auth/logout", post(auth::logout))
+        .layer(middleware::from_fn(log_requests));
 
     // App routes (session required)
     let app_routes = Router::new()
         .route("/api/v2/app/version", get(app::version))
         .route("/api/v2/app/webapiVersion", get(app::webapi_version))
-        .route("/api/v2/app/preferences", get(app::preferences));
+        .route("/api/v2/app/preferences", get(app::preferences))
+        .route("/api/v2/app/buildInfo", get(app::build_info))
+        .route("/api/v2/app/defaultSavePath", get(app::default_save_path));
 
     // Transfer routes (session required)
     let transfer_routes = Router::new()
@@ -48,6 +51,7 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/files", get(torrents::files))
         .route("/api/v2/torrents/trackers", get(torrents::trackers))
         .route("/api/v2/torrents/categories", get(torrents::categories))
+        .route("/api/v2/torrents/tags", get(torrents::tags))
         .route("/api/v2/torrents/createCategory", post(torrents::create_category))
         .route("/api/v2/torrents/add", post(torrents::add))
         .route("/api/v2/torrents/delete", post(torrents::delete))
@@ -65,7 +69,23 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/setLocation", post(torrents::noop))
         .route("/api/v2/torrents/rename", post(torrents::noop))
         .route("/api/v2/torrents/setSuperSeeding", post(torrents::noop))
-        .route("/api/v2/torrents/setAutoManagement", post(torrents::noop));
+        .route("/api/v2/torrents/setAutoManagement", post(torrents::noop))
+        .route("/api/v2/torrents/addTags", post(torrents::noop))
+        .route("/api/v2/torrents/removeTags", post(torrents::noop))
+        .route("/api/v2/torrents/editCategory", post(torrents::noop))
+        .route("/api/v2/torrents/removeCategories", post(torrents::noop))
+        .route("/api/v2/torrents/removeCompleted", post(torrents::remove_completed))
+        .route("/api/v2/torrents/recheck", post(torrents::noop))
+        .route("/api/v2/torrents/reannounce", post(torrents::noop))
+        .route("/api/v2/torrents/editTrackers", post(torrents::noop))
+        .route("/api/v2/torrents/removeTrackers", post(torrents::noop))
+        .route("/api/v2/torrents/addTrackers", post(torrents::noop))
+        .route("/api/v2/torrents/addPeers", post(torrents::noop))
+        .route("/api/v2/torrents/setDownloadLimit", post(torrents::noop))
+        .route("/api/v2/torrents/setUploadLimit", post(torrents::noop))
+        .route("/api/v2/torrents/filePrio", post(torrents::noop))
+        .route("/api/v2/torrents/toggleSequentialDownload", post(torrents::noop))
+        .route("/api/v2/torrents/toggleFirstLastPiecePrio", post(torrents::noop));
 
     // Protected routes need session middleware
     let protected = app_routes
@@ -74,11 +94,25 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
-        ));
+        ))
+        .layer(middleware::from_fn(log_requests));
 
     auth_routes
         .merge(protected)
         .with_state(state)
+}
+
+/// Log all qBit API requests with method, path, and response status for debugging.
+async fn log_requests(
+    request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let response = next.run(request).await;
+    let status = response.status();
+    tracing::info!("qbit_compat {} {} → {}", method, uri, status.as_u16());
+    response
 }
 
 /// Authenticate via SID cookie or Basic Auth fallback.
@@ -120,6 +154,7 @@ async fn require_session(
         }
     }
 
+    tracing::warn!("qbit_compat auth failed for {} {}", request.method(), request.uri());
     (StatusCode::FORBIDDEN, "Forbidden").into_response()
 }
 

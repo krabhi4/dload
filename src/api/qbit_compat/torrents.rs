@@ -474,7 +474,12 @@ async fn handle_add(
             "savepath" => {
                 let text = field.text().await?;
                 if !text.is_empty() {
-                    savepath = Some(text);
+                    let p = text.trim();
+                    if p.starts_with('/') && !p.contains("..") {
+                        savepath = Some(p.to_string());
+                    } else {
+                        tracing::warn!("qbit_compat: rejected invalid savepath: {}", text);
+                    }
                 }
             }
             _ => {
@@ -487,7 +492,20 @@ async fn handle_add(
     }
 
     let settings = state.manager.settings.read().await;
-    let download_dir = savepath.unwrap_or_else(|| settings.download_dir.clone());
+    let default_dir = settings.download_dir.clone();
+    let download_dir = match savepath {
+        Some(ref p) => {
+            let p = p.trim_end_matches('/');
+            let default_trimmed = default_dir.trim_end_matches('/');
+            if p == default_trimmed || p.starts_with(&format!("{}/", default_trimmed)) {
+                p.to_string()
+            } else {
+                tracing::warn!("qbit_compat: savepath '{}' outside download_dir, ignoring", p);
+                default_dir.clone()
+            }
+        }
+        None => default_dir.clone(),
+    };
     drop(settings);
 
     // Process magnet links / URLs
@@ -506,14 +524,15 @@ async fn handle_add(
 
     // Process uploaded .torrent files
     for bytes in torrent_bytes {
-        let name = librqbit::torrent_from_bytes::<librqbit::ByteBufOwned>(&bytes)
+        let raw_name = librqbit::torrent_from_bytes::<librqbit::ByteBufOwned>(&bytes)
             .ok()
             .and_then(|meta| meta.info.name.as_ref().map(|n| n.to_string()))
             .unwrap_or_else(|| "torrent-download".to_string());
+        let name = crate::domain::sanitize_filename(&raw_name);
 
         let mut download = Download::new(format!("torrent://{}", name), &download_dir);
         download.filename = name.clone();
-        download.save_path = format!("{}/{}", download_dir, name);
+        download.save_path = format!("{}/{}", download_dir.trim_end_matches('/'), name);
         download.category = category.clone();
         download.content_path = Some(download.save_path.clone());
         download.protocol = Protocol::Torrent;

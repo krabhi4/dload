@@ -269,6 +269,8 @@ async fn download_range(
     file.seek(std::io::SeekFrom::Start(start)).await?;
     let mut writer = BufWriter::with_capacity(256 * 1024, file);
 
+    let expected = end - start + 1;
+    let mut bytes_written: u64 = 0;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         if cancel_token.is_cancelled() {
@@ -277,10 +279,20 @@ async fn download_range(
         }
         let chunk = chunk?;
         writer.write_all(&chunk).await?;
-        downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        let len = chunk.len() as u64;
+        bytes_written += len;
+        downloaded.fetch_add(len, Ordering::Relaxed);
     }
 
     writer.flush().await?;
+
+    if bytes_written != expected {
+        return Err(anyhow::anyhow!(
+            "Range {}-{}: expected {} bytes, got {}",
+            start, end, expected, bytes_written
+        ));
+    }
+
     Ok(())
 }
 

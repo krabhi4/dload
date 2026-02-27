@@ -126,8 +126,10 @@ async fn require_session(
 ) -> impl IntoResponse {
     // Try SID cookie first
     if let Some(sid) = auth::extract_sid(&headers) {
-        if state.sessions.validate(&sid).await.is_some() {
-            return next.run(request).await.into_response();
+        if let Some((_username, role)) = state.sessions.validate(&sid).await {
+            if role == "ADMIN" {
+                return next.run(request).await.into_response();
+            }
         }
     }
 
@@ -170,9 +172,9 @@ fn base64_decode(input: &str) -> Result<String, ()> {
 fn validate_credentials(state: &QbitState, username: &str, password: &str) -> bool {
     // Always run bcrypt to prevent timing oracle on username existence
     const DUMMY_HASH: &str = "$2b$12$000000000000000000000uGKWMKFz95uGKWMKFz95uGKWMKFz9.";
-    let hash = match state.manager.repo.get_user_by_username(username) {
-        Ok(Some(u)) => u.password_hash,
-        _ => DUMMY_HASH.to_string(),
+    let (hash, is_admin) = match state.manager.repo.get_user_by_username(username) {
+        Ok(Some(u)) => (u.password_hash, u.role == crate::domain::Role::Admin),
+        _ => (DUMMY_HASH.to_string(), false),
     };
-    bcrypt::verify(password, &hash).unwrap_or(false)
+    bcrypt::verify(password, &hash).unwrap_or(false) && is_admin
 }

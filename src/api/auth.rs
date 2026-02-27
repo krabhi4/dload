@@ -450,13 +450,26 @@ async fn delete_user(
         }));
     }
 
-    // Prevent self-deletion
+    // Prevent self-deletion and last-admin deletion
     if let Ok(Some(target_user)) = state.repo.get_user_by_id(&id) {
         if target_user.username == claims.sub {
             return Json(serde_json::json!({
                 "success": false,
                 "error": "You cannot delete your own account"
             }));
+        }
+        if target_user.role == Role::Admin {
+            let admin_count = state.repo.get_all_users()
+                .unwrap_or_default()
+                .iter()
+                .filter(|u| u.role == Role::Admin)
+                .count();
+            if admin_count <= 1 {
+                return Json(serde_json::json!({
+                    "success": false,
+                    "error": "Cannot delete the last admin account"
+                }));
+            }
         }
     }
 

@@ -67,34 +67,40 @@ impl ManagerState {
         self.settings.read().await.download_dir.clone()
     }
 
+    /// Run a blocking repo operation off the async runtime.
+    async fn repo_blocking<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&crate::db::repository::Repository) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let repo = Arc::clone(&self.repo);
+        tokio::task::spawn_blocking(move || f(&repo))
+            .await
+            .expect("repo task panicked")
+    }
+
     async fn get_torrent_session(&self) -> anyhow::Result<Arc<Session>> {
         let dir = self.download_dir().await;
 
-        // Return existing session if it was created for the same directory
-        {
-            let guard = self.torrent_session.read().await;
-            if let Some((ref existing_dir, ref session)) = *guard {
-                if *existing_dir == dir {
-                    return Ok(session.clone());
-                }
+        // Hold write lock for the entire check-and-create to prevent races
+        let mut guard = self.torrent_session.write().await;
+        if let Some((ref existing_dir, ref session)) = *guard {
+            if *existing_dir == dir {
+                return Ok(session.clone());
             }
         }
 
-        // Create a new session for the (possibly changed) directory
         let session = Session::new(dir.clone().into())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create torrent session: {}", e))?;
 
-        {
-            let mut guard = self.torrent_session.write().await;
-            *guard = Some((dir, session.clone()));
-        }
-
+        *guard = Some((dir, session.clone()));
         Ok(session)
     }
 
     pub async fn add_download(&self, download: Download) {
-        if let Err(e) = self.repo.insert_download(&download) {
+        let dl = download.clone();
+        if let Err(e) = self.repo_blocking(move |repo| repo.insert_download(&dl)).await {
             tracing::error!("Failed to persist download to DB: {}", e);
         }
         let mut downloads = self.downloads.write().await;
@@ -108,7 +114,8 @@ impl ManagerState {
                 *d = download.clone();
             }
         } // lock released before DB call
-        if let Err(e) = self.repo.update_download(download) {
+        let dl = download.clone();
+        if let Err(e) = self.repo_blocking(move |repo| repo.update_download(&dl)).await {
             tracing::error!("Failed to update download in DB: {}", e);
         }
     }
@@ -133,7 +140,8 @@ impl ManagerState {
             }
         }
 
-        if let Err(e) = self.repo.delete_download(id) {
+        let id_owned = id.to_string();
+        if let Err(e) = self.repo_blocking(move |repo| repo.delete_download(&id_owned)).await {
             tracing::error!("Failed to delete download from DB: {}", e);
         }
         let mut downloads = self.downloads.write().await;
@@ -195,7 +203,8 @@ impl ManagerState {
         }
 
         // Clean up from DB and in-memory state
-        if let Err(e) = self.repo.delete_download(id) {
+        let id_owned = id.to_string();
+        if let Err(e) = self.repo_blocking(move |repo| repo.delete_download(&id_owned)).await {
             tracing::error!("Failed to delete download from DB: {}", e);
         }
         let mut downloads = self.downloads.write().await;
@@ -205,7 +214,10 @@ impl ManagerState {
     async fn register_cancel_token(&self, id: &str) -> CancellationToken {
         let token = CancellationToken::new();
         let mut tokens = self.cancel_tokens.write().await;
-        tokens.insert(id.to_string(), token.clone());
+        // Cancel any previous token to prevent orphaned tasks
+        if let Some(old) = tokens.insert(id.to_string(), token.clone()) {
+            old.cancel();
+        }
         token
     }
 
@@ -250,7 +262,7 @@ impl ManagerState {
             }
         };
         if let Some(d) = download {
-            if let Err(e) = self.repo.update_download(&d) {
+            if let Err(e) = self.repo_blocking(move |repo| repo.update_download(&d)).await {
                 tracing::error!("Failed to persist pause state: {}", e);
             }
         }
@@ -384,7 +396,7 @@ impl ManagerState {
             let elapsed = now.duration_since(last_time).as_secs_f64();
 
             let speed = if elapsed > 0.0 {
-                ((current_downloaded - last_downloaded) as f64 / elapsed) as u64
+                (current_downloaded.saturating_sub(last_downloaded) as f64 / elapsed) as u64
             } else {
                 0
             };
@@ -432,7 +444,8 @@ impl ManagerState {
             if db_tick >= 5 {
                 db_tick = 0;
                 if let Some(snap) = snapshot {
-                    let _ = self.repo.update_download(&snap);
+                    let repo = Arc::clone(&self.repo);
+                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
                 }
             }
         }
@@ -446,9 +459,14 @@ impl ManagerState {
 
                 let mut completed = result.download;
                 completed.status = DownloadStatus::Completed;
+                completed.progress = 100.0;
+                if completed.total_size > 0 {
+                    completed.downloaded_size = completed.total_size;
+                }
                 completed.speed = 0;
                 completed.connections = 0;
                 completed.eta = None;
+                completed.completed_at = Some(chrono::Utc::now());
                 self.update_download(&completed).await;
 
                 // If the downloaded file is a .torrent, auto-start it
@@ -467,12 +485,13 @@ impl ManagerState {
                             let dir = settings.download_dir.clone();
                             drop(settings);
 
-                            let name = librqbit::torrent_from_bytes(&torrent_bytes)
+                            let raw_name = librqbit::torrent_from_bytes(&torrent_bytes)
                                 .ok()
                                 .and_then(|meta| {
                                     meta.info.name.as_ref().map(|n: &librqbit::ByteBufOwned| n.to_string())
                                 })
                                 .unwrap_or_else(|| "torrent-download".to_string());
+                            let name = crate::domain::sanitize_filename(&raw_name);
 
                             let mut torrent_download = Download::new(
                                 format!("torrent://{}", name),
@@ -485,31 +504,21 @@ impl ManagerState {
                             let torrent_cancel = self.register_cancel_token(&torrent_download.id).await;
                             self.add_download(torrent_download.clone()).await;
 
-                            match self.get_torrent_session().await {
-                                Ok(_session) => {
-                                    let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
-                                    if let Err(e) = session_add_and_wait(
-                                        &self, add, &mut torrent_download, &torrent_cancel
-                                    ).await {
-                                        let current_status = {
-                                            let downloads = self.downloads.read().await;
-                                            downloads.get(&torrent_download.id).map(|d| d.status.clone())
-                                        };
-                                        match current_status {
-                                            Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
-                                            _ => {
-                                                torrent_download.status = DownloadStatus::Failed;
-                                                torrent_download.error_message = Some(format!("Torrent failed: {}", e));
-                                                self.update_download(&torrent_download).await;
-                                            }
-                                        }
+                            let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
+                            if let Err(e) = session_add_and_wait(
+                                &self, add, &mut torrent_download, &torrent_cancel
+                            ).await {
+                                let current_status = {
+                                    let downloads = self.downloads.read().await;
+                                    downloads.get(&torrent_download.id).map(|d| d.status.clone())
+                                };
+                                match current_status {
+                                    Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
+                                    _ => {
+                                        torrent_download.status = DownloadStatus::Failed;
+                                        torrent_download.error_message = Some(format!("Torrent failed: {}", e));
+                                        self.update_download(&torrent_download).await;
                                     }
-                                }
-                                Err(e) => {
-                                    torrent_download.status = DownloadStatus::Failed;
-                                    torrent_download.error_message =
-                                        Some(format!("Failed to init torrent session: {}", e));
-                                    self.update_download(&torrent_download).await;
                                 }
                             }
 
@@ -562,84 +571,66 @@ impl ManagerState {
             download.status = DownloadStatus::Downloading;
             state.update_download(&download).await;
 
-            match state.get_torrent_session().await {
-                Ok(_session) => {
-                    let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
-                    if let Err(e) = session_add_and_wait(&state, add, &mut download, &cancel_token).await {
-                        let current_status = {
-                            let downloads = state.downloads.read().await;
-                            downloads.get(&download.id).map(|d| d.status.clone())
-                        };
-                        match current_status {
-                            Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
-                            _ => {
-                                download.status = DownloadStatus::Failed;
-                                download.error_message = Some(format!("Torrent failed: {}", e));
-                                state.update_download(&download).await;
-                            }
-                        }
+            let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
+            if let Err(e) = session_add_and_wait(&state, add, &mut download, &cancel_token).await {
+                let current_status = {
+                    let downloads = state.downloads.read().await;
+                    downloads.get(&download.id).map(|d| d.status.clone())
+                };
+                match current_status {
+                    Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
+                    _ => {
+                        download.status = DownloadStatus::Failed;
+                        download.error_message = Some(format!("Torrent failed: {}", e));
+                        state.update_download(&download).await;
                     }
-                }
-                Err(e) => {
-                    download.status = DownloadStatus::Failed;
-                    download.error_message = Some(format!("Failed to init torrent session: {}", e));
-                    state.update_download(&download).await;
                 }
             }
         });
     }
 
     async fn handle_torrent_download(self: Arc<Self>, mut download: Download, cancel_token: CancellationToken) {
-        match self.get_torrent_session().await {
-            Ok(_session) => {
-                let url = download.url.clone();
-                let add = if url.starts_with("magnet:") {
-                    librqbit::AddTorrent::from_url(&url)
-                } else {
-                    match reqwest::get(&url).await {
-                        Ok(resp) => {
-                            let bytes = match resp.bytes().await {
-                                Ok(b) => b,
-                                Err(e) => {
-                                    download.status = DownloadStatus::Failed;
-                                    download.error_message = Some(e.to_string());
-                                    self.update_download(&download).await;
-                                    return;
-                                }
-                            };
-                            librqbit::AddTorrent::from_bytes(bytes)
-                        }
+        let url = download.url.clone();
+        let add = if url.starts_with("magnet:") {
+            librqbit::AddTorrent::from_url(&url)
+        } else {
+            match reqwest::get(&url).await {
+                Ok(resp) => {
+                    let bytes = match resp.bytes().await {
+                        Ok(b) => b,
                         Err(e) => {
                             download.status = DownloadStatus::Failed;
                             download.error_message = Some(e.to_string());
                             self.update_download(&download).await;
                             return;
                         }
-                    }
-                };
-
-                if let Err(e) = session_add_and_wait(&self, add, &mut download, &cancel_token).await {
-                    // Only mark as failed if not already handled (paused/stopped/completed)
-                    let current_status = {
-                        let downloads = self.downloads.read().await;
-                        downloads.get(&download.id).map(|d| d.status.clone())
                     };
-                    match current_status {
-                        Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {
-                            // Already handled by monitor_torrent
-                        }
-                        _ => {
-                            download.status = DownloadStatus::Failed;
-                            download.error_message = Some(format!("Torrent failed: {}", e));
-                            self.update_download(&download).await;
-                        }
-                    }
+                    librqbit::AddTorrent::from_bytes(bytes)
+                }
+                Err(e) => {
+                    download.status = DownloadStatus::Failed;
+                    download.error_message = Some(e.to_string());
+                    self.update_download(&download).await;
+                    return;
                 }
             }
-            Err(e) => {
-                download.status = DownloadStatus::Failed;
-                download.error_message = Some(format!("Failed to init torrent session: {}", e));
-                self.update_download(&download).await;
+        };
+
+        if let Err(e) = session_add_and_wait(&self, add, &mut download, &cancel_token).await {
+            // Only mark as failed if not already handled (paused/stopped/completed)
+            let current_status = {
+                let downloads = self.downloads.read().await;
+                downloads.get(&download.id).map(|d| d.status.clone())
+            };
+            match current_status {
+                Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {
+                    // Already handled by monitor_torrent
+                }
+                _ => {
+                    download.status = DownloadStatus::Failed;
+                    download.error_message = Some(format!("Torrent failed: {}", e));
+                    self.update_download(&download).await;
+                }
             }
         }
     }
@@ -666,11 +657,19 @@ impl ManagerState {
             Some(h) => h,
             None => {
                 tracing::error!("Torrent handle {} not found in session", torrent_id);
-                let mut downloads = self.downloads.write().await;
-                if let Some(d) = downloads.get_mut(&download_id) {
-                    d.status = DownloadStatus::Failed;
-                    d.error_message = Some("Torrent handle lost".to_string());
-                    let _ = self.repo.update_download(d);
+                let snap = {
+                    let mut downloads = self.downloads.write().await;
+                    if let Some(d) = downloads.get_mut(&download_id) {
+                        d.status = DownloadStatus::Failed;
+                        d.error_message = Some("Torrent handle lost".to_string());
+                        Some(d.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(snap) = snap {
+                    let repo = Arc::clone(&self.repo);
+                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
                 }
                 return;
             }
@@ -695,26 +694,13 @@ impl ManagerState {
                             let mut handles = self.torrent_handles.write().await;
                             handles.remove(&download_id);
                         }
-
-                        let current_status = {
-                            let downloads = self.downloads.read().await;
-                            downloads.get(&download_id).map(|d| d.status.clone())
-                        };
-                        if !matches!(current_status, Some(DownloadStatus::Stopped)) {
-                            let snap = {
-                                let mut downloads = self.downloads.write().await;
-                                if let Some(d) = downloads.get_mut(&download_id) {
-                                    d.status = DownloadStatus::Completed;
-                                    d.progress = 100.0;
-                                    d.speed = 0;
-                                    d.upload_speed = 0;
-                                    Some(d.clone())
-                                } else {
-                                    None
-                                }
-                            };
-                            if let Some(snap) = snap {
-                                let _ = self.repo.update_download(&snap);
+                        // Don't set status here — let the caller (remove/cancel) handle final state.
+                        // Just clean up speed so the UI doesn't show stale values.
+                        {
+                            let mut downloads = self.downloads.write().await;
+                            if let Some(d) = downloads.get_mut(&download_id) {
+                                d.speed = 0;
+                                d.upload_speed = 0;
                             }
                         }
                         return;
@@ -736,7 +722,8 @@ impl ManagerState {
                     }
                 };
                 if let Some(snap) = snap {
-                    let _ = self.repo.update_download(&snap);
+                    let repo = Arc::clone(&self.repo);
+                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
                 }
                 return;
             }
@@ -781,7 +768,8 @@ impl ManagerState {
             if db_tick >= 5 {
                 db_tick = 0;
                 if let Some(snap) = snapshot {
-                    let _ = self.repo.update_download(&snap);
+                    let repo = Arc::clone(&self.repo);
+                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
                 }
             }
 
@@ -821,9 +809,10 @@ async fn session_add_and_wait(
     }
 
     // Update name, save_path, content_path, and info_hash from torrent metadata
-    if let Some(name) = handle.name() {
+    if let Some(raw_name) = handle.name() {
+        let name = crate::domain::sanitize_filename(&raw_name);
         download.filename = name.clone();
-        let new_path = format!("{}/{}", download_dir, name);
+        let new_path = format!("{}/{}", download_dir.trim_end_matches('/'), name);
         download.save_path = new_path.clone();
         download.content_path = Some(new_path);
     }

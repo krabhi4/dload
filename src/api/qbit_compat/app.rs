@@ -70,12 +70,13 @@ pub async fn default_save_path(State(state): State<QbitState>) -> impl IntoRespo
     (StatusCode::OK, save_path)
 }
 
-pub async fn transfer_info() -> impl IntoResponse {
+pub async fn transfer_info(State(state): State<QbitState>) -> impl IntoResponse {
+    let snap = state.manager.transfer_snapshot().await;
     Json(serde_json::json!({
-        "dl_info_speed": 0,
-        "dl_info_data": 0,
-        "up_info_speed": 0,
-        "up_info_data": 0,
+        "dl_info_speed": snap.dl_info_speed,
+        "dl_info_data": snap.dl_info_data,
+        "up_info_speed": snap.up_info_speed,
+        "up_info_data": snap.up_info_data,
         "dl_rate_limit": 0,
         "up_rate_limit": 0,
         "dht_nodes": 0,

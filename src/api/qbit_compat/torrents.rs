@@ -101,8 +101,8 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "last_activity": now.timestamp(),
         "downloaded": d.downloaded_size,
         "uploaded": 0,
-        "dl_limit": -1,
-        "up_limit": -1,
+        "dl_limit": d.dl_limit,
+        "up_limit": d.up_limit,
         "amount_left": d.total_size.saturating_sub(d.downloaded_size),
         "completed": d.downloaded_size,
         "total_size": d.total_size,
@@ -110,8 +110,8 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "tracker": "",
         "magnet_uri": magnet_uri,
         "priority": 0,
-        "seq_dl": false,
-        "f_l_piece_prio": false,
+        "seq_dl": d.sequential_download,
+        "f_l_piece_prio": d.first_last_piece_prio,
         "auto_tmm": false,
         "availability": if d.progress >= 100.0 { -1.0 } else { progress },
         "force_start": false,
@@ -729,4 +729,142 @@ pub async fn remove_completed(State(state): State<QbitState>, body: String) -> i
     }
 
     (StatusCode::OK, "Ok.")
+}
+
+/// Parse a pipe-separated hashes field and return matching download IDs.
+fn resolve_ids(all: &[Download], hashes: &str) -> Vec<String> {
+    if hashes == "all" {
+        return all
+            .iter()
+            .filter(|d| d.protocol == Protocol::Torrent)
+            .map(|d| d.id.clone())
+            .collect();
+    }
+    hashes
+        .split('|')
+        .filter_map(|h| {
+            let h = h.trim();
+            if h.is_empty() {
+                return None;
+            }
+            all.iter().find(|d| hash_matches(d, h)).map(|d| d.id.clone())
+        })
+        .collect()
+}
+
+pub async fn set_location(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params.iter().find(|(k, _)| k == "hashes").map(|(_, v)| v.as_str()).unwrap_or("");
+    let location = params.iter().find(|(k, _)| k == "location").map(|(_, v)| v.as_str()).unwrap_or("");
+
+    if location.is_empty() {
+        return (StatusCode::OK, "Ok.").into_response();
+    }
+
+    let all = state.manager.get_all().await;
+    for id in resolve_ids(&all, hashes) {
+        state.manager.set_location(&id, location).await;
+    }
+    (StatusCode::OK, "Ok.").into_response()
+}
+
+pub async fn set_download_limit(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params.iter().find(|(k, _)| k == "hashes").map(|(_, v)| v.as_str()).unwrap_or("");
+    let limit: i64 = params
+        .iter()
+        .find(|(k, _)| k == "limit")
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(-1);
+
+    let all = state.manager.get_all().await;
+    for id in resolve_ids(&all, hashes) {
+        state.manager.set_download_limit(&id, limit).await;
+    }
+    (StatusCode::OK, "Ok.").into_response()
+}
+
+pub async fn set_upload_limit(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params.iter().find(|(k, _)| k == "hashes").map(|(_, v)| v.as_str()).unwrap_or("");
+    let limit: i64 = params
+        .iter()
+        .find(|(k, _)| k == "limit")
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or(-1);
+
+    let all = state.manager.get_all().await;
+    for id in resolve_ids(&all, hashes) {
+        state.manager.set_upload_limit(&id, limit).await;
+    }
+    (StatusCode::OK, "Ok.").into_response()
+}
+
+pub async fn toggle_sequential_download(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params.iter().find(|(k, _)| k == "hashes").map(|(_, v)| v.as_str()).unwrap_or("");
+
+    let all = state.manager.get_all().await;
+    for id in resolve_ids(&all, hashes) {
+        state.manager.toggle_sequential_download(&id).await;
+    }
+    (StatusCode::OK, "Ok.").into_response()
+}
+
+pub async fn toggle_first_last_piece_prio(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params.iter().find(|(k, _)| k == "hashes").map(|(_, v)| v.as_str()).unwrap_or("");
+
+    let all = state.manager.get_all().await;
+    for id in resolve_ids(&all, hashes) {
+        state.manager.toggle_first_last_piece_prio(&id).await;
+    }
+    (StatusCode::OK, "Ok.").into_response()
+}
+
+/// filePrio: update per-file priorities for a torrent.
+/// qBit clients (including Sonarr/Radarr) send pairs positionally:
+///   `hash=<h>&id[]=0&priority[]=6&id[]=1&priority[]=0`
+/// or the non-array form for single files:
+///   `hash=<h>&id=0&priority=6`
+pub async fn file_prio(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hash = params.iter().find(|(k, _)| k == "hash").map(|(_, v)| v.as_str()).unwrap_or("");
+
+    // Collect ids and priorities as separate positional lists, then zip them.
+    // This correctly handles both `id[]=0&priority[]=6&id[]=1&priority[]=0`
+    // and the single-pair `id=0&priority=6` form.
+    let ids: Vec<u32> = params.iter()
+        .filter(|(k, _)| k == "id" || k == "id[]")
+        .filter_map(|(_, v)| v.parse::<u32>().ok())
+        .collect();
+    let prios: Vec<u32> = params.iter()
+        .filter(|(k, _)| k == "priority" || k == "priority[]")
+        .filter_map(|(_, v)| v.parse::<u32>().ok())
+        .collect();
+
+    let priorities: Vec<(u32, u32)> = ids.into_iter()
+        .zip(prios.into_iter())
+        .collect();
+
+    if !hash.is_empty() && !priorities.is_empty() {
+        let all = state.manager.get_all().await;
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
+            let id = d.id.clone();
+            state.manager.set_file_priority(&id, &priorities).await;
+        }
+    }
+    (StatusCode::OK, "Ok.").into_response()
 }

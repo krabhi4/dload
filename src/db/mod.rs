@@ -43,11 +43,21 @@ impl Database {
             );",
         )?;
 
-        let _ = conn.execute_batch(
-            "ALTER TABLE downloads ADD COLUMN info_hash TEXT;
-             ALTER TABLE downloads ADD COLUMN category TEXT;
-             ALTER TABLE downloads ADD COLUMN content_path TEXT;"
-        );
+        // Each column migration is independent so a partial upgrade (duplicate-column error)
+        // on one column does not prevent the others from being applied.
+        let migrations = [
+            "ALTER TABLE downloads ADD COLUMN info_hash TEXT",
+            "ALTER TABLE downloads ADD COLUMN category TEXT",
+            "ALTER TABLE downloads ADD COLUMN content_path TEXT",
+            "ALTER TABLE downloads ADD COLUMN dl_limit INTEGER DEFAULT -1",
+            "ALTER TABLE downloads ADD COLUMN up_limit INTEGER DEFAULT -1",
+            "ALTER TABLE downloads ADD COLUMN sequential_download INTEGER DEFAULT 0",
+            "ALTER TABLE downloads ADD COLUMN first_last_piece_prio INTEGER DEFAULT 0",
+            "ALTER TABLE downloads ADD COLUMN file_priorities_json TEXT",
+        ];
+        for sql in &migrations {
+            let _ = conn.execute_batch(sql);
+        }
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);"
         )?;

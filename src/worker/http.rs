@@ -34,6 +34,8 @@ impl HttpDownloader {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<HttpDownloadResult> {
+        const MAX_RETRIES: usize = 3;
+
         let client = reqwest::Client::builder()
             .tcp_nodelay(true)
             .pool_max_idle_per_host(self.max_connections + 2)
@@ -84,21 +86,50 @@ impl HttpDownloader {
         self.download.total_size = content_length;
         self.total_size.store(content_length, Ordering::Relaxed);
 
-        // Decide number of connections
-        let min_chunk = 1024 * 1024; // 1MB minimum per chunk
-        let num_conns = if accepts_ranges && content_length > min_chunk as u64 {
-            let possible = (content_length / min_chunk as u64) as usize;
-            possible.min(self.max_connections).max(1)
+        // Resume: check if a partial file already exists
+        let resume_offset = if accepts_ranges {
+            compute_resume_offset(&self.download.save_path).await
         } else {
-            1
+            0
         };
 
-        if num_conns <= 1 || content_length == 0 {
-            // Single-connection download
-            self.download_single(&client).await?;
-        } else {
-            // Multi-connection download
-            self.download_multi(&client, content_length, num_conns).await?;
+        // Seed the progress counter with already-downloaded bytes so the monitor
+        // shows correct totals across resume.
+        if resume_offset > 0 {
+            self.downloaded.store(resume_offset, Ordering::Relaxed);
+        }
+
+        // Retry loop for transient errors (5xx, connection reset)
+        let mut last_err = None;
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                // Exponential backoff: 1s, 2s, 4s
+                let delay = Duration::from_secs(1 << (attempt - 1).min(3));
+                tokio::time::sleep(delay).await;
+                tracing::warn!("HTTP download retry {}/{}: {}", attempt, MAX_RETRIES, self.download.url);
+            }
+
+            let result = self.try_download(&client, content_length, accepts_ranges, resume_offset).await;
+            match result {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    // Retry on transient server errors; abort on client errors
+                    if msg.contains("503") || msg.contains("502") || msg.contains("500")
+                        || msg.contains("connection") || msg.contains("timeout")
+                    {
+                        last_err = Some(e);
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(e);
         }
 
         self.download.status = DownloadStatus::Completed;
@@ -122,8 +153,49 @@ impl HttpDownloader {
         })
     }
 
-    async fn download_single(&mut self, client: &reqwest::Client) -> anyhow::Result<()> {
-        let response = client.get(&self.download.url).send().await?;
+    async fn try_download(
+        &mut self,
+        client: &reqwest::Client,
+        content_length: u64,
+        accepts_ranges: bool,
+        resume_offset: u64,
+    ) -> anyhow::Result<()> {
+        // Decide number of connections (only for fresh downloads, not resumed single-conn)
+        let min_chunk = 1024 * 1024;
+        let use_multi = accepts_ranges
+            && content_length > min_chunk as u64
+            && resume_offset == 0
+            && self.max_connections > 1;
+
+        if use_multi {
+            self.download_multi(client, content_length, self.max_connections).await
+        } else {
+            self.download_single(client, resume_offset).await
+        }
+    }
+
+    async fn download_single(&mut self, client: &reqwest::Client, resume_offset: u64) -> anyhow::Result<()> {
+        // Build request: use Range header if resuming
+        let request = if resume_offset > 0 {
+            client.get(&self.download.url)
+                .header("Range", format!("bytes={}-", resume_offset))
+        } else {
+            client.get(&self.download.url)
+        };
+
+        let response = request.send().await?;
+        let status = response.status();
+
+        // Handle 5xx as retryable error
+        if status.is_server_error() {
+            return Err(anyhow::anyhow!("Server error {}", status.as_u16()));
+        }
+
+        // If we requested a range but got 200 (no range support), restart from zero
+        if resume_offset > 0 && status == reqwest::StatusCode::OK {
+            // Server doesn't support ranges; truncate and restart
+            self.downloaded.store(0, Ordering::Relaxed);
+        }
 
         // Update filename/size from GET response if HEAD didn't provide them
         if self.download.total_size == 0 {
@@ -151,7 +223,24 @@ impl HttpDownloader {
         }
 
         self.active_conns.store(1, Ordering::Relaxed);
-        let file = tokio::fs::File::create(&self.download.save_path).await?;
+
+        // Open file: append if resuming (206 response), truncate if starting fresh
+        let file = if resume_offset > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+            tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&self.download.save_path)
+                .await?
+        } else {
+            tokio::fs::File::create(&self.download.save_path).await?
+        };
+
+        let mut file = file;
+        if resume_offset > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+            use tokio::io::AsyncSeekExt;
+            file.seek(std::io::SeekFrom::End(0)).await?;
+        }
         let mut writer = BufWriter::with_capacity(256 * 1024, file);
         let mut stream = response.bytes_stream();
 
@@ -330,6 +419,11 @@ fn urlencoding_decode(s: &str) -> String {
         }
     }
     result
+}
+
+/// Return the size of an existing partial file, or 0 if none exists.
+async fn compute_resume_offset(path: &str) -> u64 {
+    tokio::fs::metadata(path).await.map(|m| m.len()).unwrap_or(0)
 }
 
 async fn check_torrent_magic(path: &str) -> bool {

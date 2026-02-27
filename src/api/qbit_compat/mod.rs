@@ -66,7 +66,7 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/bottomPrio", post(torrents::noop))
         .route("/api/v2/torrents/increasePrio", post(torrents::noop))
         .route("/api/v2/torrents/decreasePrio", post(torrents::noop))
-        .route("/api/v2/torrents/setLocation", post(torrents::noop))
+        .route("/api/v2/torrents/setLocation", post(torrents::set_location))
         .route("/api/v2/torrents/rename", post(torrents::noop))
         .route("/api/v2/torrents/setSuperSeeding", post(torrents::noop))
         .route("/api/v2/torrents/setAutoManagement", post(torrents::noop))
@@ -81,11 +81,11 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/removeTrackers", post(torrents::noop))
         .route("/api/v2/torrents/addTrackers", post(torrents::noop))
         .route("/api/v2/torrents/addPeers", post(torrents::noop))
-        .route("/api/v2/torrents/setDownloadLimit", post(torrents::noop))
-        .route("/api/v2/torrents/setUploadLimit", post(torrents::noop))
-        .route("/api/v2/torrents/filePrio", post(torrents::noop))
-        .route("/api/v2/torrents/toggleSequentialDownload", post(torrents::noop))
-        .route("/api/v2/torrents/toggleFirstLastPiecePrio", post(torrents::noop));
+        .route("/api/v2/torrents/setDownloadLimit", post(torrents::set_download_limit))
+        .route("/api/v2/torrents/setUploadLimit", post(torrents::set_upload_limit))
+        .route("/api/v2/torrents/filePrio", post(torrents::file_prio))
+        .route("/api/v2/torrents/toggleSequentialDownload", post(torrents::toggle_sequential_download))
+        .route("/api/v2/torrents/toggleFirstLastPiecePrio", post(torrents::toggle_first_last_piece_prio));
 
     // Protected routes need session middleware
     let protected = app_routes

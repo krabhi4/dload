@@ -1,6 +1,7 @@
 var API_BASE = '/api';
 var token = localStorage.getItem('dload_token') || '';
 var refreshInterval = null;
+var eventSource = null;
 var lastDownloads = [];
 var openMenuId = null;
 var expandedId = null;
@@ -1122,6 +1123,10 @@ function logout() {
         clearInterval(refreshInterval);
         refreshInterval = null;
     }
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
 
     // Reset login form to Sign In state
     var loginForm = document.getElementById('login-form');
@@ -1248,8 +1253,36 @@ async function startApp() {
         window._hashListenerAdded = true;
     }
 
-    if (refreshInterval) clearInterval(refreshInterval);
-    refreshInterval = setInterval(loadDownloads, 1000);
+    // Prefer SSE for live updates; fall back to 5-second polling if unavailable.
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
+    if (typeof EventSource !== 'undefined') {
+        try {
+            eventSource = new EventSource('/api/downloads/events');
+            eventSource.onmessage = function() {
+                // SSE is working — cancel any fallback poll loop
+                if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
+                loadDownloads();
+            };
+            eventSource.onerror = function() {
+                // Connection dropped — close and start polling fallback
+                if (eventSource) { eventSource.close(); eventSource = null; }
+                if (!refreshInterval) {
+                    refreshInterval = setInterval(loadDownloads, 5000);
+                }
+            };
+            // Clear any existing poll interval when SSE is active
+            if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
+        } catch (e) {
+            if (refreshInterval) clearInterval(refreshInterval);
+            refreshInterval = setInterval(loadDownloads, 5000);
+        }
+    } else {
+        if (refreshInterval) clearInterval(refreshInterval);
+        refreshInterval = setInterval(loadDownloads, 5000);
+    }
 }
 
 async function updateUserInformation() {

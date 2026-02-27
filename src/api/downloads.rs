@@ -2,10 +2,12 @@ use crate::domain::{Claims, Download, DownloadStatus, jwt_secret};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, Query, State},
-    response::Json,
+    response::{Json, sse::{Event, KeepAlive, Sse}},
     routing::{delete, get, post},
     Router,
 };
+use futures::stream::Stream;
+use std::convert::Infallible;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -53,6 +55,7 @@ fn require_admin(token: &str) -> Result<Claims, String> {
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/api/downloads", get(list_downloads).post(add_download))
+        .route("/api/downloads/events", get(stream_download_events))
         .route("/api/downloads/:id", delete(remove_download))
         .route("/api/downloads/:id/pause", post(pause_download))
         .route("/api/downloads/:id/cancel", post(cancel_download))
@@ -253,4 +256,33 @@ fn is_private_ip(ip: &IpAddr) -> bool {
             v6.is_loopback() || v6.is_unspecified()
         }
     }
+}
+
+/// SSE endpoint — streams a `data: <json>` line on every download status/progress change.
+/// No authentication required; events contain only ID and status (no secrets).
+/// Clients use this to trigger a poll refresh rather than polling every second blindly.
+async fn stream_download_events(
+    State(state): State<SharedState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = state.events.subscribe();
+
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(evt) => {
+                    let data = serde_json::to_string(&evt).unwrap_or_default();
+                    yield Ok(Event::default().data(data));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // We dropped some events under load — emit a generic "refresh" hint
+                    yield Ok(Event::default().event("lag").data("{}"));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }

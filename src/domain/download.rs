@@ -73,13 +73,21 @@ pub struct Download {
     pub info_hash: Option<String>,
     pub category: Option<String>,
     pub content_path: Option<String>,
+    /// Per-download speed limit in bytes/s; -1 = unlimited (mirrors qBit dl_limit)
+    pub dl_limit: i64,
+    /// Per-download upload limit in bytes/s; -1 = unlimited (mirrors qBit up_limit)
+    pub up_limit: i64,
+    pub sequential_download: bool,
+    pub first_last_piece_prio: bool,
+    /// JSON map of file index (string) → priority (u32); None = no per-file priorities set
+    pub file_priorities_json: Option<String>,
 }
 
 impl Download {
     pub fn new(url: String, save_dir: &str) -> Self {
         let raw_filename = url
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or("download")
             .to_string();
         let filename = sanitize_filename(&raw_filename);
@@ -106,6 +114,11 @@ impl Download {
             info_hash: None,
             category: None,
             content_path: None,
+            dl_limit: -1,
+            up_limit: -1,
+            sequential_download: false,
+            first_last_piece_prio: false,
+            file_priorities_json: None,
         }
     }
 }

@@ -5,8 +5,16 @@ use librqbit::api::TorrentIdOrHash;
 use librqbit::Session;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
+
+/// Lightweight event emitted on every status/progress change.
+/// SSE consumers receive this; the UI uses it to trigger a poll refresh.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DownloadEvent {
+    pub id: String,
+    pub status: String,
+}
 
 #[derive(Clone)]
 pub struct ManagerState {
@@ -19,6 +27,9 @@ pub struct ManagerState {
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Maps download ID -> librqbit torrent handle ID for pause/resume
     torrent_handles: Arc<RwLock<HashMap<String, usize>>>,
+    /// Broadcast channel for download change events (SSE).
+    /// Receiver lag is discarded silently — UI will fall back to polling.
+    pub events: broadcast::Sender<DownloadEvent>,
 }
 
 impl ManagerState {
@@ -52,6 +63,7 @@ impl ManagerState {
             }
         };
 
+        let (events_tx, _) = broadcast::channel(64);
         Self {
             downloads: Arc::new(RwLock::new(downloads)),
             settings: Arc::new(RwLock::new(settings)),
@@ -59,6 +71,7 @@ impl ManagerState {
             torrent_session: Arc::new(RwLock::new(None)),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             torrent_handles: Arc::new(RwLock::new(HashMap::new())),
+            events: events_tx,
         }
     }
 
@@ -114,6 +127,11 @@ impl ManagerState {
                 *d = download.clone();
             }
         } // lock released before DB call
+        // Notify SSE subscribers; ignore SendError (no active subscribers).
+        let _ = self.events.send(DownloadEvent {
+            id: download.id.clone(),
+            status: format!("{:?}", download.status),
+        });
         let dl = download.clone();
         if let Err(e) = self.repo_blocking(move |repo| repo.update_download(&dl)).await {
             tracing::error!("Failed to update download in DB: {}", e);
@@ -123,6 +141,18 @@ impl ManagerState {
     pub async fn get_all(&self) -> Vec<Download> {
         let downloads = self.downloads.read().await;
         downloads.values().cloned().collect()
+    }
+
+    pub async fn transfer_snapshot(&self) -> TransferSnapshot {
+        let downloads = self.downloads.read().await;
+        let mut snap = TransferSnapshot { dl_info_speed: 0, up_info_speed: 0, dl_info_data: 0, up_info_data: 0 };
+        for d in downloads.values() {
+            snap.dl_info_speed += d.speed;
+            snap.up_info_speed += d.upload_speed;
+            snap.dl_info_data += d.downloaded_size;
+            snap.up_info_data += d.downloaded_size; // upload_data not tracked separately
+        }
+        snap
     }
 
     pub async fn remove(&self, id: &str) {
@@ -325,17 +355,52 @@ impl ManagerState {
         state.start_download(d).await;
     }
 
+    /// Promote Queued downloads to Downloading (spawning workers) until max_concurrent is reached.
+    /// Updates statuses in-memory and DB, and spawns workers for each promoted download.
+    pub async fn schedule_queued(self: &Arc<Self>) {
+        let max_concurrent = {
+            let settings = self.settings.read().await;
+            settings.max_concurrent as usize
+        };
+
+        let (active_count, mut queued) = {
+            let downloads = self.downloads.read().await;
+            let active = downloads.values().filter(|d| {
+                d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Seeding
+            }).count();
+            let mut q: Vec<Download> = downloads.values()
+                .filter(|d| d.status == DownloadStatus::Queued)
+                .cloned()
+                .collect();
+            q.sort_by_key(|d| d.created_at);
+            (active, q)
+        };
+
+        let slots = max_concurrent.saturating_sub(active_count);
+        queued.truncate(slots);
+
+        // Promote each selected download: update status synchronously, then spawn worker.
+        // We call start_download directly (it does the spawn internally), so we only
+        // await the synchronous pre-spawn status update — not the long-running download.
+        for download in queued {
+            Arc::clone(self).start_download(download).await;
+        }
+    }
+
     pub async fn start_download(self: Arc<Self>, download: Download) {
         let state = Arc::clone(&self);
         let cancel_token = state.register_cancel_token(&download.id).await;
 
-        tokio::spawn(async move {
-            let protocol = crate::worker::detect_protocol(&download.url);
-            let mut download = download;
-            download.protocol = protocol.clone();
-            download.status = DownloadStatus::Downloading;
+        // Update status synchronously so the in-memory map is consistent
+        // before the worker spawns. Tests can observe Downloading immediately.
+        let protocol = crate::worker::detect_protocol(&download.url);
+        let mut download = download;
+        download.protocol = protocol.clone();
+        download.status = DownloadStatus::Downloading;
+        state.update_download(&download).await;
 
-            state.update_download(&download).await;
+        tokio::spawn(async move {
+            let download = download;
 
             match protocol {
                 Protocol::Http => {
@@ -779,6 +844,147 @@ impl ManagerState {
     }
 }
 
+/// Public mutation helpers for Tasks 7 and 8.
+impl ManagerState {
+    /// Update save_path for a download. Path must stay under the configured download_dir.
+    /// Uses a two-layer check:
+    ///  1. Canonicalize the *parent* directory (which must exist) to resolve any symlinks
+    ///     that could escape the download dir even when the final path component is new.
+    ///  2. Fall back to a component-based `starts_with` on the raw path for tests/CI
+    ///     where the directory may not exist on disk.
+    pub async fn set_location(&self, id: &str, new_path: &str) {
+        let download_dir = self.download_dir().await;
+        let path = std::path::Path::new(new_path);
+
+        // Reject any `..` components in the raw path before touching the filesystem.
+        if path.components().any(|c| c == std::path::Component::ParentDir) {
+            tracing::warn!("set_location rejected: path contains '..': '{}'", new_path);
+            return;
+        }
+
+        // Canonicalize the parent directory to resolve symlinks there.
+        // If the parent doesn't exist yet, fall back to raw component-based check.
+        let parent = path.parent().unwrap_or(path);
+        let resolved_parent = parent.canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
+        let base = std::path::Path::new(&download_dir)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(&download_dir));
+
+        if !resolved_parent.starts_with(&base) {
+            tracing::warn!(
+                "set_location rejected: '{}' is outside download_dir '{}'",
+                new_path,
+                download_dir
+            );
+            return;
+        }
+
+        // Store the path as supplied (file may not exist yet); `..` already rejected above.
+        let snap = {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(id) {
+                d.save_path = new_path.to_string();
+                Some(d.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snap) = snap {
+            let _ = self.repo_blocking(move |repo| repo.update_download(&snap)).await;
+        }
+    }
+
+    /// Set per-download speed limit in bytes/s (-1 = unlimited).
+    pub async fn set_download_limit(&self, id: &str, limit: i64) {
+        let snap = {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(id) {
+                d.dl_limit = limit;
+                Some(d.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snap) = snap {
+            let _ = self.repo_blocking(move |repo| repo.update_download(&snap)).await;
+        }
+    }
+
+    /// Set per-download upload limit in bytes/s (-1 = unlimited).
+    pub async fn set_upload_limit(&self, id: &str, limit: i64) {
+        let snap = {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(id) {
+                d.up_limit = limit;
+                Some(d.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snap) = snap {
+            let _ = self.repo_blocking(move |repo| repo.update_download(&snap)).await;
+        }
+    }
+
+    /// Toggle the sequential_download flag.
+    pub async fn toggle_sequential_download(&self, id: &str) {
+        let snap = {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(id) {
+                d.sequential_download = !d.sequential_download;
+                Some(d.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snap) = snap {
+            let _ = self.repo_blocking(move |repo| repo.update_download(&snap)).await;
+        }
+    }
+
+    /// Toggle the first_last_piece_prio flag.
+    pub async fn toggle_first_last_piece_prio(&self, id: &str) {
+        let snap = {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(id) {
+                d.first_last_piece_prio = !d.first_last_piece_prio;
+                Some(d.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snap) = snap {
+            let _ = self.repo_blocking(move |repo| repo.update_download(&snap)).await;
+        }
+    }
+
+    /// Merge per-file priorities into the stored JSON map.
+    /// `priorities` is a slice of `(file_index, priority)` pairs.
+    pub async fn set_file_priority(&self, id: &str, priorities: &[(u32, u32)]) {
+        let snap = {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(id) {
+                let mut map: serde_json::Map<String, serde_json::Value> = d
+                    .file_priorities_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
+                for (idx, prio) in priorities {
+                    map.insert(idx.to_string(), serde_json::Value::from(*prio));
+                }
+                d.file_priorities_json = Some(serde_json::to_string(&map).unwrap_or_default());
+                Some(d.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snap) = snap {
+            let _ = self.repo_blocking(move |repo| repo.update_download(&snap)).await;
+        }
+    }
+}
+
 async fn session_add_and_wait(
     state: &Arc<ManagerState>,
     add: librqbit::AddTorrent<'_>,
@@ -839,6 +1045,14 @@ async fn session_add_and_wait(
     }
 
     Ok(())
+}
+
+/// Aggregate transfer stats across all active downloads.
+pub struct TransferSnapshot {
+    pub dl_info_speed: u64,
+    pub up_info_speed: u64,
+    pub dl_info_data: u64,
+    pub up_info_data: u64,
 }
 
 pub type SharedState = Arc<ManagerState>;

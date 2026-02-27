@@ -16,8 +16,10 @@ impl Repository {
         conn.execute(
             "INSERT INTO downloads (id, url, filename, save_path, total_size, downloaded_size,
              speed, progress, status, protocol, connections, created_at, completed_at, error_message,
-             info_hash, category, content_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             info_hash, category, content_path, dl_limit, up_limit, sequential_download,
+             first_last_piece_prio, file_priorities_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                     ?18, ?19, ?20, ?21, ?22)",
             params![
                 download.id,
                 download.url,
@@ -36,6 +38,11 @@ impl Repository {
                 download.info_hash,
                 download.category,
                 download.content_path,
+                download.dl_limit,
+                download.up_limit,
+                download.sequential_download as i32,
+                download.first_last_piece_prio as i32,
+                download.file_priorities_json,
             ],
         )?;
         Ok(())
@@ -46,7 +53,9 @@ impl Repository {
         conn.execute(
             "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
              speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10,
-             info_hash=?11, category=?12, content_path=?13 WHERE id=?14",
+             info_hash=?11, category=?12, content_path=?13, dl_limit=?14, up_limit=?15,
+             sequential_download=?16, first_last_piece_prio=?17, file_priorities_json=?18
+             WHERE id=?19",
             params![
                 download.filename,
                 download.save_path,
@@ -61,6 +70,11 @@ impl Repository {
                 download.info_hash,
                 download.category,
                 download.content_path,
+                download.dl_limit,
+                download.up_limit,
+                download.sequential_download as i32,
+                download.first_last_piece_prio as i32,
+                download.file_priorities_json,
                 download.id,
             ],
         )?;
@@ -72,7 +86,10 @@ impl Repository {
         let mut stmt = conn.prepare(
             "SELECT id, url, filename, save_path, total_size, downloaded_size, speed,
              progress, status, protocol, connections, created_at, completed_at, error_message,
-             info_hash, category, content_path
+             info_hash, category, content_path,
+             COALESCE(dl_limit, -1), COALESCE(up_limit, -1),
+             COALESCE(sequential_download, 0), COALESCE(first_last_piece_prio, 0),
+             file_priorities_json
              FROM downloads ORDER BY created_at DESC",
         )?;
 
@@ -109,6 +126,11 @@ impl Repository {
                     info_hash: row.get(14)?,
                     category: row.get(15)?,
                     content_path: row.get(16)?,
+                    dl_limit: row.get(17)?,
+                    up_limit: row.get(18)?,
+                    sequential_download: row.get::<_, i32>(19)? != 0,
+                    first_last_piece_prio: row.get::<_, i32>(20)? != 0,
+                    file_priorities_json: row.get(21)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

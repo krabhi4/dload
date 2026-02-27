@@ -9,6 +9,12 @@ services:
       - ./downloads:/downloads
     environment:
       - RUST_LOG=info
-      - DLOAD_JWT_SECRET=changeme-generate-a-random-secret
+      - DLOAD_HOST=0.0.0.0
+      - DLOAD_PORT=8080
+      # REQUIRED: set a strong random secret (e.g. openssl rand -hex 32)
+      - DLOAD_JWT_SECRET=CHANGE_ME_USE_openssl_rand_hex_32
       # - DLOAD_CORS_ORIGIN=https://your-domain.com
+    read_only: true
+    tmpfs:
+      - /tmp
     restart: unless-stopped

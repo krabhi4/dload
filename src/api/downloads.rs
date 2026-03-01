@@ -57,6 +57,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/downloads/:id/pause", post(pause_download))
         .route("/api/downloads/:id/cancel", post(cancel_download))
         .route("/api/downloads/:id/resume", post(resume_download))
+        .route("/api/downloads/:id/torrent", get(export_torrent))
         .with_state(state)
 }
 
@@ -188,6 +189,67 @@ async fn resume_download(
     }
     state.resume_download(&id).await;
     Json(serde_json::json!({ "success": true }))
+}
+
+async fn export_torrent(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if require_auth(extract_token(&headers)).is_err() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Authentication required",
+        ));
+    }
+
+    let download = {
+        let all = state.get_all().await;
+        all.into_iter().find(|d| d.id == id)
+    };
+
+    let download = match download {
+        Some(d) => d,
+        None => {
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::NOT_FOUND,
+                "Download not found",
+            ))
+        }
+    };
+
+    if download.protocol != crate::domain::Protocol::Torrent {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Not a torrent download",
+        ));
+    }
+
+    let bytes = match state.export_torrent_bytes(&id).await {
+        Some(b) => b,
+        None => {
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::NOT_FOUND,
+                "Torrent session not active — cannot export .torrent file",
+            ))
+        }
+    };
+
+    // Sanitize filename for Content-Disposition
+    let safe_name = download
+        .filename
+        .replace('"', "")
+        .replace('\\', "")
+        .replace('\n', "")
+        .replace('\r', "");
+    let disposition = format!("attachment; filename=\"{}.torrent\"", safe_name);
+
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header("Content-Type", "application/x-bittorrent")
+        .header("Content-Disposition", disposition)
+        .body(axum::body::Body::from(bytes))
+        .unwrap()
 }
 
 fn validate_download_url(url: &str) -> Result<(), String> {

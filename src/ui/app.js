@@ -3,6 +3,7 @@ var token = localStorage.getItem("dload_token") || "";
 var refreshInterval = null;
 var lastDownloads = [];
 var openMenuId = null;
+var openMoreMenuId = null;
 var expandedId = null;
 
 // ─── Toast Notifications ────────────────────────────
@@ -565,146 +566,124 @@ function renderDownloads(downloads) {
 
   var filtered = getPageDownloads(downloads);
 
-  var emptyMsg =
-    currentPage === "completed"
-      ? "<p>No completed downloads</p><span>Finished downloads will appear here</span>"
-      : "<p>No active downloads</p><span>Add a URL above to start downloading</span>";
+    var emptyMsg = currentPage === 'completed'
+        ? '<p>No completed downloads</p><span>Finished downloads will appear here</span>'
+        : '<p>No active downloads</p><span>Add a URL above to start downloading</span>';
 
-  if (filtered.length === 0) {
-    safeRender(
-      container,
-      '<div class="empty-state">' +
-        '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>' +
-        '<polyline points="7 10 12 15 17 10"/>' +
-        '<line x1="12" y1="15" x2="12" y2="3"/>' +
-        "</svg>" +
-        emptyMsg +
-        "</div>",
-    );
+    if (filtered.length === 0) {
+        safeRender(container, '<div class="empty-state">'
+            + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+            + '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>'
+            + '<polyline points="7 10 12 15 17 10"/>'
+            + '<line x1="12" y1="15" x2="12" y2="3"/>'
+            + '</svg>'
+            + emptyMsg
+            + '</div>');
+        lastDownloads = filtered;
+        return;
+    }
+
+    // Check if the set of download IDs or their statuses changed — if so, full rebuild
+    var currentIds = filtered.map(function(d) { return d.id + ':' + d.status; }).join(',');
+    var prevIds = lastDownloads.map(function(d) { return d.id + ':' + d.status; }).join(',');
+
+    if (currentIds !== prevIds) {
+        // Skip full rebuild if a menu is open (user is interacting)
+        if (openMenuId || openMoreMenuId) {
+            lastDownloads = filtered;
+            return;
+        }
+        // Full rebuild
+        var html = filtered.map(buildDownloadItem).join('');
+        safeRender(container, html);
+        // Restore expanded detail
+        if (expandedId !== null) {
+            var detail = document.getElementById('detail-' + expandedId);
+            if (detail) detail.classList.add('open');
+        }
+    } else {
+        // Incremental update — only update changing values in-place
+        filtered.forEach(function(d) {
+            var el = container.querySelector('[data-id="' + CSS.escape(d.id) + '"]');
+            if (!el) return;
+
+            var progress = Math.min(d.progress, 100);
+            if (d.status === 'Completed' && d.total_size === 0 && d.downloaded_size > 0) {
+                progress = 100;
+            }
+            var isActive = d.status === 'Downloading';
+
+            // Update filename and URL (e.g. magnet resolved to real name)
+            var nameEl = el.querySelector('.download-name');
+            if (nameEl && nameEl.textContent !== d.filename) {
+                nameEl.textContent = d.filename;
+            }
+            var urlEl = el.querySelector('.download-url');
+            if (urlEl && urlEl.textContent !== d.url) {
+                urlEl.textContent = d.url;
+                urlEl.title = d.url;
+            }
+
+            // Update progress bar width
+            var fill = el.querySelector('.progress-fill');
+            if (fill) fill.style.width = progress + '%';
+
+            // Update metrics
+            var metricsSpans = el.querySelectorAll('.download-metrics > span');
+            if (metricsSpans[0]) {
+                var sizeDisplay;
+                if (d.status === 'Completed') {
+                    sizeDisplay = formatSize(d.total_size || d.downloaded_size);
+                } else if (isActive && d.total_size > 0) {
+                    sizeDisplay = formatSize(d.downloaded_size) + ' / ' + formatSize(d.total_size);
+                } else {
+                    sizeDisplay = formatSize(d.downloaded_size);
+                }
+                metricsSpans[0].textContent = sizeDisplay;
+            }
+
+            // Update speed
+            var speedEl = el.querySelector('.speed');
+            if (speedEl) {
+                var isSeeding = d.status === 'Seeding';
+                speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
+            }
+
+            // Update connections
+            var connEl = el.querySelector('.conn');
+            if (connEl) {
+                var isTorrent = d.protocol === 'Torrent';
+                var isSeeding = d.status === 'Seeding';
+                var connDisplay = '';
+                if (isActive || isSeeding) {
+                    if (isTorrent) {
+                        connDisplay = isSeeding
+                            ? (d.seeds || 0) + ' seed' + ((d.seeds || 0) !== 1 ? 's' : '')
+                            : (d.peers || 0) + ' peer' + ((d.peers || 0) !== 1 ? 's' : '');
+                    } else {
+                        connDisplay = (d.connections || 1) + ' conn';
+                    }
+                }
+                connEl.textContent = connDisplay;
+            }
+
+            // Update ETA
+            var etaEl = el.querySelector('.eta');
+            if (etaEl) {
+                etaEl.textContent = (isActive && d.eta) ? d.eta : '';
+            }
+
+            // Update torrent detail fields
+            var peersEl = el.querySelector('.detail-peers');
+            if (peersEl) peersEl.textContent = d.peers || 0;
+            var seedsEl = el.querySelector('.detail-seeds');
+            if (seedsEl) seedsEl.textContent = d.seeds || 0;
+            var uploadSpeedEl = el.querySelector('.detail-upload-speed');
+            if (uploadSpeedEl) uploadSpeedEl.textContent = formatSpeed(d.upload_speed);
+        });
+    }
+
     lastDownloads = filtered;
-    return;
-  }
-
-  // Check if the set of download IDs or their statuses changed — if so, full rebuild
-  var currentIds = filtered
-    .map(function (d) {
-      return d.id + ":" + d.status;
-    })
-    .join(",");
-  var prevIds = lastDownloads
-    .map(function (d) {
-      return d.id + ":" + d.status;
-    })
-    .join(",");
-
-  if (currentIds !== prevIds) {
-    // Skip full rebuild if a menu is open (user is interacting)
-    if (openMenuId) {
-      lastDownloads = filtered;
-      return;
-    }
-    // Full rebuild
-    var html = filtered.map(buildDownloadItem).join("");
-    safeRender(container, html);
-    // Restore expanded detail
-    if (expandedId !== null) {
-      var detail = document.getElementById("detail-" + expandedId);
-      if (detail) detail.classList.add("open");
-    }
-  } else {
-    // Incremental update — only update changing values in-place
-    filtered.forEach(function (d) {
-      var el = container.querySelector('[data-id="' + CSS.escape(d.id) + '"]');
-      if (!el) return;
-
-      var progress = Math.min(d.progress, 100);
-      if (
-        d.status === "Completed" &&
-        d.total_size === 0 &&
-        d.downloaded_size > 0
-      ) {
-        progress = 100;
-      }
-      var isActive = d.status === "Downloading";
-
-      // Update filename and URL (e.g. magnet resolved to real name)
-      var nameEl = el.querySelector(".download-name");
-      if (nameEl && nameEl.textContent !== d.filename) {
-        nameEl.textContent = d.filename;
-      }
-      var urlEl = el.querySelector(".download-url");
-      if (urlEl && urlEl.textContent !== d.url) {
-        urlEl.textContent = d.url;
-        urlEl.title = d.url;
-      }
-
-      // Update progress bar width
-      var fill = el.querySelector(".progress-fill");
-      if (fill) fill.style.width = progress + "%";
-
-      // Update metrics
-      var metricsSpans = el.querySelectorAll(".download-metrics > span");
-      if (metricsSpans[0]) {
-        var sizeDisplay;
-        if (d.status === "Completed") {
-          sizeDisplay = formatSize(d.total_size || d.downloaded_size);
-        } else if (isActive && d.total_size > 0) {
-          sizeDisplay =
-            formatSize(d.downloaded_size) + " / " + formatSize(d.total_size);
-        } else {
-          sizeDisplay = formatSize(d.downloaded_size);
-        }
-        metricsSpans[0].textContent = sizeDisplay;
-      }
-
-      // Update speed
-      var speedEl = el.querySelector(".speed");
-      if (speedEl) {
-        var isSeeding = d.status === "Seeding";
-        speedEl.textContent = isActive
-          ? formatSpeed(d.speed)
-          : isSeeding
-            ? "\u2191 " + formatSpeed(d.upload_speed)
-            : "--";
-      }
-
-      // Update connections
-      var connEl = el.querySelector(".conn");
-      if (connEl) {
-        var isTorrent = d.protocol === "Torrent";
-        var isSeeding = d.status === "Seeding";
-        var connDisplay = "";
-        if (isActive || isSeeding) {
-          if (isTorrent) {
-            connDisplay = isSeeding
-              ? (d.seeds || 0) + " seed" + ((d.seeds || 0) !== 1 ? "s" : "")
-              : (d.peers || 0) + " peer" + ((d.peers || 0) !== 1 ? "s" : "");
-          } else {
-            connDisplay = (d.connections || 1) + " conn";
-          }
-        }
-        connEl.textContent = connDisplay;
-      }
-
-      // Update ETA
-      var etaEl = el.querySelector(".eta");
-      if (etaEl) {
-        etaEl.textContent = isActive && d.eta ? d.eta : "";
-      }
-
-      // Update torrent detail fields
-      var peersEl = el.querySelector(".detail-peers");
-      if (peersEl) peersEl.textContent = d.peers || 0;
-      var seedsEl = el.querySelector(".detail-seeds");
-      if (seedsEl) seedsEl.textContent = d.seeds || 0;
-      var uploadSpeedEl = el.querySelector(".detail-upload-speed");
-      if (uploadSpeedEl)
-        uploadSpeedEl.textContent = formatSpeed(d.upload_speed);
-    });
-  }
-
-  lastDownloads = filtered;
 }
 
 function updateStats(downloads) {
@@ -1194,6 +1173,59 @@ function toggleDeleteMenu(event, id) {
     menu.classList.add("show");
     openMenuId = id;
   }
+}
+
+function toggleMoreMenu(event, id) {
+    event.stopPropagation();
+    // Close delete menus
+    document.querySelectorAll('.delete-menu.show').forEach(function(m) { m.classList.remove('show'); });
+    openMenuId = null;
+    // Toggle this more menu
+    document.querySelectorAll('.more-menu.show').forEach(function(m) { m.classList.remove('show'); });
+    if (openMoreMenuId === id) {
+        openMoreMenuId = null;
+        return;
+    }
+    var menu = document.getElementById('more-menu-' + id);
+    if (menu) {
+        menu.classList.add('show');
+        openMoreMenuId = id;
+    }
+}
+
+async function copyMagnet(event, url, infoHash, filename) {
+    event.stopPropagation();
+    openMoreMenuId = null;
+    document.querySelectorAll('.more-menu.show').forEach(function(m) { m.classList.remove('show'); });
+
+    var magnetUri = '';
+    if (url && url.startsWith('magnet:')) {
+        magnetUri = url;
+    } else if (infoHash) {
+        magnetUri = 'magnet:?xt=urn:btih:' + infoHash + '&dn=' + encodeURIComponent(filename);
+    } else {
+        showToast('error', 'No magnet link', 'Magnet URI not yet available \u2014 torrent metadata still resolving');
+        return;
+    }
+
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(magnetUri);
+        } else {
+            // Fallback for non-HTTPS
+            var ta = document.createElement('textarea');
+            ta.value = magnetUri;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+        showToast('success', 'Copied', 'Magnet link copied to clipboard');
+    } catch (e) {
+        showToast('error', 'Copy failed', e.message || 'Could not copy to clipboard');
+    }
 }
 
 async function deleteDownload(id, deleteFiles) {
@@ -1714,13 +1746,15 @@ async function updateUserInformation() {
 }
 
 // Close delete menus when clicking outside
-document.addEventListener("click", function (e) {
-  if (!e.target.closest(".delete-dropdown")) {
-    document.querySelectorAll(".delete-menu.show").forEach(function (m) {
-      m.classList.remove("show");
-    });
-    openMenuId = null;
-  }
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.delete-dropdown')) {
+        document.querySelectorAll('.delete-menu.show').forEach(function(m) { m.classList.remove('show'); });
+        openMenuId = null;
+    }
+    if (!e.target.closest('.more-dropdown')) {
+        document.querySelectorAll('.more-menu.show').forEach(function(m) { m.classList.remove('show'); });
+        openMoreMenuId = null;
+    }
 });
 
 document.addEventListener("DOMContentLoaded", init);

@@ -510,12 +510,12 @@ function buildDownloadItem(d) {
       + + '</svg>'
       + + '</button>'
       + + '<div class="more-menu" id="more-menu-' + safeId + '">'
-      + + '<button onclick="copyMagnet(event, ' + JSON.stringify(d.url) + ', ' + JSON.stringify(d.info_hash || null) + ', ' + JSON.stringify(d.filename) + ')">'
+      + + '<button onclick="copyMagnet(event, \'' + safeId + '\')">'
       + + 'Copy Magnet'
       + + '</button>'
-      + + '<a class="more-menu-link" href="/api/downloads/' + encodeURIComponent(safeId) + '/torrent" download onclick="event.stopPropagation(); openMoreMenuId = null; document.querySelectorAll(\'.more-menu.show\').forEach(function(m){m.classList.remove(\'show\');})">'
+      + + '<button onclick="downloadTorrent(event, \'' + safeId + '\')">'
       + + 'Download .torrent'
-      + + '</a>'
+      + + '</button>'
       + + '</div>'
       + + '</div>' : '')
     + (isAdmin ? '<div class="delete-dropdown">'
@@ -1179,16 +1179,17 @@ function toggleMoreMenu(event, id) {
   }
 }
 
-async function copyMagnet(event, url, infoHash, filename) {
+async function copyMagnet(event, id) {
   event.stopPropagation();
   openMoreMenuId = null;
   document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
 
+  var d = lastDownloads.find(function (x) { return x.id === id; });
   var magnetUri = '';
-  if (url && url.startsWith('magnet:')) {
-    magnetUri = url;
-  } else if (infoHash) {
-    magnetUri = 'magnet:?xt=urn:btih:' + infoHash + '&dn=' + encodeURIComponent(filename);
+  if (d && d.url && d.url.startsWith('magnet:')) {
+    magnetUri = d.url;
+  } else if (d && d.info_hash) {
+    magnetUri = 'magnet:?xt=urn:btih:' + d.info_hash + '&dn=' + encodeURIComponent(d.filename || '');
   } else {
     showToast('error', 'No magnet link', 'Magnet URI not yet available \u2014 torrent metadata still resolving');
     return;
@@ -1211,6 +1212,35 @@ async function copyMagnet(event, url, infoHash, filename) {
     showToast('success', 'Copied', 'Magnet link copied to clipboard');
   } catch (e) {
     showToast('error', 'Copy failed', e.message || 'Could not copy to clipboard');
+  }
+}
+
+async function downloadTorrent(event, id) {
+  event.preventDefault();
+  event.stopPropagation();
+  openMoreMenuId = null;
+  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  try {
+    var d = lastDownloads.find(function (x) { return x.id === id; });
+    var suggestedName = (d && d.filename ? d.filename : 'torrent') + '.torrent';
+    var resp = await fetch(API_BASE + '/downloads/' + encodeURIComponent(id) + '/torrent', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!resp.ok) {
+      var text = await resp.text();
+      throw new Error(text || 'HTTP ' + resp.status);
+    }
+    var blob = await resp.blob();
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = suggestedName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    showToast('error', 'Download failed', e.message || 'Could not download .torrent file');
   }
 }
 

@@ -669,8 +669,11 @@ impl ManagerState {
             let handles = self.torrent_handles.read().await;
             handles.get(id).copied()
         }?;
-        let session = self.get_torrent_session().await.ok()?;
-        let handle = session.get(librqbit::api::TorrentIdOrHash::Id(torrent_id))?;
+        let session = {
+            let guard = self.torrent_session.read().await;
+            guard.as_ref().map(|(_, s)| s.clone())
+        }?;
+        let handle = session.get(TorrentIdOrHash::Id(torrent_id))?;
         handle.with_metadata(|m| m.torrent_bytes.clone()).ok()
     }
 

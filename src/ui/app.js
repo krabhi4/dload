@@ -286,11 +286,7 @@ function getPageDownloads(downloads) {
 }
 
 function toggleDetail(id, event) {
-  if (
-    event.target.closest("button") ||
-    event.target.closest(".actions") ||
-    event.target.closest(".delete-dropdown")
-  ) {
+  if (event.target.closest('button') || event.target.closest('.actions') || event.target.closest('.delete-dropdown') || event.target.closest('.more-dropdown')) {
     return;
   }
   if (expandedId === id) {
@@ -298,12 +294,12 @@ function toggleDetail(id, event) {
   } else {
     expandedId = id;
   }
-  document.querySelectorAll(".download-detail").forEach(function (el) {
-    el.classList.remove("open");
+  document.querySelectorAll('.download-detail').forEach(function (el) {
+    el.classList.remove('open');
   });
   if (expandedId !== null) {
-    var detail = document.getElementById("detail-" + expandedId);
-    if (detail) detail.classList.add("open");
+    var detail = document.getElementById('detail-' + expandedId);
+    if (detail) detail.classList.add('open');
   }
 }
 
@@ -470,94 +466,84 @@ function buildDownloadItem(d) {
 
   var isExpanded = expandedId === d.id;
 
-  return (
-    '<div class="download-item ' +
-    statusClass +
-    '" data-id="' +
-    safeId +
-    '" onclick="toggleDetail(\'' +
-    safeId +
-    "', event)\">" +
-    '<div class="download-row">' +
-    '<div class="protocol-icon">' +
-    protocolIcon +
-    "</div>" +
-    '<div class="download-info">' +
-    '<div class="download-name">' +
-    safeName +
-    "</div>" +
-    '<div class="download-url" title="' +
-    safeUrl +
-    '">' +
-    safeUrl +
-    "</div>" +
-    "</div>" +
-    '<div class="download-metrics">' +
-    "<span>" +
-    sizeDisplay +
-    "</span>" +
-    '<span class="speed">' +
-    displaySpeed +
-    "</span>" +
-    '<span class="conn">' +
-    connDisplay +
-    "</span>" +
-    '<span class="eta">' +
-    etaDisplay +
-    "</span>" +
-    "</div>" +
-    '<span class="status-badge ' +
-    statusClass +
-    '">' +
-    safeStatus +
-    "</span>" +
-    '<div class="actions">' +
-    actions +
-    (isAdmin
-      ? '<div class="delete-dropdown">' +
-      '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' +
-      safeId +
-      '\')" title="Remove">' +
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>' +
-      "</svg>" +
-      "</button>" +
-      '<div class="delete-menu" id="delete-menu-' +
-      safeId +
-      '">' +
-      "<button onclick=\"event.stopPropagation(); deleteDownload('" +
-      safeId +
-      "', false)\">Remove from list</button>" +
-      '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' +
-      safeId +
-      "', true)\">Delete from disk</button>" +
-      "</div>" +
-      "</div>"
-      : "") +
-    "</div>" +
-    "</div>" +
-    '<div class="download-progress">' +
-    '<div class="progress-bar">' +
-    '<div class="progress-fill ' +
-    progressClass +
-    '" style="width: ' +
-    progress +
-    '%"></div>' +
-    "</div>" +
-    "</div>" +
-    '<div class="download-detail' +
-    (isExpanded ? " open" : "") +
-    '" id="detail-' +
-    safeId +
-    '">' +
-    '<div class="detail-content">' +
-    '<div class="detail-grid">' +
-    detailRows +
-    "</div>" +
-    "</div>" +
-    "</div>" +
-    "</div>"
-  );
+  if (d.completed_at) {
+    detailRows += '<span class="detail-label">Completed</span>'
+      + '<span class="detail-value">' + escapeHtml(new Date(d.completed_at).toLocaleString()) + '</span>';
+  }
+
+  if (isTorrent) {
+    detailRows += '<span class="detail-label">Peers</span>'
+      + '<span class="detail-value detail-peers">' + (d.peers || 0) + '</span>'
+      + '<span class="detail-label">Seeds</span>'
+      + '<span class="detail-value detail-seeds">' + (d.seeds || 0) + '</span>'
+      + '<span class="detail-label">Upload Speed</span>'
+      + '<span class="detail-value detail-upload-speed">' + formatSpeed(d.upload_speed) + '</span>';
+  }
+
+  if (d.error_message) {
+    detailRows += '<span class="detail-label">Error</span>'
+      + '<span class="detail-value error">' + escapeHtml(d.error_message) + '</span>';
+  }
+
+  var isExpanded = (expandedId === d.id);
+
+  return '<div class="download-item ' + statusClass + '" data-id="' + safeId + '" onclick="toggleDetail(\'' + safeId + '\', event)">'
+    + '<div class="download-row">'
+    + '<div class="protocol-icon">' + protocolIcon + '</div>'
+    + '<div class="download-info">'
+    + '<div class="download-name">' + safeName + '</div>'
+    + '<div class="download-url" title="' + safeUrl + '">' + safeUrl + '</div>'
+    + '</div>'
+    + '<div class="download-metrics">'
+    + '<span>' + sizeDisplay + '</span>'
+    + '<span class="speed">' + displaySpeed + '</span>'
+    + '<span class="conn">' + connDisplay + '</span>'
+    + '<span class="eta">' + etaDisplay + '</span>'
+    + '</div>'
+    + '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
+    + '<div class="actions">'
+    + actions
+    + (isTorrent ? '<div class="more-dropdown">'
+      + + '<button class="more-btn" onclick="toggleMoreMenu(event, \'' + safeId + '\')" title="More options">'
+      + + '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">'
+      + + '<circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>'
+      + + '</svg>'
+      + + '</button>'
+      + + '<div class="more-menu" id="more-menu-' + safeId + '">'
+      + + '<button onclick="copyMagnet(event, ' + JSON.stringify(d.url) + ', ' + JSON.stringify(d.info_hash || null) + ', ' + JSON.stringify(d.filename) + ')">'
+      + + 'Copy Magnet'
+      + + '</button>'
+      + + '<a class="more-menu-link" href="/api/downloads/' + encodeURIComponent(safeId) + '/torrent" download onclick="event.stopPropagation(); openMoreMenuId = null; document.querySelectorAll(\'.more-menu.show\').forEach(function(m){m.classList.remove(\'show\');})">'
+      + + 'Download .torrent'
+      + + '</a>'
+      + + '</div>'
+      + + '</div>' : '')
+    + (isAdmin ? '<div class="delete-dropdown">'
+      + '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove">'
+      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
+      + '</svg>'
+      + '</button>'
+      + '<div class="delete-menu" id="delete-menu-' + safeId + '">'
+      + '<button onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
+      + '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
+      + '</div>'
+      + '</div>' : '')
+    + '</div>'
+    + '</div>'
+    + '<div class="download-progress">'
+    + '<div class="progress-bar">'
+    + '<div class="progress-fill ' + progressClass + '" style="width: ' + progress + '%"></div>'
+    + '</div>'
+    + '</div>'
+    + '<div class="download-detail' + (isExpanded ? ' open' : '') + '" id="detail-' + safeId + '">'
+    + '<div class="detail-content">'
+    + '<div class="detail-grid">'
+    + detailRows
+    + '</div>'
+    + '</div>'
+    + '</div>'
+    + '</div>';
 }
 
 function renderDownloads(downloads) {

@@ -677,6 +677,11 @@ impl ManagerState {
         handle.with_metadata(|m| m.torrent_bytes.clone()).ok()
     }
 
+    pub async fn get_download(&self, id: &str) -> Option<Download> {
+        let downloads = self.downloads.read().await;
+        downloads.get(id).cloned()
+    }
+
     async fn handle_torrent_download(
         self: Arc<Self>,
         mut download: Download,

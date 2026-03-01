@@ -1226,6 +1226,10 @@ async function downloadTorrent(event, id) {
     var resp = await fetch(API_BASE + '/downloads/' + encodeURIComponent(id) + '/torrent', {
       headers: { 'Authorization': 'Bearer ' + token }
     });
+    if (resp.status === 401) {
+      logout();
+      return;
+    }
     if (!resp.ok) {
       var text = await resp.text();
       throw new Error(text || 'HTTP ' + resp.status);

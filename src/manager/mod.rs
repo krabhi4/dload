@@ -664,6 +664,7 @@ impl ManagerState {
     }
 
     /// Returns the raw .torrent bytes for a download, if its librqbit session handle is live.
+    #[allow(dead_code)]
     pub async fn export_torrent_bytes(&self, id: &str) -> Option<bytes::Bytes> {
         let torrent_id = {
             let handles = self.torrent_handles.read().await;
@@ -677,6 +678,7 @@ impl ManagerState {
         handle.with_metadata(|m| m.torrent_bytes.clone()).ok()
     }
 
+    #[allow(dead_code)]
     pub async fn get_download(&self, id: &str) -> Option<Download> {
         let downloads = self.downloads.read().await;
         downloads.get(id).cloned()

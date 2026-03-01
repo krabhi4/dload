@@ -663,6 +663,17 @@ impl ManagerState {
         });
     }
 
+    /// Returns the raw .torrent bytes for a download, if its librqbit session handle is live.
+    pub async fn export_torrent_bytes(&self, id: &str) -> Option<bytes::Bytes> {
+        let torrent_id = {
+            let handles = self.torrent_handles.read().await;
+            handles.get(id).copied()
+        }?;
+        let session = self.get_torrent_session().await.ok()?;
+        let handle = session.get(librqbit::api::TorrentIdOrHash::Id(torrent_id))?;
+        handle.with_metadata(|m| m.torrent_bytes.clone()).ok()
+    }
+
     async fn handle_torrent_download(
         self: Arc<Self>,
         mut download: Download,

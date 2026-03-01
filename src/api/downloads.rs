@@ -203,10 +203,7 @@ async fn export_torrent(
         ));
     }
 
-    let download = {
-        let all = state.get_all().await;
-        all.into_iter().find(|d| d.id == id)
-    };
+    let download = state.get_download(&id).await;
 
     let download = match download {
         Some(d) => d,
@@ -236,12 +233,7 @@ async fn export_torrent(
     };
 
     // Sanitize filename for Content-Disposition
-    let safe_name = download
-        .filename
-        .replace('"', "")
-        .replace('\\', "")
-        .replace('\n', "")
-        .replace('\r', "");
+    let safe_name = crate::domain::sanitize_filename(&download.filename);
     let disposition = format!("attachment; filename=\"{}.torrent\"", safe_name);
 
     axum::response::Response::builder()

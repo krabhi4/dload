@@ -28,17 +28,11 @@ async fn main() {
     let db = Arc::new(db::Database::new("/data/dload.db").expect("Failed to create database"));
     let repo = Arc::new(db::repository::Repository::new(db.clone()));
 
-    // Load settings from DB, falling back to defaults for first run
+    // Load settings from DB, falling back to defaults for first run.
+    // We no longer rewrite user-chosen download_dir values (including `/data`);
+    // whatever is stored in the DB is treated as authoritative.
     let settings = match repo.get_settings() {
-        Ok(mut s) => {
-            // Migrate old default download_dir from /data to /downloads
-            if s.download_dir == "/data" {
-                tracing::info!("Migrating download_dir from /data to /downloads");
-                s.download_dir = "/downloads".to_string();
-                repo.save_settings(&s).ok();
-            }
-            s
-        }
+        Ok(s) => s,
         Err(_) => {
             let defaults = domain::Settings::default();
             repo.save_settings(&defaults).ok();

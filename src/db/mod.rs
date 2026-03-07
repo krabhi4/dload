@@ -50,8 +50,7 @@ impl Database {
                 status TEXT NOT NULL,
                 protocol TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                completed_at TEXT,
-                removed_at TEXT NOT NULL
+                completed_at TEXT
             );",
         )?;
 
@@ -60,6 +59,8 @@ impl Database {
              ALTER TABLE downloads ADD COLUMN category TEXT;
              ALTER TABLE downloads ADD COLUMN content_path TEXT;"
         );
+        // Migration: drop removed_at from download_history (old schema had it as NOT NULL)
+        let _ = conn.execute("ALTER TABLE download_history DROP COLUMN removed_at", []);
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);"
         )?;

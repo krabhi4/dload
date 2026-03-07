@@ -284,4 +284,64 @@ impl Repository {
         conn.execute("DELETE FROM users WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    // ─── History ────────────────────────────────────────
+
+    pub fn insert_history(&self, download: &Download, removed_at: &str) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO download_history (id, url, filename, total_size, status, protocol, created_at, completed_at, removed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                download.id,
+                download.url,
+                download.filename,
+                download.total_size,
+                format!("{:?}", download.status),
+                format!("{:?}", download.protocol),
+                download.created_at.to_rfc3339(),
+                download.completed_at.map(|d| d.to_rfc3339()),
+                removed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_all_history(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        let conn = self.db.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, url, filename, total_size, status, protocol, created_at, completed_at, removed_at
+             FROM download_history ORDER BY removed_at DESC",
+        )?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "url": row.get::<_, String>(1)?,
+                    "filename": row.get::<_, String>(2)?,
+                    "total_size": row.get::<_, u64>(3)?,
+                    "status": row.get::<_, String>(4)?,
+                    "protocol": row.get::<_, String>(5)?,
+                    "created_at": row.get::<_, String>(6)?,
+                    "completed_at": row.get::<_, Option<String>>(7)?,
+                    "removed_at": row.get::<_, String>(8)?,
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
+    pub fn delete_history(&self, id: &str) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute("DELETE FROM download_history WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn delete_all_history(&self) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute("DELETE FROM download_history", [])?;
+        Ok(())
+    }
 }

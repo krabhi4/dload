@@ -59,8 +59,6 @@ impl Database {
              ALTER TABLE downloads ADD COLUMN category TEXT;
              ALTER TABLE downloads ADD COLUMN content_path TEXT;"
         );
-        // Migration: drop removed_at from download_history (old schema had it as NOT NULL)
-        let _ = conn.execute("ALTER TABLE download_history DROP COLUMN removed_at", []);
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);"
         )?;

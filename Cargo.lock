@@ -573,6 +573,7 @@ dependencies = [
  "axum-extra",
  "base64",
  "bcrypt",
+ "bytes",
  "chrono",
  "futures",
  "jsonwebtoken",

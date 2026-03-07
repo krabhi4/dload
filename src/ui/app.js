@@ -3,6 +3,7 @@ var token = localStorage.getItem("dload_token") || "";
 var refreshInterval = null;
 var lastDownloads = [];
 var openMenuId = null;
+var openMoreMenuId = null;
 var expandedId = null;
 
 // ─── Toast Notifications ────────────────────────────
@@ -285,11 +286,7 @@ function getPageDownloads(downloads) {
 }
 
 function toggleDetail(id, event) {
-  if (
-    event.target.closest("button") ||
-    event.target.closest(".actions") ||
-    event.target.closest(".delete-dropdown")
-  ) {
+  if (event.target.closest('button') || event.target.closest('.actions') || event.target.closest('.delete-dropdown') || event.target.closest('.more-dropdown')) {
     return;
   }
   if (expandedId === id) {
@@ -297,12 +294,12 @@ function toggleDetail(id, event) {
   } else {
     expandedId = id;
   }
-  document.querySelectorAll(".download-detail").forEach(function (el) {
-    el.classList.remove("open");
+  document.querySelectorAll('.download-detail').forEach(function (el) {
+    el.classList.remove('open');
   });
   if (expandedId !== null) {
-    var detail = document.getElementById("detail-" + expandedId);
-    if (detail) detail.classList.add("open");
+    var detail = document.getElementById('detail-' + expandedId);
+    if (detail) detail.classList.add('open');
   }
 }
 
@@ -469,94 +466,84 @@ function buildDownloadItem(d) {
 
   var isExpanded = expandedId === d.id;
 
-  return (
-    '<div class="download-item ' +
-    statusClass +
-    '" data-id="' +
-    safeId +
-    '" onclick="toggleDetail(\'' +
-    safeId +
-    "', event)\">" +
-    '<div class="download-row">' +
-    '<div class="protocol-icon">' +
-    protocolIcon +
-    "</div>" +
-    '<div class="download-info">' +
-    '<div class="download-name">' +
-    safeName +
-    "</div>" +
-    '<div class="download-url" title="' +
-    safeUrl +
-    '">' +
-    safeUrl +
-    "</div>" +
-    "</div>" +
-    '<div class="download-metrics">' +
-    "<span>" +
-    sizeDisplay +
-    "</span>" +
-    '<span class="speed">' +
-    displaySpeed +
-    "</span>" +
-    '<span class="conn">' +
-    connDisplay +
-    "</span>" +
-    '<span class="eta">' +
-    etaDisplay +
-    "</span>" +
-    "</div>" +
-    '<span class="status-badge ' +
-    statusClass +
-    '">' +
-    safeStatus +
-    "</span>" +
-    '<div class="actions">' +
-    actions +
-    (isAdmin
-      ? '<div class="delete-dropdown">' +
-        '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' +
-        safeId +
-        '\')" title="Remove">' +
-        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>' +
-        "</svg>" +
-        "</button>" +
-        '<div class="delete-menu" id="delete-menu-' +
-        safeId +
-        '">' +
-        "<button onclick=\"event.stopPropagation(); deleteDownload('" +
-        safeId +
-        "', false)\">Remove from list</button>" +
-        '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' +
-        safeId +
-        "', true)\">Delete from disk</button>" +
-        "</div>" +
-        "</div>"
-      : "") +
-    "</div>" +
-    "</div>" +
-    '<div class="download-progress">' +
-    '<div class="progress-bar">' +
-    '<div class="progress-fill ' +
-    progressClass +
-    '" style="width: ' +
-    progress +
-    '%"></div>' +
-    "</div>" +
-    "</div>" +
-    '<div class="download-detail' +
-    (isExpanded ? " open" : "") +
-    '" id="detail-' +
-    safeId +
-    '">' +
-    '<div class="detail-content">' +
-    '<div class="detail-grid">' +
-    detailRows +
-    "</div>" +
-    "</div>" +
-    "</div>" +
-    "</div>"
-  );
+  if (d.completed_at) {
+    detailRows += '<span class="detail-label">Completed</span>'
+      + '<span class="detail-value">' + escapeHtml(new Date(d.completed_at).toLocaleString()) + '</span>';
+  }
+
+  if (isTorrent) {
+    detailRows += '<span class="detail-label">Peers</span>'
+      + '<span class="detail-value detail-peers">' + (d.peers || 0) + '</span>'
+      + '<span class="detail-label">Seeds</span>'
+      + '<span class="detail-value detail-seeds">' + (d.seeds || 0) + '</span>'
+      + '<span class="detail-label">Upload Speed</span>'
+      + '<span class="detail-value detail-upload-speed">' + formatSpeed(d.upload_speed) + '</span>';
+  }
+
+  if (d.error_message) {
+    detailRows += '<span class="detail-label">Error</span>'
+      + '<span class="detail-value error">' + escapeHtml(d.error_message) + '</span>';
+  }
+
+  var isExpanded = (expandedId === d.id);
+
+  return '<div class="download-item ' + statusClass + '" data-id="' + safeId + '" onclick="toggleDetail(\'' + safeId + '\', event)">'
+    + '<div class="download-row">'
+    + '<div class="protocol-icon">' + protocolIcon + '</div>'
+    + '<div class="download-info">'
+    + '<div class="download-name">' + safeName + '</div>'
+    + '<div class="download-url" title="' + safeUrl + '">' + safeUrl + '</div>'
+    + '</div>'
+    + '<div class="download-metrics">'
+    + '<span>' + sizeDisplay + '</span>'
+    + '<span class="speed">' + displaySpeed + '</span>'
+    + '<span class="conn">' + connDisplay + '</span>'
+    + '<span class="eta">' + etaDisplay + '</span>'
+    + '</div>'
+    + '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
+    + '<div class="actions">'
+    + actions
+    + (isTorrent ? '<div class="more-dropdown">'
+      + '<button class="more-btn" onclick="toggleMoreMenu(event, \'' + safeId + '\')" title="More options">'
+      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">'
+      + '<circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>'
+      + '</svg>'
+      + '</button>'
+      + '<div class="more-menu" id="more-menu-' + safeId + '">'
+      + '<button onclick="copyMagnet(event, \'' + safeId + '\')">'
+      + 'Copy Magnet'
+      + '</button>'
+      + '<button onclick="downloadTorrent(event, \'' + safeId + '\')">'
+      + 'Download .torrent'
+      + '</button>'
+      + '</div>'
+      + '</div>' : '')
+    + (isAdmin ? '<div class="delete-dropdown">'
+      + '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove">'
+      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
+      + '</svg>'
+      + '</button>'
+      + '<div class="delete-menu" id="delete-menu-' + safeId + '">'
+      + '<button onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
+      + '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
+      + '</div>'
+      + '</div>' : '')
+    + '</div>'
+    + '</div>'
+    + '<div class="download-progress">'
+    + '<div class="progress-bar">'
+    + '<div class="progress-fill ' + progressClass + '" style="width: ' + progress + '%"></div>'
+    + '</div>'
+    + '</div>'
+    + '<div class="download-detail' + (isExpanded ? ' open' : '') + '" id="detail-' + safeId + '">'
+    + '<div class="detail-content">'
+    + '<div class="detail-grid">'
+    + detailRows
+    + '</div>'
+    + '</div>'
+    + '</div>'
+    + '</div>';
 }
 
 function renderDownloads(downloads) {
@@ -565,52 +552,40 @@ function renderDownloads(downloads) {
 
   var filtered = getPageDownloads(downloads);
 
-  var emptyMsg =
-    currentPage === "completed"
-      ? "<p>No completed downloads</p><span>Finished downloads will appear here</span>"
-      : "<p>No active downloads</p><span>Add a URL above to start downloading</span>";
+  var emptyMsg = currentPage === 'completed'
+    ? '<p>No completed downloads</p><span>Finished downloads will appear here</span>'
+    : '<p>No active downloads</p><span>Add a URL above to start downloading</span>';
 
   if (filtered.length === 0) {
-    safeRender(
-      container,
-      '<div class="empty-state">' +
-        '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>' +
-        '<polyline points="7 10 12 15 17 10"/>' +
-        '<line x1="12" y1="15" x2="12" y2="3"/>' +
-        "</svg>" +
-        emptyMsg +
-        "</div>",
-    );
+    safeRender(container, '<div class="empty-state">'
+      + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>'
+      + '<polyline points="7 10 12 15 17 10"/>'
+      + '<line x1="12" y1="15" x2="12" y2="3"/>'
+      + '</svg>'
+      + emptyMsg
+      + '</div>');
     lastDownloads = filtered;
     return;
   }
 
   // Check if the set of download IDs or their statuses changed — if so, full rebuild
-  var currentIds = filtered
-    .map(function (d) {
-      return d.id + ":" + d.status;
-    })
-    .join(",");
-  var prevIds = lastDownloads
-    .map(function (d) {
-      return d.id + ":" + d.status;
-    })
-    .join(",");
+  var currentIds = filtered.map(function (d) { return d.id + ':' + d.status; }).join(',');
+  var prevIds = lastDownloads.map(function (d) { return d.id + ':' + d.status; }).join(',');
 
   if (currentIds !== prevIds) {
     // Skip full rebuild if a menu is open (user is interacting)
-    if (openMenuId) {
+    if (openMenuId || openMoreMenuId) {
       lastDownloads = filtered;
       return;
     }
     // Full rebuild
-    var html = filtered.map(buildDownloadItem).join("");
+    var html = filtered.map(buildDownloadItem).join('');
     safeRender(container, html);
     // Restore expanded detail
     if (expandedId !== null) {
-      var detail = document.getElementById("detail-" + expandedId);
-      if (detail) detail.classList.add("open");
+      var detail = document.getElementById('detail-' + expandedId);
+      if (detail) detail.classList.add('open');
     }
   } else {
     // Incremental update — only update changing values in-place
@@ -619,39 +594,34 @@ function renderDownloads(downloads) {
       if (!el) return;
 
       var progress = Math.min(d.progress, 100);
-      if (
-        d.status === "Completed" &&
-        d.total_size === 0 &&
-        d.downloaded_size > 0
-      ) {
+      if (d.status === 'Completed' && d.total_size === 0 && d.downloaded_size > 0) {
         progress = 100;
       }
-      var isActive = d.status === "Downloading";
+      var isActive = d.status === 'Downloading';
 
       // Update filename and URL (e.g. magnet resolved to real name)
-      var nameEl = el.querySelector(".download-name");
+      var nameEl = el.querySelector('.download-name');
       if (nameEl && nameEl.textContent !== d.filename) {
         nameEl.textContent = d.filename;
       }
-      var urlEl = el.querySelector(".download-url");
+      var urlEl = el.querySelector('.download-url');
       if (urlEl && urlEl.textContent !== d.url) {
         urlEl.textContent = d.url;
         urlEl.title = d.url;
       }
 
       // Update progress bar width
-      var fill = el.querySelector(".progress-fill");
-      if (fill) fill.style.width = progress + "%";
+      var fill = el.querySelector('.progress-fill');
+      if (fill) fill.style.width = progress + '%';
 
       // Update metrics
-      var metricsSpans = el.querySelectorAll(".download-metrics > span");
+      var metricsSpans = el.querySelectorAll('.download-metrics > span');
       if (metricsSpans[0]) {
         var sizeDisplay;
-        if (d.status === "Completed") {
+        if (d.status === 'Completed') {
           sizeDisplay = formatSize(d.total_size || d.downloaded_size);
         } else if (isActive && d.total_size > 0) {
-          sizeDisplay =
-            formatSize(d.downloaded_size) + " / " + formatSize(d.total_size);
+          sizeDisplay = formatSize(d.downloaded_size) + ' / ' + formatSize(d.total_size);
         } else {
           sizeDisplay = formatSize(d.downloaded_size);
         }
@@ -659,48 +629,43 @@ function renderDownloads(downloads) {
       }
 
       // Update speed
-      var speedEl = el.querySelector(".speed");
+      var speedEl = el.querySelector('.speed');
       if (speedEl) {
-        var isSeeding = d.status === "Seeding";
-        speedEl.textContent = isActive
-          ? formatSpeed(d.speed)
-          : isSeeding
-            ? "\u2191 " + formatSpeed(d.upload_speed)
-            : "--";
+        var isSeeding = d.status === 'Seeding';
+        speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
       }
 
       // Update connections
-      var connEl = el.querySelector(".conn");
+      var connEl = el.querySelector('.conn');
       if (connEl) {
-        var isTorrent = d.protocol === "Torrent";
-        var isSeeding = d.status === "Seeding";
-        var connDisplay = "";
+        var isTorrent = d.protocol === 'Torrent';
+        var isSeeding = d.status === 'Seeding';
+        var connDisplay = '';
         if (isActive || isSeeding) {
           if (isTorrent) {
             connDisplay = isSeeding
-              ? (d.seeds || 0) + " seed" + ((d.seeds || 0) !== 1 ? "s" : "")
-              : (d.peers || 0) + " peer" + ((d.peers || 0) !== 1 ? "s" : "");
+              ? (d.seeds || 0) + ' seed' + ((d.seeds || 0) !== 1 ? 's' : '')
+              : (d.peers || 0) + ' peer' + ((d.peers || 0) !== 1 ? 's' : '');
           } else {
-            connDisplay = (d.connections || 1) + " conn";
+            connDisplay = (d.connections || 1) + ' conn';
           }
         }
         connEl.textContent = connDisplay;
       }
 
       // Update ETA
-      var etaEl = el.querySelector(".eta");
+      var etaEl = el.querySelector('.eta');
       if (etaEl) {
-        etaEl.textContent = isActive && d.eta ? d.eta : "";
+        etaEl.textContent = (isActive && d.eta) ? d.eta : '';
       }
 
       // Update torrent detail fields
-      var peersEl = el.querySelector(".detail-peers");
+      var peersEl = el.querySelector('.detail-peers');
       if (peersEl) peersEl.textContent = d.peers || 0;
-      var seedsEl = el.querySelector(".detail-seeds");
+      var seedsEl = el.querySelector('.detail-seeds');
       if (seedsEl) seedsEl.textContent = d.seeds || 0;
-      var uploadSpeedEl = el.querySelector(".detail-upload-speed");
-      if (uploadSpeedEl)
-        uploadSpeedEl.textContent = formatSpeed(d.upload_speed);
+      var uploadSpeedEl = el.querySelector('.detail-upload-speed');
+      if (uploadSpeedEl) uploadSpeedEl.textContent = formatSpeed(d.upload_speed);
     });
   }
 
@@ -899,8 +864,8 @@ async function loadUserManagement() {
           "<td>" +
           (user.id !== window.currentUserId
             ? '<button class="btn-danger btn-small" onclick="deleteUser(\'' +
-              escapeHtml(user.id) +
-              "')\">Delete</button>"
+            escapeHtml(user.id) +
+            "')\">Delete</button>"
             : "Current User") +
           "</td>" +
           "</tr>";
@@ -1000,13 +965,13 @@ function renderHistory(items) {
     safeRender(
       container,
       '<div class="empty-state">' +
-        '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-        '<circle cx="12" cy="12" r="10"/>' +
-        '<polyline points="12 6 12 12 16 14"/>' +
-        "</svg>" +
-        "<p>No history yet</p>" +
-        "<span>Downloads will appear here</span>" +
-        "</div>",
+      '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+      '<circle cx="12" cy="12" r="10"/>' +
+      '<polyline points="12 6 12 12 16 14"/>' +
+      "</svg>" +
+      "<p>No history yet</p>" +
+      "<span>Downloads will appear here</span>" +
+      "</div>",
     );
     var actionsDiv = document.getElementById("history-actions");
     if (actionsDiv) actionsDiv.style.display = "none";
@@ -1029,12 +994,12 @@ function renderHistory(items) {
       });
       var completedDate = h.completed_at
         ? new Date(h.completed_at).toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          })
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
         : null;
       var statusClass = h.status.toLowerCase();
 
@@ -1179,10 +1144,10 @@ async function addDownload(url) {
 
 function toggleDeleteMenu(event, id) {
   event.stopPropagation();
+  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  openMoreMenuId = null;
   // Close all other menus
-  document.querySelectorAll(".delete-menu.show").forEach(function (m) {
-    m.classList.remove("show");
-  });
+  document.querySelectorAll('.delete-menu.show').forEach(function (m) { m.classList.remove('show'); });
 
   if (openMenuId === id) {
     openMenuId = null;
@@ -1193,6 +1158,93 @@ function toggleDeleteMenu(event, id) {
   if (menu) {
     menu.classList.add("show");
     openMenuId = id;
+  }
+}
+
+function toggleMoreMenu(event, id) {
+  event.stopPropagation();
+  // Close delete menus
+  document.querySelectorAll('.delete-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  openMenuId = null;
+  // Toggle this more menu
+  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  if (openMoreMenuId === id) {
+    openMoreMenuId = null;
+    return;
+  }
+  var menu = document.getElementById('more-menu-' + id);
+  if (menu) {
+    menu.classList.add('show');
+    openMoreMenuId = id;
+  }
+}
+
+async function copyMagnet(event, id) {
+  event.stopPropagation();
+  openMoreMenuId = null;
+  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+
+  var d = lastDownloads.find(function (x) { return x.id === id; });
+  var magnetUri = '';
+  if (d && d.url && d.url.startsWith('magnet:')) {
+    magnetUri = d.url;
+  } else if (d && d.info_hash) {
+    magnetUri = 'magnet:?xt=urn:btih:' + d.info_hash + '&dn=' + encodeURIComponent(d.filename || '');
+  } else {
+    showToast('error', 'No magnet link', 'Magnet URI not yet available \u2014 torrent metadata still resolving');
+    return;
+  }
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(magnetUri);
+    } else {
+      // Fallback for non-HTTPS
+      var ta = document.createElement('textarea');
+      ta.value = magnetUri;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    showToast('success', 'Copied', 'Magnet link copied to clipboard');
+  } catch (e) {
+    showToast('error', 'Copy failed', e.message || 'Could not copy to clipboard');
+  }
+}
+
+async function downloadTorrent(event, id) {
+  event.preventDefault();
+  event.stopPropagation();
+  openMoreMenuId = null;
+  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  try {
+    var d = lastDownloads.find(function (x) { return x.id === id; });
+    var suggestedName = (d && d.filename ? d.filename : 'torrent') + '.torrent';
+    var resp = await fetch(API_BASE + '/downloads/' + encodeURIComponent(id) + '/torrent', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (resp.status === 401) {
+      logout();
+      return;
+    }
+    if (!resp.ok) {
+      var text = await resp.text();
+      throw new Error(text || 'HTTP ' + resp.status);
+    }
+    var blob = await resp.blob();
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = suggestedName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    showToast('error', 'Download failed', e.message || 'Could not download .torrent file');
   }
 }
 
@@ -1714,12 +1766,14 @@ async function updateUserInformation() {
 }
 
 // Close delete menus when clicking outside
-document.addEventListener("click", function (e) {
-  if (!e.target.closest(".delete-dropdown")) {
-    document.querySelectorAll(".delete-menu.show").forEach(function (m) {
-      m.classList.remove("show");
-    });
+document.addEventListener('click', function (e) {
+  if (!e.target.closest('.delete-dropdown')) {
+    document.querySelectorAll('.delete-menu.show').forEach(function (m) { m.classList.remove('show'); });
     openMenuId = null;
+  }
+  if (!e.target.closest('.more-dropdown')) {
+    document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+    openMoreMenuId = null;
   }
 });
 

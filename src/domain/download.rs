@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Strip path traversal, null bytes, and dangerous characters from filenames.
 pub fn sanitize_filename(name: &str) -> String {
@@ -77,11 +77,7 @@ pub struct Download {
 
 impl Download {
     pub fn new(url: String, save_dir: &str) -> Self {
-        let raw_filename = url
-            .split('/')
-            .last()
-            .unwrap_or("download")
-            .to_string();
+        let raw_filename = url.split('/').next_back().unwrap_or("download").to_string();
         let filename = sanitize_filename(&raw_filename);
 
         Self {

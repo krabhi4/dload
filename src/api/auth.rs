@@ -1,4 +1,4 @@
-use crate::domain::{Claims, Role, User, jwt_secret};
+use crate::domain::{jwt_secret, Claims, Role, User};
 use crate::manager::SharedState;
 use axum::{
     extract::State,
@@ -59,7 +59,11 @@ fn decode_token(token: &str) -> Result<Claims, String> {
 }
 
 async fn auth_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let has_users = state.repo.get_all_users().map(|u| !u.is_empty()).unwrap_or(false);
+    let has_users = state
+        .repo
+        .get_all_users()
+        .map(|u| !u.is_empty())
+        .unwrap_or(false);
     Json(serde_json::json!({
         "needs_setup": !has_users
     }))
@@ -146,7 +150,7 @@ async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Json<serde_json::Value> {
     let repo = &state.repo;
-    
+
     let user = match repo.get_user_by_username(&payload.username) {
         Ok(Some(u)) => u,
         Ok(None) => {
@@ -271,12 +275,14 @@ async fn list_users(
     let users = state.repo.get_all_users().unwrap_or_default();
     let users_json: Vec<_> = users
         .into_iter()
-        .map(|u| serde_json::json!({
-            "id": u.id,
-            "username": u.username,
-            "role": u.role.as_str(),
-            "created_at": u.created_at.to_rfc3339()
-        }))
+        .map(|u| {
+            serde_json::json!({
+                "id": u.id,
+                "username": u.username,
+                "role": u.role.as_str(),
+                "created_at": u.created_at.to_rfc3339()
+            })
+        })
         .collect();
     Json(serde_json::json!({ "users": users_json }))
 }
@@ -315,7 +321,13 @@ async fn create_user(
         }));
     }
 
-    if state.repo.get_user_by_username(&payload.username).ok().flatten().is_some() {
+    if state
+        .repo
+        .get_user_by_username(&payload.username)
+        .ok()
+        .flatten()
+        .is_some()
+    {
         return Json(serde_json::json!({
             "success": false,
             "error": "Username already exists"
@@ -459,7 +471,9 @@ async fn delete_user(
             }));
         }
         if target_user.role == Role::Admin {
-            let admin_count = state.repo.get_all_users()
+            let admin_count = state
+                .repo
+                .get_all_users()
                 .unwrap_or_default()
                 .iter()
                 .filter(|u| u.role == Role::Admin)

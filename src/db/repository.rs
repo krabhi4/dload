@@ -216,7 +216,7 @@ impl Repository {
                 id: row.get(0)?,
                 username: row.get(1)?,
                 password_hash: row.get(2)?,
-                role: Role::from_str(&row.get::<_, String>(3)?),
+                role: Role::parse(&row.get::<_, String>(3)?),
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
                     .map(|d| d.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
@@ -238,7 +238,7 @@ impl Repository {
                 id: row.get(0)?,
                 username: row.get(1)?,
                 password_hash: row.get(2)?,
-                role: Role::from_str(&row.get::<_, String>(3)?),
+                role: Role::parse(&row.get::<_, String>(3)?),
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
                     .map(|d| d.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
@@ -257,7 +257,7 @@ impl Repository {
                     id: row.get(0)?,
                     username: row.get(1)?,
                     password_hash: row.get(2)?,
-                    role: Role::from_str(&row.get::<_, String>(3)?),
+                    role: Role::parse(&row.get::<_, String>(3)?),
                     created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
                         .map(|d| d.with_timezone(&chrono::Utc))
                         .unwrap_or_else(|_| chrono::Utc::now()),

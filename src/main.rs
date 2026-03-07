@@ -1,14 +1,14 @@
-use std::sync::Arc;
+use api::qbit_compat::session::SessionStore;
+use axum::http::{HeaderValue, Method};
 use axum::{
-    routing::get,
-    response::{Html, IntoResponse},
     http::{header, StatusCode},
+    response::{Html, IntoResponse},
+    routing::get,
     Router,
 };
 use std::net::SocketAddr;
-use axum::http::{Method, HeaderValue};
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use api::qbit_compat::session::SessionStore;
 
 mod api;
 mod db;
@@ -51,7 +51,11 @@ async fn main() {
             .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
     } else {
         CorsLayer::new()
-            .allow_origin(allowed_origin.parse::<HeaderValue>().expect("Invalid DLOAD_CORS_ORIGIN"))
+            .allow_origin(
+                allowed_origin
+                    .parse::<HeaderValue>()
+                    .expect("Invalid DLOAD_CORS_ORIGIN"),
+            )
             .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
             .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
     };
@@ -79,11 +83,19 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn style_css() -> impl IntoResponse {
-    (StatusCode::OK, [(header::CONTENT_TYPE, "text/css")], STYLE_CSS)
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/css")],
+        STYLE_CSS,
+    )
 }
 
 async fn app_js() -> impl IntoResponse {
-    (StatusCode::OK, [(header::CONTENT_TYPE, "application/javascript")], APP_JS)
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/javascript")],
+        APP_JS,
+    )
 }
 
 async fn security_headers_middleware(
@@ -94,7 +106,10 @@ async fn security_headers_middleware(
     let headers = resp.headers_mut();
     headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
     headers.insert("X-Frame-Options", "DENY".parse().unwrap());
-    headers.insert("Referrer-Policy", "strict-origin-when-cross-origin".parse().unwrap());
+    headers.insert(
+        "Referrer-Policy",
+        "strict-origin-when-cross-origin".parse().unwrap(),
+    );
     headers.insert("X-XSS-Protection", "1; mode=block".parse().unwrap());
     headers.insert(
         "Content-Security-Policy",

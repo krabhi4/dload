@@ -1,4 +1,4 @@
-use crate::domain::{Claims, Download, DownloadStatus, jwt_secret};
+use crate::domain::{jwt_secret, Claims, Download, DownloadStatus};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, Query, State},
@@ -65,9 +65,10 @@ async fn list_downloads(
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     if require_auth(extract_token(&headers)).is_err() {
-        return axum::response::IntoResponse::into_response(
-            (axum::http::StatusCode::UNAUTHORIZED, "Authentication required")
-        );
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Authentication required",
+        ));
     }
     axum::response::IntoResponse::into_response(Json(state.get_all().await))
 }
@@ -78,16 +79,18 @@ async fn add_download(
     Json(payload): Json<serde_json::Value>,
 ) -> axum::response::Response {
     if require_auth(extract_token(&headers)).is_err() {
-        return axum::response::IntoResponse::into_response(
-            (axum::http::StatusCode::UNAUTHORIZED, "Authentication required")
-        );
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Authentication required",
+        ));
     }
     let url = payload["url"].as_str().unwrap_or("").trim().to_string();
 
     if let Err(e) = validate_download_url(&url) {
-        return axum::response::IntoResponse::into_response(
-            (axum::http::StatusCode::BAD_REQUEST, e)
-        );
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            e,
+        ));
     }
 
     let settings = state.settings.read().await;
@@ -247,10 +250,8 @@ fn is_private_ip(ip: &IpAddr) -> bool {
                 || v4.is_link_local()                  // 169.254.0.0/16 (AWS metadata etc.)
                 || v4.is_broadcast()                   // 255.255.255.255
                 || v4.is_unspecified()                 // 0.0.0.0
-                || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64  // 100.64.0.0/10 (CGNAT)
+                || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // 100.64.0.0/10 (CGNAT)
         }
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unspecified()
-        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
     }
 }

@@ -1,4 +1,4 @@
-use crate::domain::{Claims, jwt_secret};
+use crate::domain::{jwt_secret, Claims};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, State},

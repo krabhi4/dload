@@ -31,7 +31,7 @@ pub fn extract_info_hash(url: &str) -> Option<String> {
             if hash.len() >= 40 {
                 return Some(hash[..40].to_string());
             } else if hash.len() == 32 {
-                return base32_to_hex(&hash);
+                return base32_to_hex(hash);
             }
             return None;
         }
@@ -55,5 +55,9 @@ fn base32_to_hex(input: &str) -> Option<String> {
             hex.push(char::from_digit(val as u32, 16)?);
         }
     }
-    if hex.len() == 40 { Some(hex) } else { None }
+    if hex.len() == 40 {
+        Some(hex)
+    } else {
+        None
+    }
 }

@@ -6,10 +6,7 @@ use axum::{
 
 use super::QbitState;
 
-pub async fn login(
-    State(state): State<QbitState>,
-    body: String,
-) -> impl IntoResponse {
+pub async fn login(State(state): State<QbitState>, body: String) -> impl IntoResponse {
     // Parse form-encoded body: username=X&password=Y
     let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
         .into_owned()
@@ -45,7 +42,11 @@ pub async fn login(
             _ => (None, DUMMY_HASH.to_string()),
         };
         let valid = bcrypt::verify(&password_owned, &hash).unwrap_or(false) && user.is_some();
-        if valid { user } else { None }
+        if valid {
+            user
+        } else {
+            None
+        }
     })
     .await
     .unwrap_or(None);
@@ -62,7 +63,10 @@ pub async fn login(
 
     (
         StatusCode::OK,
-        [(header::SET_COOKIE, format!("SID={}; path=/; HttpOnly; SameSite=Lax", sid))],
+        [(
+            header::SET_COOKIE,
+            format!("SID={}; path=/; HttpOnly; SameSite=Lax", sid),
+        )],
         "Ok.",
     )
         .into_response()

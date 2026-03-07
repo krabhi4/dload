@@ -1421,3 +1421,67 @@ select:focus {
     gap: 6px;
   }
 }
+
+/* ─── More (⋯) dropdown ───────────────────── */
+
+.more-btn {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition);
+}
+
+.more-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+}
+
+.more-dropdown {
+    position: relative;
+}
+
+.more-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    min-width: 160px;
+    z-index: 100;
+    overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.more-menu.show {
+    display: block;
+}
+
+.more-menu button,
+.more-menu-link {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+    text-decoration: none;
+    box-sizing: border-box;
+    transition: background var(--transition);
+}
+
+.more-menu button:hover,
+.more-menu-link:hover {
+    background: rgba(255, 255, 255, 0.06);
+}

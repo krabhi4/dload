@@ -1,4 +1,15 @@
-# DLoad - Memory-Efficient Download Manager
+# DLoad — Memory-Efficient Download Manager
+
+[![CI](https://github.com/krabhi4/dload/actions/workflows/ci.yml/badge.svg)](https://github.com/krabhi4/dload/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+![Language](https://img.shields.io/badge/language-Rust-orange?logo=rust)
+![Framework](https://img.shields.io/badge/framework-Axum-blue)
+![Database](https://img.shields.io/badge/database-SQLite-lightblue?logo=sqlite)
+![Platform](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey?logo=docker)
+![Memory](https://img.shields.io/badge/memory-~20--50MB-success)
+![Docker Image](https://img.shields.io/badge/docker-ghcr.io%2Fkrabhi4%2Fdload-blue?logo=github)
 
 A fast, lightweight download manager built in Rust that streams directly to disk without buffering in RAM. Solves aria2's high memory usage problem.
 
@@ -6,6 +17,7 @@ A fast, lightweight download manager built in Rust that streams directly to disk
 
 - **Low Memory Usage**: Streams chunks directly to disk (~20-50MB vs aria2's 100-500MB+)
 - **HTTP/HTTPS Support**: Fast async downloading with progress tracking
+- **BitTorrent / Magnet Links**: Torrent support via `librqbit`
 - **Web UI**: Modern browser-based interface
 - **REST API**: Programmatic access
 - **SQLite Database**: Persistent download history
@@ -29,7 +41,7 @@ docker run -d \
   --name dload \
   -p 8080:8080 \
   -v ./downloads:/data \
-  ghcr.io/yourusername/dload:latest
+  ghcr.io/krabhi4/dload:latest
 ```
 
 ### Build from Source
@@ -62,11 +74,20 @@ Default settings:
 ## Development
 
 ```bash
-# Setup
+# Build
 cargo build
 
 # Run
 cargo run
+
+# Run tests
+cargo test
+
+# Lint
+cargo clippy
+
+# Format
+cargo fmt
 
 # Docker build
 docker build -t dload .
@@ -84,8 +105,8 @@ docker build -t dload .
 ├─────────────────────────────────────┤
 │      Download Manager               │
 ├──────────────┬──────────────────────┤
-│  HTTP Worker │  (more protocols)   │
-│  (reqwest)   │   coming soon       │
+│  HTTP Worker │  BitTorrent Worker  │
+│  (reqwest)   │  (librqbit)         │
 ├──────────────┴──────────────────────┤
 │    Direct to Disk (streaming)       │
 └─────────────────────────────────────┘
@@ -98,6 +119,18 @@ docker build -t dload .
 | aria2 | 100-500MB+ |
 | **dload** | **~20-50MB** |
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get started. Make sure to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Found a security issue? Please report it responsibly via [SECURITY.md](SECURITY.md).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a history of notable changes.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.

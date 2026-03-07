@@ -644,7 +644,7 @@ impl ManagerState {
         tokio::spawn(async move {
             download.protocol = Protocol::Torrent;
             download.status = DownloadStatus::Downloading;
-            
+
             // Persist the torrent file first so it survives restarts
             let download_dir = state.download_dir().await;
             let torrents_dir = std::path::Path::new(&download_dir).join(".torrents");
@@ -686,7 +686,7 @@ impl ManagerState {
             let handles = self.torrent_handles.read().await;
             handles.get(id).copied()
         };
-        
+
         // If handle is live, try getting from librqbit session metadata directly
         if let Some(tid) = torrent_id {
             if let Some(session) = {
@@ -706,8 +706,11 @@ impl ManagerState {
         let torrent_file = std::path::Path::new(&download_dir)
             .join(".torrents")
             .join(format!("{}.torrent", id));
-            
-        tokio::fs::read(&torrent_file).await.ok().map(bytes::Bytes::from)
+
+        tokio::fs::read(&torrent_file)
+            .await
+            .ok()
+            .map(bytes::Bytes::from)
     }
 
     pub async fn get_download(&self, id: &str) -> Option<Download> {
@@ -728,12 +731,13 @@ impl ManagerState {
             let torrent_file = std::path::Path::new(&download_dir)
                 .join(".torrents")
                 .join(format!("{}.torrent", download.id));
-                
+
             match tokio::fs::read(&torrent_file).await {
                 Ok(bytes) => librqbit::AddTorrent::from_bytes(bytes),
                 Err(e) => {
                     download.status = DownloadStatus::Failed;
-                    download.error_message = Some(format!("Failed to read persisted torrent file: {}", e));
+                    download.error_message =
+                        Some(format!("Failed to read persisted torrent file: {}", e));
                     self.update_download(&download).await;
                     return;
                 }
@@ -967,7 +971,7 @@ async fn session_add_and_wait(
     let download_dir = state.download_dir().await;
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
-        output_folder: Some(download_dir.clone().into()),
+        output_folder: Some(download_dir.clone()),
         ..Default::default()
     };
 

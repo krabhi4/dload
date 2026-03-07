@@ -40,6 +40,18 @@ impl Database {
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'USER',
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS download_history (
+                id TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                total_size INTEGER DEFAULT 0,
+                status TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                removed_at TEXT NOT NULL
             );",
         )?;
 

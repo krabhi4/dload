@@ -126,6 +126,24 @@ impl ManagerState {
     }
 
     pub async fn remove(&self, id: &str) {
+        // Snapshot to history before removal
+        let snapshot = {
+            let downloads = self.downloads.read().await;
+            downloads.get(id).cloned()
+        }; // read lock dropped here
+        if let Some(d) = snapshot {
+            let removed_at = chrono::Utc::now().to_rfc3339();
+            if let Err(e) = self.repo_blocking(move |repo| repo.insert_history(&d, &removed_at)).await {
+                tracing::error!("Failed to save download to history: {}", e);
+            }
+        }
+
+        self.remove_no_history(id).await;
+    }
+
+    /// Internal removal that skips history logging.
+    /// Used by the .torrent auto-start flow to clean up intermediate HTTP download entries.
+    async fn remove_no_history(&self, id: &str) {
         // Cancel any running task first
         self.cancel_download(id).await;
 
@@ -153,6 +171,15 @@ impl ManagerState {
             let downloads = self.downloads.read().await;
             downloads.get(id).cloned()
         };
+
+        // Snapshot to history before removal
+        if let Some(ref d) = download {
+            let dl = d.clone();
+            let removed_at = chrono::Utc::now().to_rfc3339();
+            if let Err(e) = self.repo_blocking(move |repo| repo.insert_history(&dl, &removed_at)).await {
+                tracing::error!("Failed to save download to history: {}", e);
+            }
+        }
 
         // Grab the torrent handle BEFORE cancelling — the monitor_torrent cancel handler
         // would otherwise remove it from the map and call session.delete(tid, false) first.
@@ -527,8 +554,8 @@ impl ManagerState {
                                 tracing::warn!("Failed to delete .torrent file: {}", e);
                             }
 
-                            // Remove the original HTTP download entry
-                            self.remove(&original_id).await;
+                            // Remove the original HTTP download entry (no history — it's an internal cleanup)
+                            self.remove_no_history(&original_id).await;
                         }
                         Err(e) => {
                             tracing::error!("Failed to read .torrent file: {}", e);
@@ -632,6 +659,25 @@ impl ManagerState {
                     self.update_download(&download).await;
                 }
             }
+        }
+    }
+
+    // ─── History ────────────────────────────────────────
+
+    pub async fn get_all_history(&self) -> Vec<serde_json::Value> {
+        self.repo_blocking(|repo| repo.get_all_history().unwrap_or_default()).await
+    }
+
+    pub async fn delete_history(&self, id: &str) {
+        let id_owned = id.to_string();
+        if let Err(e) = self.repo_blocking(move |repo| repo.delete_history(&id_owned)).await {
+            tracing::error!("Failed to delete history entry: {}", e);
+        }
+    }
+
+    pub async fn delete_all_history(&self) {
+        if let Err(e) = self.repo_blocking(|repo| repo.delete_all_history()).await {
+            tracing::error!("Failed to clear history: {}", e);
         }
     }
 }

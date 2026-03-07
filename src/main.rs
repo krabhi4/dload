@@ -25,8 +25,11 @@ static APP_JS: &str = include_str!("ui/app.js");
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let db =
-        Arc::new(db::Database::new("/tmp/dload-data/dload.db").expect("Failed to create database"));
+    let data_dir = std::env::var("DLOAD_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
+    std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+    let db_path = format!("{}/dload.db", data_dir);
+
+    let db = Arc::new(db::Database::new(&db_path).expect("Failed to create database"));
     let repo = Arc::new(db::repository::Repository::new(db.clone()));
 
     // Load settings from DB, falling back to defaults for first run.

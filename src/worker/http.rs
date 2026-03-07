@@ -1,4 +1,4 @@
-use crate::domain::{Download, DownloadStatus, sanitize_filename};
+use crate::domain::{sanitize_filename, Download, DownloadStatus};
 use futures::stream::StreamExt;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -22,7 +22,11 @@ pub struct HttpDownloader {
 }
 
 impl HttpDownloader {
-    pub fn new(download: Download, max_connections: usize, cancel_token: CancellationToken) -> Self {
+    pub fn new(
+        download: Download,
+        max_connections: usize,
+        cancel_token: CancellationToken,
+    ) -> Self {
         Self {
             download,
             max_connections,
@@ -98,7 +102,8 @@ impl HttpDownloader {
             self.download_single(&client).await?;
         } else {
             // Multi-connection download
-            self.download_multi(&client, content_length, num_conns).await?;
+            self.download_multi(&client, content_length, num_conns)
+                .await?;
         }
 
         self.download.status = DownloadStatus::Completed;
@@ -163,7 +168,8 @@ impl HttpDownloader {
             }
             let chunk = chunk?;
             writer.write_all(&chunk).await?;
-            self.downloaded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            self.downloaded
+                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
 
         writer.flush().await?;
@@ -207,9 +213,9 @@ impl HttpDownloader {
 
             join_set.spawn(async move {
                 active_conns.fetch_add(1, Ordering::Relaxed);
-                let result = download_range(
-                    &client, &url, &path, start, end, &downloaded, &cancel_token,
-                ).await;
+                let result =
+                    download_range(&client, &url, &path, start, end, &downloaded, &cancel_token)
+                        .await;
                 active_conns.fetch_sub(1, Ordering::Relaxed);
                 result
             });
@@ -255,17 +261,18 @@ async fn download_range(
     if status == reqwest::StatusCode::OK && start > 0 {
         return Err(anyhow::anyhow!(
             "Server ignored Range header (returned 200 instead of 206 for bytes {}-{})",
-            start, end
+            start,
+            end
         ));
     }
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
-        return Err(anyhow::anyhow!("Unexpected status {} for range request", status));
+        return Err(anyhow::anyhow!(
+            "Unexpected status {} for range request",
+            status
+        ));
     }
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .await?;
+    let mut file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
     file.seek(std::io::SeekFrom::Start(start)).await?;
     let mut writer = BufWriter::with_capacity(256 * 1024, file);
 
@@ -289,7 +296,10 @@ async fn download_range(
     if bytes_written != expected {
         return Err(anyhow::anyhow!(
             "Range {}-{}: expected {} bytes, got {}",
-            start, end, expected, bytes_written
+            start,
+            end,
+            expected,
+            bytes_written
         ));
     }
 

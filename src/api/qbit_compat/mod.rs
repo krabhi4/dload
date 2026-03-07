@@ -1,15 +1,15 @@
-pub mod auth;
 pub mod app;
+pub mod auth;
 pub mod session;
 pub mod torrents;
 
 use crate::manager::SharedState;
 use axum::{
-    Router,
-    routing::{get, post},
-    middleware,
     http::StatusCode,
+    middleware,
     response::IntoResponse,
+    routing::{get, post},
+    Router,
 };
 use session::SessionStore;
 use std::collections::HashSet;
@@ -24,7 +24,11 @@ pub struct QbitState {
 }
 
 pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
-    let state = QbitState { manager, sessions, categories: Arc::new(RwLock::new(HashSet::new())) };
+    let state = QbitState {
+        manager,
+        sessions,
+        categories: Arc::new(RwLock::new(HashSet::new())),
+    };
 
     // Auth routes (no session required)
     let auth_routes = Router::new()
@@ -41,8 +45,7 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/app/defaultSavePath", get(app::default_save_path));
 
     // Transfer routes (session required)
-    let transfer_routes = Router::new()
-        .route("/api/v2/transfer/info", get(app::transfer_info));
+    let transfer_routes = Router::new().route("/api/v2/transfer/info", get(app::transfer_info));
 
     // Torrent routes (session required)
     let torrent_routes = Router::new()
@@ -52,7 +55,10 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/trackers", get(torrents::trackers))
         .route("/api/v2/torrents/categories", get(torrents::categories))
         .route("/api/v2/torrents/tags", get(torrents::tags))
-        .route("/api/v2/torrents/createCategory", post(torrents::create_category))
+        .route(
+            "/api/v2/torrents/createCategory",
+            post(torrents::create_category),
+        )
         .route("/api/v2/torrents/add", post(torrents::add))
         .route("/api/v2/torrents/delete", post(torrents::delete))
         .route("/api/v2/torrents/pause", post(torrents::pause))
@@ -74,7 +80,10 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/removeTags", post(torrents::noop))
         .route("/api/v2/torrents/editCategory", post(torrents::noop))
         .route("/api/v2/torrents/removeCategories", post(torrents::noop))
-        .route("/api/v2/torrents/removeCompleted", post(torrents::remove_completed))
+        .route(
+            "/api/v2/torrents/removeCompleted",
+            post(torrents::remove_completed),
+        )
         .route("/api/v2/torrents/recheck", post(torrents::noop))
         .route("/api/v2/torrents/reannounce", post(torrents::noop))
         .route("/api/v2/torrents/editTrackers", post(torrents::noop))
@@ -84,8 +93,14 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/setDownloadLimit", post(torrents::noop))
         .route("/api/v2/torrents/setUploadLimit", post(torrents::noop))
         .route("/api/v2/torrents/filePrio", post(torrents::noop))
-        .route("/api/v2/torrents/toggleSequentialDownload", post(torrents::noop))
-        .route("/api/v2/torrents/toggleFirstLastPiecePrio", post(torrents::noop));
+        .route(
+            "/api/v2/torrents/toggleSequentialDownload",
+            post(torrents::noop),
+        )
+        .route(
+            "/api/v2/torrents/toggleFirstLastPiecePrio",
+            post(torrents::noop),
+        );
 
     // Protected routes need session middleware
     let protected = app_routes
@@ -97,9 +112,7 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         ))
         .layer(middleware::from_fn(log_requests));
 
-    auth_routes
-        .merge(protected)
-        .with_state(state)
+    auth_routes.merge(protected).with_state(state)
 }
 
 /// Log all qBit API requests with method, path, and response status for debugging.
@@ -156,12 +169,16 @@ async fn require_session(
         }
     }
 
-    tracing::warn!("qbit_compat auth failed for {} {}", request.method(), request.uri());
+    tracing::warn!(
+        "qbit_compat auth failed for {} {}",
+        request.method(),
+        request.uri()
+    );
     (StatusCode::FORBIDDEN, "Forbidden").into_response()
 }
 
 fn base64_decode(input: &str) -> Result<String, ()> {
-    use base64::{Engine, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine};
     let bytes = general_purpose::STANDARD
         .decode(input.trim())
         .or_else(|_| general_purpose::URL_SAFE.decode(input.trim()))

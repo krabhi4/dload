@@ -14,6 +14,12 @@ pub struct SessionStore {
 
 const SESSION_TTL_SECS: u64 = 86400; // 24 hours
 
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionStore {
     pub fn new() -> Self {
         Self {

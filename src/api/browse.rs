@@ -1,4 +1,4 @@
-use crate::domain::{Claims, jwt_secret};
+use crate::domain::{jwt_secret, Claims};
 use crate::manager::SharedState;
 use axum::{
     extract::{Query, State},
@@ -71,7 +71,9 @@ fn validate_browse_path(path: &str) -> Result<String, String> {
     if path.contains("..") {
         return Err("Path must not contain '..'".to_string());
     }
-    let blocked = ["/etc", "/usr", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys", "/var/run", "/root"];
+    let blocked = [
+        "/etc", "/usr", "/bin", "/sbin", "/boot", "/dev", "/proc", "/sys", "/var/run", "/root",
+    ];
     for prefix in &blocked {
         if path == *prefix || path.starts_with(&format!("{}/", prefix)) {
             return Err("Cannot browse system directories".to_string());
@@ -86,18 +88,17 @@ async fn browse_dirs(
     State(_state): State<SharedState>,
 ) -> axum::response::Response {
     if let Err(e) = require_admin(&headers) {
-        return axum::response::IntoResponse::into_response(
-            (axum::http::StatusCode::FORBIDDEN, e)
-        );
+        return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 
     let path = params.path.unwrap_or_else(|| "/".to_string());
     let path = match validate_browse_path(&path) {
         Ok(p) => p,
         Err(e) => {
-            return axum::response::IntoResponse::into_response(
-                (axum::http::StatusCode::BAD_REQUEST, e)
-            );
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::BAD_REQUEST,
+                e,
+            ));
         }
     };
 
@@ -112,20 +113,17 @@ async fn browse_dirs(
                         if name.starts_with('.') {
                             continue;
                         }
-                        let full = format!(
-                            "{}/{}",
-                            path.trim_end_matches('/'),
-                            name
-                        );
+                        let full = format!("{}/{}", path.trim_end_matches('/'), name);
                         dirs.push(BrowseEntry { name, path: full });
                     }
                 }
             }
         }
         Err(e) => {
-            return axum::response::IntoResponse::into_response(
-                (axum::http::StatusCode::BAD_REQUEST, format!("Cannot read directory: {}", e))
-            );
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("Cannot read directory: {}", e),
+            ));
         }
     }
 
@@ -154,30 +152,26 @@ async fn create_dir(
     Json(req): Json<CreateDirRequest>,
 ) -> axum::response::Response {
     if let Err(e) = require_admin(&headers) {
-        return axum::response::IntoResponse::into_response(
-            (axum::http::StatusCode::FORBIDDEN, e)
-        );
+        return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 
     let path = match validate_browse_path(&req.path) {
         Ok(p) => p,
         Err(e) => {
-            return axum::response::IntoResponse::into_response(
-                (axum::http::StatusCode::BAD_REQUEST, e)
-            );
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::BAD_REQUEST,
+                e,
+            ));
         }
     };
 
     match tokio::fs::create_dir_all(&path).await {
-        Ok(_) => {
-            axum::response::IntoResponse::into_response(
-                Json(serde_json::json!({ "success": true, "path": path }))
-            )
-        }
-        Err(e) => {
-            axum::response::IntoResponse::into_response(
-                (axum::http::StatusCode::BAD_REQUEST, format!("Failed to create directory: {}", e))
-            )
-        }
+        Ok(_) => axum::response::IntoResponse::into_response(Json(
+            serde_json::json!({ "success": true, "path": path }),
+        )),
+        Err(e) => axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("Failed to create directory: {}", e),
+        )),
     }
 }

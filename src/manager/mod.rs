@@ -8,14 +8,16 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// Torrent session + the download_dir it was created with.
+/// Reset when download_dir changes so torrents use the new path.
+type TorrentSession = Arc<RwLock<Option<(String, Arc<Session>)>>>;
+
 #[derive(Clone)]
 pub struct ManagerState {
     pub downloads: Arc<RwLock<HashMap<String, Download>>>,
     pub settings: Arc<RwLock<Settings>>,
     pub repo: Arc<Repository>,
-    /// Torrent session + the download_dir it was created with.
-    /// Reset when download_dir changes so torrents use the new path.
-    torrent_session: Arc<RwLock<Option<(String, Arc<Session>)>>>,
+    torrent_session: TorrentSession,
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Maps download ID -> librqbit torrent handle ID for pause/resume
     torrent_handles: Arc<RwLock<HashMap<String, usize>>>,
@@ -100,12 +102,18 @@ impl ManagerState {
 
     pub async fn add_download(&self, download: Download) {
         let dl = download.clone();
-        if let Err(e) = self.repo_blocking(move |repo| repo.insert_download(&dl)).await {
+        if let Err(e) = self
+            .repo_blocking(move |repo| repo.insert_download(&dl))
+            .await
+        {
             tracing::error!("Failed to persist download to DB: {}", e);
         }
         // Record in history
         let dl2 = download.clone();
-        if let Err(e) = self.repo_blocking(move |repo| repo.insert_history(&dl2)).await {
+        if let Err(e) = self
+            .repo_blocking(move |repo| repo.insert_history(&dl2))
+            .await
+        {
             tracing::error!("Failed to record download in history: {}", e);
         }
         let mut downloads = self.downloads.write().await;
@@ -120,14 +128,20 @@ impl ManagerState {
             }
         } // lock released before DB call
         let dl = download.clone();
-        if let Err(e) = self.repo_blocking(move |repo| repo.update_download(&dl)).await {
+        if let Err(e) = self
+            .repo_blocking(move |repo| repo.update_download(&dl))
+            .await
+        {
             tracing::error!("Failed to update download in DB: {}", e);
         }
         // Update history on terminal status changes
         match download.status {
             DownloadStatus::Completed | DownloadStatus::Failed => {
                 let dl2 = download.clone();
-                if let Err(e) = self.repo_blocking(move |repo| repo.update_history(&dl2)).await {
+                if let Err(e) = self
+                    .repo_blocking(move |repo| repo.update_history(&dl2))
+                    .await
+                {
                     tracing::error!("Failed to update history: {}", e);
                 }
             }
@@ -156,7 +170,10 @@ impl ManagerState {
         }
 
         let id_owned = id.to_string();
-        if let Err(e) = self.repo_blocking(move |repo| repo.delete_download(&id_owned)).await {
+        if let Err(e) = self
+            .repo_blocking(move |repo| repo.delete_download(&id_owned))
+            .await
+        {
             tracing::error!("Failed to delete download from DB: {}", e);
         }
         let mut downloads = self.downloads.write().await;
@@ -199,9 +216,7 @@ impl ManagerState {
             let download_dir = self.download_dir().await;
             let safe = match path.canonicalize() {
                 Ok(canonical) => canonical.starts_with(&download_dir),
-                Err(_) => {
-                    d.save_path.starts_with(&download_dir) && !d.save_path.contains("..")
-                }
+                Err(_) => d.save_path.starts_with(&download_dir) && !d.save_path.contains(".."),
             };
 
             if safe && path.exists() {
@@ -213,13 +228,19 @@ impl ManagerState {
                     tracing::warn!("Failed to delete file {}: {}", d.save_path, e);
                 }
             } else if !safe {
-                tracing::warn!("Refusing to delete file outside download directory: {}", d.save_path);
+                tracing::warn!(
+                    "Refusing to delete file outside download directory: {}",
+                    d.save_path
+                );
             }
         }
 
         // Clean up from DB and in-memory state
         let id_owned = id.to_string();
-        if let Err(e) = self.repo_blocking(move |repo| repo.delete_download(&id_owned)).await {
+        if let Err(e) = self
+            .repo_blocking(move |repo| repo.delete_download(&id_owned))
+            .await
+        {
             tracing::error!("Failed to delete download from DB: {}", e);
         }
         let mut downloads = self.downloads.write().await;
@@ -277,7 +298,10 @@ impl ManagerState {
             }
         };
         if let Some(d) = download {
-            if let Err(e) = self.repo_blocking(move |repo| repo.update_download(&d)).await {
+            if let Err(e) = self
+                .repo_blocking(move |repo| repo.update_download(&d))
+                .await
+            {
                 tracing::error!("Failed to persist pause state: {}", e);
             }
         }
@@ -290,7 +314,10 @@ impl ManagerState {
         };
         let Some(d) = download else { return };
 
-        if d.status != DownloadStatus::Paused && d.status != DownloadStatus::Failed && d.status != DownloadStatus::Stopped {
+        if d.status != DownloadStatus::Paused
+            && d.status != DownloadStatus::Failed
+            && d.status != DownloadStatus::Stopped
+        {
             return;
         }
 
@@ -354,10 +381,16 @@ impl ManagerState {
 
             match protocol {
                 Protocol::Http => {
-                    state.clone().handle_http_download(download, cancel_token).await;
+                    state
+                        .clone()
+                        .handle_http_download(download, cancel_token)
+                        .await;
                 }
                 Protocol::Torrent => {
-                    state.clone().handle_torrent_download(download, cancel_token).await;
+                    state
+                        .clone()
+                        .handle_torrent_download(download, cancel_token)
+                        .await;
                 }
                 _ => {
                     let mut failed = download;
@@ -369,7 +402,11 @@ impl ManagerState {
         });
     }
 
-    async fn handle_http_download(self: Arc<Self>, download: Download, cancel_token: CancellationToken) {
+    async fn handle_http_download(
+        self: Arc<Self>,
+        download: Download,
+        cancel_token: CancellationToken,
+    ) {
         let max_conns = {
             let settings = self.settings.read().await;
             settings.max_connections_per_file as usize
@@ -460,7 +497,9 @@ impl ManagerState {
                 db_tick = 0;
                 if let Some(snap) = snapshot {
                     let repo = Arc::clone(&self.repo);
-                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
+                    tokio::task::spawn_blocking(move || {
+                        let _ = repo.update_download(&snap);
+                    });
                 }
             }
         }
@@ -503,35 +542,48 @@ impl ManagerState {
                             let raw_name = librqbit::torrent_from_bytes(&torrent_bytes)
                                 .ok()
                                 .and_then(|meta| {
-                                    meta.info.name.as_ref().map(|n: &librqbit::ByteBufOwned| n.to_string())
+                                    meta.info
+                                        .name
+                                        .as_ref()
+                                        .map(|n: &librqbit::ByteBufOwned| n.to_string())
                                 })
                                 .unwrap_or_else(|| "torrent-download".to_string());
                             let name = crate::domain::sanitize_filename(&raw_name);
 
-                            let mut torrent_download = Download::new(
-                                format!("torrent://{}", name),
-                                &dir,
-                            );
+                            let mut torrent_download =
+                                Download::new(format!("torrent://{}", name), &dir);
                             torrent_download.filename = name;
                             torrent_download.protocol = Protocol::Torrent;
                             torrent_download.status = DownloadStatus::Downloading;
 
-                            let torrent_cancel = self.register_cancel_token(&torrent_download.id).await;
+                            let torrent_cancel =
+                                self.register_cancel_token(&torrent_download.id).await;
                             self.add_download(torrent_download.clone()).await;
 
                             let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
                             if let Err(e) = session_add_and_wait(
-                                &self, add, &mut torrent_download, &torrent_cancel
-                            ).await {
+                                &self,
+                                add,
+                                &mut torrent_download,
+                                &torrent_cancel,
+                            )
+                            .await
+                            {
                                 let current_status = {
                                     let downloads = self.downloads.read().await;
-                                    downloads.get(&torrent_download.id).map(|d| d.status.clone())
+                                    downloads
+                                        .get(&torrent_download.id)
+                                        .map(|d| d.status.clone())
                                 };
                                 match current_status {
-                                    Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
+                                    Some(DownloadStatus::Paused)
+                                    | Some(DownloadStatus::Stopped)
+                                    | Some(DownloadStatus::Completed)
+                                    | Some(DownloadStatus::Seeding) => {}
                                     _ => {
                                         torrent_download.status = DownloadStatus::Failed;
-                                        torrent_download.error_message = Some(format!("Torrent failed: {}", e));
+                                        torrent_download.error_message =
+                                            Some(format!("Torrent failed: {}", e));
                                         self.update_download(&torrent_download).await;
                                     }
                                 }
@@ -577,7 +629,11 @@ impl ManagerState {
 
     /// Start a torrent download from raw .torrent file bytes.
     /// Used by the qBittorrent compat API for .torrent file uploads.
-    pub async fn start_torrent_from_bytes(self: Arc<Self>, mut download: Download, torrent_bytes: Vec<u8>) {
+    pub async fn start_torrent_from_bytes(
+        self: Arc<Self>,
+        mut download: Download,
+        torrent_bytes: Vec<u8>,
+    ) {
         let state = Arc::clone(&self);
         let cancel_token = state.register_cancel_token(&download.id).await;
 
@@ -593,7 +649,10 @@ impl ManagerState {
                     downloads.get(&download.id).map(|d| d.status.clone())
                 };
                 match current_status {
-                    Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {}
+                    Some(DownloadStatus::Paused)
+                    | Some(DownloadStatus::Stopped)
+                    | Some(DownloadStatus::Completed)
+                    | Some(DownloadStatus::Seeding) => {}
                     _ => {
                         download.status = DownloadStatus::Failed;
                         download.error_message = Some(format!("Torrent failed: {}", e));
@@ -604,7 +663,11 @@ impl ManagerState {
         });
     }
 
-    async fn handle_torrent_download(self: Arc<Self>, mut download: Download, cancel_token: CancellationToken) {
+    async fn handle_torrent_download(
+        self: Arc<Self>,
+        mut download: Download,
+        cancel_token: CancellationToken,
+    ) {
         let url = download.url.clone();
         let add = if url.starts_with("magnet:") {
             librqbit::AddTorrent::from_url(&url)
@@ -638,7 +701,10 @@ impl ManagerState {
                 downloads.get(&download.id).map(|d| d.status.clone())
             };
             match current_status {
-                Some(DownloadStatus::Paused) | Some(DownloadStatus::Stopped) | Some(DownloadStatus::Completed) | Some(DownloadStatus::Seeding) => {
+                Some(DownloadStatus::Paused)
+                | Some(DownloadStatus::Stopped)
+                | Some(DownloadStatus::Completed)
+                | Some(DownloadStatus::Seeding) => {
                     // Already handled by monitor_torrent
                 }
                 _ => {
@@ -653,12 +719,16 @@ impl ManagerState {
     // ─── History ────────────────────────────────────────
 
     pub async fn get_all_history(&self) -> Vec<serde_json::Value> {
-        self.repo_blocking(|repo| repo.get_all_history().unwrap_or_default()).await
+        self.repo_blocking(|repo| repo.get_all_history().unwrap_or_default())
+            .await
     }
 
     pub async fn delete_history(&self, id: &str) {
         let id_owned = id.to_string();
-        if let Err(e) = self.repo_blocking(move |repo| repo.delete_history(&id_owned)).await {
+        if let Err(e) = self
+            .repo_blocking(move |repo| repo.delete_history(&id_owned))
+            .await
+        {
             tracing::error!("Failed to delete history entry: {}", e);
         }
     }
@@ -703,7 +773,9 @@ impl ManagerState {
                 };
                 if let Some(snap) = snap {
                     let repo = Arc::clone(&self.repo);
-                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
+                    tokio::task::spawn_blocking(move || {
+                        let _ = repo.update_download(&snap);
+                    });
                 }
                 return;
             }
@@ -757,7 +829,9 @@ impl ManagerState {
                 };
                 if let Some(snap) = snap {
                     let repo = Arc::clone(&self.repo);
-                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
+                    tokio::task::spawn_blocking(move || {
+                        let _ = repo.update_download(&snap);
+                    });
                 }
                 return;
             }
@@ -803,7 +877,9 @@ impl ManagerState {
                 db_tick = 0;
                 if let Some(snap) = snapshot {
                     let repo = Arc::clone(&self.repo);
-                    tokio::task::spawn_blocking(move || { let _ = repo.update_download(&snap); });
+                    tokio::task::spawn_blocking(move || {
+                        let _ = repo.update_download(&snap);
+                    });
                 }
             }
 

@@ -53,22 +53,34 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         .unwrap_or(8640000);
 
     let content_path = d.content_path.as_deref().unwrap_or(&d.save_path);
-    let save_path = format!("{}/", std::path::Path::new(&d.save_path)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_string_lossy())
-        .unwrap_or(std::borrow::Cow::Borrowed(&d.save_path)));
+    let save_path = format!(
+        "{}/",
+        std::path::Path::new(&d.save_path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy())
+            .unwrap_or(std::borrow::Cow::Borrowed(&d.save_path))
+    );
 
     let now = chrono::Utc::now();
     let time_active = (now - d.created_at).num_seconds();
-    let seeding_time = if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
-        d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
-    } else {
-        0
-    };
+    let seeding_time =
+        if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
+            d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
+        } else {
+            0
+        };
 
-    let progress = if d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
-    let magnet_uri = if d.url.starts_with("magnet:") { d.url.as_str() } else { "" };
+    let progress = if d.progress >= 100.0 {
+        1.0
+    } else {
+        d.progress / 100.0
+    };
+    let magnet_uri = if d.url.starts_with("magnet:") {
+        d.url.as_str()
+    } else {
+        ""
+    };
 
     let mut base = serde_json::json!({
         "hash": d.info_hash.as_deref().unwrap_or(&d.id),
@@ -235,19 +247,18 @@ pub async fn properties(
     };
 
     let all = state.manager.get_all().await;
-    let download = all
-        .iter()
-        .find(|d| hash_matches(d, &hash));
+    let download = all.iter().find(|d| hash_matches(d, &hash));
 
     match download {
         Some(d) => {
             let now = chrono::Utc::now();
             let elapsed = (now - d.created_at).num_seconds();
-            let seeding_time = if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
-                d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
-            } else {
-                0
-            };
+            let seeding_time =
+                if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
+                    d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
+                } else {
+                    0
+                };
             Json(serde_json::json!({
                 "hash": d.info_hash.as_deref().unwrap_or(&d.id),
                 "name": d.filename,
@@ -299,17 +310,20 @@ pub async fn files(
     };
 
     let all = state.manager.get_all().await;
-    let download = all
-        .iter()
-        .find(|d| hash_matches(d, &hash));
+    let download = all.iter().find(|d| hash_matches(d, &hash));
 
     match download {
         Some(d) => {
             let save_path = d.save_path.clone();
             let filename = d.filename.clone();
             let total_size = d.total_size;
-            let progress = if d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
-            let is_seed = d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed;
+            let progress = if d.progress >= 100.0 {
+                1.0
+            } else {
+                d.progress / 100.0
+            };
+            let is_seed =
+                d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed;
 
             // Run blocking filesystem I/O off the async runtime
             let file_list = tokio::task::spawn_blocking(move || {
@@ -317,9 +331,18 @@ pub async fn files(
                 let mut file_list = Vec::new();
                 if path.is_dir() {
                     let mut index = 0;
-                    collect_files_recursive(path, path, progress, is_seed, &mut file_list, &mut index);
+                    collect_files_recursive(
+                        path,
+                        path,
+                        progress,
+                        is_seed,
+                        &mut file_list,
+                        &mut index,
+                    );
                 } else if path.exists() {
-                    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(total_size);
+                    let size = std::fs::metadata(path)
+                        .map(|m| m.len())
+                        .unwrap_or(total_size);
                     file_list.push(serde_json::json!({
                         "index": 0,
                         "name": filename,
@@ -349,7 +372,9 @@ fn collect_files_recursive(
     file_list: &mut Vec<serde_json::Value>,
     index: &mut usize,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let Ok(ft) = entry.file_type() else { continue };
         let path = entry.path();
@@ -381,25 +406,23 @@ pub async fn categories(State(state): State<QbitState>) -> impl IntoResponse {
 
     // Include categories registered via createCategory
     for cat in state.categories.read().await.iter() {
-        cats.entry(cat.clone())
-            .or_insert_with(|| {
-                serde_json::json!({
-                    "name": cat,
-                    "savePath": "",
-                })
-            });
+        cats.entry(cat.clone()).or_insert_with(|| {
+            serde_json::json!({
+                "name": cat,
+                "savePath": "",
+            })
+        });
     }
 
     // Include categories from existing downloads
     for d in &all {
         if let Some(ref cat) = d.category {
-            cats.entry(cat.clone())
-                .or_insert_with(|| {
-                    serde_json::json!({
-                        "name": cat,
-                        "savePath": "",
-                    })
-                });
+            cats.entry(cat.clone()).or_insert_with(|| {
+                serde_json::json!({
+                    "name": cat,
+                    "savePath": "",
+                })
+            });
         }
     }
     Json(serde_json::json!(cats))
@@ -413,7 +436,11 @@ pub async fn create_category(State(state): State<QbitState>, body: String) -> im
     let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
         .into_owned()
         .collect();
-    if let Some(cat) = params.iter().find(|(k, _)| k == "category").map(|(_, v)| v.clone()) {
+    if let Some(cat) = params
+        .iter()
+        .find(|(k, _)| k == "category")
+        .map(|(_, v)| v.clone())
+    {
         if !cat.is_empty() {
             state.categories.write().await.insert(cat);
         }
@@ -500,7 +527,10 @@ async fn handle_add(
             if p == default_trimmed || p.starts_with(&format!("{}/", default_trimmed)) {
                 p.to_string()
             } else {
-                tracing::warn!("qbit_compat: savepath '{}' outside download_dir, ignoring", p);
+                tracing::warn!(
+                    "qbit_compat: savepath '{}' outside download_dir, ignoring",
+                    p
+                );
                 default_dir.clone()
             }
         }
@@ -583,10 +613,7 @@ pub async fn delete(State(state): State<QbitState>, body: String) -> impl IntoRe
             break;
         }
 
-        if let Some(d) = all
-            .iter()
-            .find(|d| hash_matches(d, hash))
-        {
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
             if delete_files {
                 state.manager.remove_with_files(&d.id).await;
             } else {
@@ -623,10 +650,7 @@ pub async fn pause(State(state): State<QbitState>, body: String) -> impl IntoRes
             }
             break;
         }
-        if let Some(d) = all
-            .iter()
-            .find(|d| hash_matches(d, hash))
-        {
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
             state.manager.pause_download(&d.id).await;
         }
     }
@@ -659,10 +683,7 @@ pub async fn resume(State(state): State<QbitState>, body: String) -> impl IntoRe
             }
             break;
         }
-        if let Some(d) = all
-            .iter()
-            .find(|d| hash_matches(d, hash))
-        {
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
             state.manager.resume_download(&d.id).await;
         }
     }
@@ -691,10 +712,7 @@ pub async fn set_category(State(state): State<QbitState>, body: String) -> impl 
         if hash.is_empty() {
             continue;
         }
-        if let Some(d) = all
-            .iter()
-            .find(|d| hash_matches(d, hash))
-        {
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
             let mut updated = d.clone();
             updated.category = category.clone();
             state.manager.update_download(&updated).await;

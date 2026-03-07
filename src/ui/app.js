@@ -168,7 +168,7 @@ function showHistory() {
     '<div class="page-header history-header">' +
     "<div>" +
     "<h1>History</h1>" +
-    "<p>Record of all removed downloads</p>" +
+    "<p>All downloads</p>" +
     "</div>" +
     '<div class="history-actions" id="history-actions">' +
     '<button class="btn-danger-outline btn-small" id="delete-selected-btn" style="display:none" onclick="deleteSelectedHistory()">Delete Selected</button>' +
@@ -1005,7 +1005,7 @@ function renderHistory(items) {
         '<polyline points="12 6 12 12 16 14"/>' +
         "</svg>" +
         "<p>No history yet</p>" +
-        "<span>Removed downloads will appear here</span>" +
+        "<span>Downloads will appear here</span>" +
         "</div>",
     );
     var actionsDiv = document.getElementById("history-actions");
@@ -1020,18 +1020,22 @@ function renderHistory(items) {
     .map(function (h) {
       var isSelected = selectedHistoryIds.has(h.id);
       var sizeDisplay = formatSize(h.total_size || 0);
-      var removedDate = new Date(h.removed_at).toLocaleDateString(undefined, {
+      var createdDate = new Date(h.created_at).toLocaleDateString(undefined, {
         year: "numeric",
         month: "short",
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
       });
-      var createdDate = new Date(h.created_at).toLocaleDateString(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      });
+      var completedDate = h.completed_at
+        ? new Date(h.completed_at).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : null;
       var statusClass = h.status.toLowerCase();
 
       return (
@@ -1066,12 +1070,10 @@ function renderHistory(items) {
         "<span>" +
         sizeDisplay +
         "</span>" +
-        "<span>Added " +
+        "<span>" +
         createdDate +
         "</span>" +
-        "<span>Removed " +
-        removedDate +
-        "</span>" +
+        (completedDate ? "<span>Completed " + completedDate + "</span>" : "") +
         "</div>" +
         "</div>" +
         '<button class="delete-btn" onclick="deleteHistoryItem(\'' +

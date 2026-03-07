@@ -287,11 +287,11 @@ impl Repository {
 
     // ─── History ────────────────────────────────────────
 
-    pub fn insert_history(&self, download: &Download, removed_at: &str) -> anyhow::Result<()> {
+    pub fn insert_history(&self, download: &Download) -> anyhow::Result<()> {
         let conn = self.db.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO download_history (id, url, filename, total_size, status, protocol, created_at, completed_at, removed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR IGNORE INTO download_history (id, url, filename, total_size, status, protocol, created_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 download.id,
                 download.url,
@@ -301,7 +301,22 @@ impl Repository {
                 format!("{:?}", download.protocol),
                 download.created_at.to_rfc3339(),
                 download.completed_at.map(|d| d.to_rfc3339()),
-                removed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_history(&self, download: &Download) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE download_history SET filename = ?2, total_size = ?3, status = ?4, completed_at = ?5
+             WHERE id = ?1",
+            params![
+                download.id,
+                download.filename,
+                download.total_size,
+                format!("{:?}", download.status),
+                download.completed_at.map(|d| d.to_rfc3339()),
             ],
         )?;
         Ok(())
@@ -310,8 +325,8 @@ impl Repository {
     pub fn get_all_history(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         let conn = self.db.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, url, filename, total_size, status, protocol, created_at, completed_at, removed_at
-             FROM download_history ORDER BY removed_at DESC",
+            "SELECT id, url, filename, total_size, status, protocol, created_at, completed_at
+             FROM download_history ORDER BY created_at DESC",
         )?;
 
         let rows = stmt
@@ -325,7 +340,6 @@ impl Repository {
                     "protocol": row.get::<_, String>(5)?,
                     "created_at": row.get::<_, String>(6)?,
                     "completed_at": row.get::<_, Option<String>>(7)?,
-                    "removed_at": row.get::<_, String>(8)?,
                 }))
             })?
             .collect::<Result<Vec<_>, _>>()?;

@@ -82,14 +82,18 @@ impl ManagerState {
     }
 
     async fn get_torrent_session(&self) -> anyhow::Result<Arc<Session>> {
-        let dir = self.download_dir().await;
-
         // Hold write lock for the entire check-and-create to prevent races
         let mut guard = self.torrent_session.write().await;
-        if let Some((ref existing_dir, ref session)) = *guard {
-            if *existing_dir == dir {
-                return Ok(session.clone());
-            }
+        if let Some((_, ref session)) = *guard {
+            return Ok(session.clone());
+        }
+
+        // Only create the session FIRST TIME
+        let dir = self.download_dir().await;
+
+        // Ensure the directory exists before initializing librqbit so DHT persistence succeeds
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            tracing::warn!("Failed to create download directory {}: {}", dir, e);
         }
 
         let session = Session::new(dir.clone().into())
@@ -640,6 +644,18 @@ impl ManagerState {
         tokio::spawn(async move {
             download.protocol = Protocol::Torrent;
             download.status = DownloadStatus::Downloading;
+            
+            // Persist the torrent file first so it survives restarts
+            let download_dir = state.download_dir().await;
+            let torrents_dir = std::path::Path::new(&download_dir).join(".torrents");
+            if let Err(e) = tokio::fs::create_dir_all(&torrents_dir).await {
+                tracing::warn!("Failed to create .torrents dir: {}", e);
+            }
+            let torrent_file = torrents_dir.join(format!("{}.torrent", download.id));
+            if let Err(e) = tokio::fs::write(&torrent_file, &torrent_bytes).await {
+                tracing::warn!("Failed to persist .torrent file: {}", e);
+            }
+
             state.update_download(&download).await;
 
             let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
@@ -669,16 +685,31 @@ impl ManagerState {
         let torrent_id = {
             let handles = self.torrent_handles.read().await;
             handles.get(id).copied()
-        }?;
-        let session = {
-            let guard = self.torrent_session.read().await;
-            guard.as_ref().map(|(_, s)| s.clone())
-        }?;
-        let handle = session.get(TorrentIdOrHash::Id(torrent_id))?;
-        handle.with_metadata(|m| m.torrent_bytes.clone()).ok()
+        };
+        
+        // If handle is live, try getting from librqbit session metadata directly
+        if let Some(tid) = torrent_id {
+            if let Some(session) = {
+                let guard = self.torrent_session.read().await;
+                guard.as_ref().map(|(_, s)| s.clone())
+            } {
+                if let Some(handle) = session.get(TorrentIdOrHash::Id(tid)) {
+                    if let Ok(bytes) = handle.with_metadata(|m| m.torrent_bytes.clone()) {
+                        return Some(bytes);
+                    }
+                }
+            }
+        }
+
+        // If not live, check persisted .torrents directory
+        let download_dir = self.download_dir().await;
+        let torrent_file = std::path::Path::new(&download_dir)
+            .join(".torrents")
+            .join(format!("{}.torrent", id));
+            
+        tokio::fs::read(&torrent_file).await.ok().map(bytes::Bytes::from)
     }
 
-    #[allow(dead_code)]
     pub async fn get_download(&self, id: &str) -> Option<Download> {
         let downloads = self.downloads.read().await;
         downloads.get(id).cloned()
@@ -692,6 +723,21 @@ impl ManagerState {
         let url = download.url.clone();
         let add = if url.starts_with("magnet:") {
             librqbit::AddTorrent::from_url(&url)
+        } else if url.starts_with("torrent://") {
+            let download_dir = self.download_dir().await;
+            let torrent_file = std::path::Path::new(&download_dir)
+                .join(".torrents")
+                .join(format!("{}.torrent", download.id));
+                
+            match tokio::fs::read(&torrent_file).await {
+                Ok(bytes) => librqbit::AddTorrent::from_bytes(bytes),
+                Err(e) => {
+                    download.status = DownloadStatus::Failed;
+                    download.error_message = Some(format!("Failed to read persisted torrent file: {}", e));
+                    self.update_download(&download).await;
+                    return;
+                }
+            }
         } else {
             match reqwest::get(&url).await {
                 Ok(resp) => {
@@ -921,6 +967,7 @@ async fn session_add_and_wait(
     let download_dir = state.download_dir().await;
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
+        output_folder: Some(download_dir.clone().into()),
         ..Default::default()
     };
 
@@ -952,6 +999,30 @@ async fn session_add_and_wait(
         download.info_hash = Some(hash_str);
     }
 
+    // RACE CONDITION FIX: check if the user paused/cancelled while librqbit was adding the torrent.
+    let current_status = {
+        let downloads = state.downloads.read().await;
+        downloads
+            .get(&download.id)
+            .map(|d| d.status.clone())
+            .unwrap_or(DownloadStatus::Downloading)
+    };
+
+    if cancel_token.is_cancelled() || current_status == DownloadStatus::Paused {
+        if current_status == DownloadStatus::Paused {
+            if let Err(e) = session.pause(&handle).await {
+                tracing::error!("Failed to pause torrent immediately after adding: {}", e);
+            }
+            download.status = DownloadStatus::Paused;
+        } else {
+            let _ = session.delete(handle.id().into(), false).await;
+            let mut handles = state.torrent_handles.write().await;
+            handles.remove(&download.id);
+            return Ok(());
+        }
+    }
+
+    // Only update DB if we aren't already stopped/deleted
     state.update_download(download).await;
 
     // Use the shared monitor

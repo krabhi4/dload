@@ -50,7 +50,8 @@ impl ManagerState {
                         let _ = repo.update_download(&dl);
 
                         // Clean up any leftover temp zip file
-                        let data_dir = std::env::var("DLOAD_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
+                        let data_dir =
+                            std::env::var("DLOAD_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
                         let tmp_zip = std::path::Path::new(&data_dir)
                             .join(".tmp")
                             .join(format!("{}.zip", dl.id));
@@ -899,10 +900,8 @@ impl ManagerState {
                 break;
             }
 
-            let current_downloaded =
-                downloaded_atomic.load(std::sync::atomic::Ordering::Relaxed);
-            let current_total =
-                total_size_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            let current_downloaded = downloaded_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            let current_total = total_size_atomic.load(std::sync::atomic::Ordering::Relaxed);
             let now = std::time::Instant::now();
             let elapsed = now.duration_since(last_time).as_secs_f64();
 
@@ -923,11 +922,9 @@ impl ManagerState {
                     d.upload_speed = 0;
                     if current_total > 0 {
                         d.total_size = current_total;
-                        d.progress =
-                            (current_downloaded as f64 / current_total as f64) * 100.0;
+                        d.progress = (current_downloaded as f64 / current_total as f64) * 100.0;
                         if speed > 0 {
-                            let remaining =
-                                current_total.saturating_sub(current_downloaded);
+                            let remaining = current_total.saturating_sub(current_downloaded);
                             let eta_secs = remaining / speed;
                             let hours = eta_secs / 3600;
                             let mins = (eta_secs % 3600) / 60;
@@ -995,10 +992,7 @@ impl ManagerState {
                 .await
                 {
                     Ok(Ok(files)) => {
-                        tracing::info!(
-                            "Extracted {} files from mirror zip",
-                            files.len()
-                        );
+                        tracing::info!("Extracted {} files from mirror zip", files.len());
                     }
                     Ok(Err(e)) => {
                         tracing::warn!("Zip extraction failed: {}", e);
@@ -1011,17 +1005,9 @@ impl ManagerState {
                 let _ = tokio::fs::remove_file(&tmp_zip_path).await;
             } else {
                 // Single-file: move temp file to the torrent's target path
-                if let Err(e) =
-                    tokio::fs::rename(&tmp_download_path, target_path).await
-                {
-                    if let Err(e2) =
-                        tokio::fs::copy(&tmp_download_path, target_path).await
-                    {
-                        tracing::warn!(
-                            "Failed to move mirror file: rename={}, copy={}",
-                            e,
-                            e2
-                        );
+                if let Err(e) = tokio::fs::rename(&tmp_download_path, target_path).await {
+                    if let Err(e2) = tokio::fs::copy(&tmp_download_path, target_path).await {
+                        tracing::warn!("Failed to move mirror file: rename={}, copy={}", e, e2);
                     }
                     let _ = tokio::fs::remove_file(&tmp_download_path).await;
                 }
@@ -1355,9 +1341,9 @@ impl ManagerState {
             let torrent_file = std::path::Path::new(&download_dir)
                 .join(".torrents")
                 .join(format!("{}.torrent", download.id));
-            let bytes = tokio::fs::read(&torrent_file).await.map_err(|e| {
-                anyhow::anyhow!("Failed to read persisted torrent file: {}", e)
-            })?;
+            let bytes = tokio::fs::read(&torrent_file)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read persisted torrent file: {}", e))?;
             librqbit::AddTorrent::from_bytes(bytes)
         } else {
             let resp = reqwest::get(&url).await?;

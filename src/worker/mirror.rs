@@ -92,7 +92,8 @@ impl MirrorDownloader {
             }
             self.download_single_from_response(get_resp).await?;
         } else {
-            self.download_multi(&client, content_length, num_conns).await?;
+            self.download_multi(&client, content_length, num_conns)
+                .await?;
         }
 
         Ok(MirrorResult {
@@ -101,7 +102,10 @@ impl MirrorDownloader {
         })
     }
 
-    async fn download_single_from_response(&self, response: reqwest::Response) -> anyhow::Result<()> {
+    async fn download_single_from_response(
+        &self,
+        response: reqwest::Response,
+    ) -> anyhow::Result<()> {
         // Update total_size from GET if HEAD didn't provide it
         if self.total_size.load(Ordering::Relaxed) == 0 {
             if let Some(len) = response.headers().get("content-length") {
@@ -210,7 +214,10 @@ async fn mirror_download_range(
         ));
     }
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
-        return Err(anyhow::anyhow!("Unexpected status {} for range request", status));
+        return Err(anyhow::anyhow!(
+            "Unexpected status {} for range request",
+            status
+        ));
     }
 
     let mut file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
@@ -237,7 +244,10 @@ async fn mirror_download_range(
     if bytes_written != expected {
         return Err(anyhow::anyhow!(
             "Range {}-{}: expected {} bytes, got {}",
-            start, end, expected, bytes_written
+            start,
+            end,
+            expected,
+            bytes_written
         ));
     }
 
@@ -268,7 +278,9 @@ pub fn extract_zip_safe(zip_path: &str, target_dir: &str) -> anyhow::Result<Vec<
         let out_path = target.join(&entry_path);
 
         // Double-check the resolved path is within target
-        let canonical_target = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+        let canonical_target = target
+            .canonicalize()
+            .unwrap_or_else(|_| target.to_path_buf());
         if !out_path.starts_with(&canonical_target) {
             tracing::warn!("Zip entry escapes target dir: {:?}", entry_path);
             continue;

@@ -320,9 +320,7 @@ async fn start_http_mirror(
     }
 
     match download.status {
-        DownloadStatus::Downloading
-        | DownloadStatus::Paused
-        | DownloadStatus::Seeding => {}
+        DownloadStatus::Downloading | DownloadStatus::Paused | DownloadStatus::Seeding => {}
         _ => {
             return axum::response::IntoResponse::into_response((
                 axum::http::StatusCode::BAD_REQUEST,

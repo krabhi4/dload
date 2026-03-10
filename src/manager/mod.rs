@@ -91,7 +91,11 @@ impl ManagerState {
             if *existing_dir == dir {
                 return Ok(session.clone());
             }
-            tracing::info!("Download directory changed from {} to {}, recreating torrent session", existing_dir, dir);
+            tracing::info!(
+                "Download directory changed from {} to {}, recreating torrent session",
+                existing_dir,
+                dir
+            );
         }
 
         // Ensure the directory exists before initializing librqbit so DHT persistence succeeds

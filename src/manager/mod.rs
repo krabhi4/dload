@@ -43,6 +43,21 @@ impl ManagerState {
                         dl.upload_speed = 0;
                         let _ = repo.update_download(&dl);
                     }
+                    // Clean up interrupted mirror operations from previous run
+                    if dl.http_mirror_status.is_some() {
+                        dl.http_mirror_status = None;
+                        dl.http_mirror_url = None;
+                        let _ = repo.update_download(&dl);
+
+                        // Clean up any leftover temp zip file
+                        let data_dir = std::env::var("DLOAD_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
+                        let tmp_zip = std::path::Path::new(&data_dir)
+                            .join(".tmp")
+                            .join(format!("{}.zip", dl.id));
+                        if tmp_zip.exists() {
+                            let _ = std::fs::remove_file(&tmp_zip);
+                        }
+                    }
                     map.insert(dl.id.clone(), dl);
                 }
                 tracing::info!("Restored {} downloads from database", map.len());

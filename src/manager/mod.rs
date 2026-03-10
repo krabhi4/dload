@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Torrent session + the download_dir it was created with.
-/// Reset when download_dir changes so torrents use the new path.
+/// Session is recreated when download_dir changes.
 type TorrentSession = Arc<RwLock<Option<(String, Arc<Session>)>>>;
 
 #[derive(Clone)]
@@ -84,19 +84,44 @@ impl ManagerState {
     async fn get_torrent_session(&self) -> anyhow::Result<Arc<Session>> {
         // Hold write lock for the entire check-and-create to prevent races
         let mut guard = self.torrent_session.write().await;
-        if let Some((_, ref session)) = *guard {
-            return Ok(session.clone());
-        }
-
-        // Only create the session FIRST TIME
         let dir = self.download_dir().await;
+
+        // Return existing session if download_dir hasn't changed
+        if let Some((ref existing_dir, ref session)) = *guard {
+            if *existing_dir == dir {
+                return Ok(session.clone());
+            }
+            tracing::info!("Download directory changed from {} to {}, recreating torrent session", existing_dir, dir);
+        }
 
         // Ensure the directory exists before initializing librqbit so DHT persistence succeeds
         if let Err(e) = tokio::fs::create_dir_all(&dir).await {
             tracing::warn!("Failed to create download directory {}: {}", dir, e);
         }
 
-        let session = Session::new(dir.clone().into())
+        let opts = librqbit::SessionOptions {
+            enable_upnp_port_forwarding: true,
+            listen_port_range: Some(6881..6891),
+            peer_opts: Some(librqbit::PeerConnectionOptions {
+                connect_timeout: Some(std::time::Duration::from_secs(5)),
+                read_write_timeout: Some(std::time::Duration::from_secs(10)),
+                ..Default::default()
+            }),
+            trackers: [
+                "udp://tracker.opentrackr.org:1337/announce",
+                "udp://open.stealth.si:80/announce",
+                "udp://tracker.torrent.eu.org:451/announce",
+                "udp://open.demonii.com:1337/announce",
+                "udp://explodie.org:6969/announce",
+                "udp://tracker.tiny-vps.com:6969/announce",
+            ]
+            .iter()
+            .filter_map(|u| url::Url::parse(u).ok())
+            .collect(),
+            ..Default::default()
+        };
+
+        let session = Session::new_with_opts(dir.clone().into(), opts)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create torrent session: {}", e))?;
 
@@ -972,6 +997,7 @@ async fn session_add_and_wait(
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
         output_folder: Some(download_dir.clone()),
+        force_tracker_interval: Some(std::time::Duration::from_secs(120)),
         ..Default::default()
     };
 

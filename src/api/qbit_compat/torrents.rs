@@ -26,17 +26,19 @@ fn hash_matches(download: &Download, hash: &str) -> bool {
 }
 
 /// Map dload DownloadStatus to qBittorrent state string.
-/// Sonarr checks `torrent.State is "pausedUP" or "stoppedUP"` for CanMoveFiles.
-/// Use "paused*" (v4) for widest arr-stack compatibility.
+/// Both Seeding and Completed map to "pausedUP" because:
+/// 1. dload declares max_ratio=0 in preferences (no seeding goal)
+/// 2. Sonarr/Radarr require "pausedUP" or "stoppedUP" for CanMoveFiles=true
+/// 3. This enables auto-import without requiring manual intervention
 fn to_qbit_state(status: &DownloadStatus) -> &'static str {
     match status {
         DownloadStatus::Queued => "queuedDL",
         DownloadStatus::Downloading => "downloading",
         DownloadStatus::Paused => "pausedDL",
-        DownloadStatus::Completed => "stalledUP",
+        DownloadStatus::Completed => "pausedUP",
         DownloadStatus::Failed => "error",
         DownloadStatus::Stopped => "pausedDL",
-        DownloadStatus::Seeding => "upDL",
+        DownloadStatus::Seeding => "pausedUP",
     }
 }
 
@@ -878,4 +880,64 @@ pub async fn remove_completed(State(state): State<QbitState>, body: String) -> i
     }
 
     (StatusCode::OK, "Ok.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::DownloadStatus;
+
+    #[test]
+    fn qbit_state_completed_enables_can_move_files() {
+        assert_eq!(to_qbit_state(&DownloadStatus::Completed), "pausedUP");
+    }
+
+    #[test]
+    fn qbit_state_seeding_enables_can_move_files() {
+        assert_eq!(to_qbit_state(&DownloadStatus::Seeding), "pausedUP");
+    }
+
+    #[test]
+    fn qbit_state_all_variants_are_valid() {
+        let valid = [
+            "downloading",
+            "stalledDL",
+            "queuedDL",
+            "pausedDL",
+            "stoppedDL",
+            "checkingDL",
+            "forcedDL",
+            "metaDL",
+            "allocating",
+            "moving",
+            "uploading",
+            "stalledUP",
+            "queuedUP",
+            "pausedUP",
+            "stoppedUP",
+            "checkingUP",
+            "forcedUP",
+            "error",
+            "missingFiles",
+            "unknown",
+        ];
+        let all = [
+            DownloadStatus::Queued,
+            DownloadStatus::Downloading,
+            DownloadStatus::Paused,
+            DownloadStatus::Completed,
+            DownloadStatus::Failed,
+            DownloadStatus::Stopped,
+            DownloadStatus::Seeding,
+        ];
+        for status in &all {
+            let state = to_qbit_state(status);
+            assert!(
+                valid.contains(&state),
+                "Invalid qBit state '{}' for {:?}",
+                state,
+                status
+            );
+        }
+    }
 }

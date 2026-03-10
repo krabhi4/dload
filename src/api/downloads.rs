@@ -396,9 +396,9 @@ fn is_private_ip(ip: &IpAddr) -> bool {
         IpAddr::V6(v6) => {
             v6.is_loopback()
                 || v6.is_unspecified()
-                || v6.to_ipv4_mapped().is_some_and(|v4| {
-                    is_private_ip(&IpAddr::V4(v4))
-                })
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| is_private_ip(&IpAddr::V4(v4)))
         }
     }
 }

@@ -277,48 +277,12 @@ async fn start_http_mirror(
         ));
     }
 
-    match url::Url::parse(&url) {
-        Ok(parsed) => {
-            if parsed.scheme() != "http" && parsed.scheme() != "https" {
-                return axum::response::IntoResponse::into_response((
-                    axum::http::StatusCode::BAD_REQUEST,
-                    "Only HTTP/HTTPS URLs are supported for mirrors",
-                ));
-            }
-            // SSRF protection: reject localhost, private IPs, and link-local addresses
-            if let Some(host) = parsed.host_str() {
-                let h = host.to_lowercase();
-                if h == "localhost"
-                    || h == "127.0.0.1"
-                    || h == "[::1]"
-                    || h == "0.0.0.0"
-                    || h.starts_with("10.")
-                    || h.starts_with("192.168.")
-                    || h.starts_with("169.254.")
-                    || h.starts_with("172.")
-                        && h.split('.')
-                            .nth(1)
-                            .and_then(|s| s.parse::<u8>().ok())
-                            .is_some_and(|n| (16..=31).contains(&n))
-                {
-                    return axum::response::IntoResponse::into_response((
-                        axum::http::StatusCode::BAD_REQUEST,
-                        "Mirror URL must not point to private/local addresses",
-                    ));
-                }
-            } else {
-                return axum::response::IntoResponse::into_response((
-                    axum::http::StatusCode::BAD_REQUEST,
-                    "Mirror URL must have a valid host",
-                ));
-            }
-        }
-        Err(_) => {
-            return axum::response::IntoResponse::into_response((
-                axum::http::StatusCode::BAD_REQUEST,
-                "Invalid URL format",
-            ));
-        }
+    // Reuse the same validation as regular downloads (SSRF, scheme, credentials, etc.)
+    if let Err(e) = validate_mirror_url(&url) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            e,
+        ));
     }
 
     let download = state.get_download(&id).await;
@@ -429,6 +393,47 @@ fn is_private_ip(ip: &IpAddr) -> bool {
                 || v4.is_unspecified()                 // 0.0.0.0
                 || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // 100.64.0.0/10 (CGNAT)
         }
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.to_ipv4_mapped().is_some_and(|v4| {
+                    is_private_ip(&IpAddr::V4(v4))
+                })
+        }
     }
+}
+
+/// Validate mirror URL: must be HTTP/HTTPS, not private/internal.
+fn validate_mirror_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err("Only HTTP/HTTPS URLs are supported for mirrors".to_string()),
+    }
+
+    if let Some(host) = parsed.host_str() {
+        let host_lower = host.to_lowercase();
+        if host_lower == "localhost"
+            || host_lower == "metadata.google.internal"
+            || host_lower.ends_with(".internal")
+            || host_lower.ends_with(".local")
+        {
+            return Err("Internal hosts not allowed".to_string());
+        }
+
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_private_ip(&ip) {
+                return Err("Private/internal IP addresses not allowed".to_string());
+            }
+        }
+
+        if parsed.username() != "" || parsed.password().is_some() {
+            return Err("URLs with embedded credentials not allowed".to_string());
+        }
+    } else {
+        return Err("Mirror URL must have a valid host".to_string());
+    }
+
+    Ok(())
 }

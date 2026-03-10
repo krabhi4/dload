@@ -124,6 +124,18 @@ impl MirrorDownloader {
         }
 
         writer.flush().await?;
+
+        // Verify download completeness when content-length was known
+        let total = self.total_size.load(Ordering::Relaxed);
+        let got = self.downloaded.load(Ordering::Relaxed);
+        if total > 0 && got != total {
+            return Err(anyhow::anyhow!(
+                "Truncated download: expected {} bytes, got {}",
+                total,
+                got
+            ));
+        }
+
         Ok(())
     }
 
@@ -248,15 +260,27 @@ async fn mirror_download_range(
 
 /// Extract a zip file to a target directory with path traversal protection.
 /// Returns the list of extracted file paths (relative to target_dir).
+///
+/// Safety: rejects symlinks, path traversal, and limits total extracted size to 50 GB.
 pub fn extract_zip_safe(zip_path: &str, target_dir: &str) -> anyhow::Result<Vec<String>> {
+    const MAX_EXTRACT_SIZE: u64 = 50 * 1024 * 1024 * 1024; // 50 GB
+
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
     let target = std::path::Path::new(target_dir);
 
     let mut extracted = Vec::new();
+    let mut total_extracted: u64 = 0;
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
+
+        // Reject symlinks — could escape target directory via indirection
+        if entry.is_symlink() {
+            tracing::warn!("Skipping symlink zip entry: {:?}", entry.name());
+            continue;
+        }
+
         let entry_path = match entry.enclosed_name() {
             Some(p) => p.to_owned(),
             None => {
@@ -281,7 +305,14 @@ pub fn extract_zip_safe(zip_path: &str, target_dir: &str) -> anyhow::Result<Vec<
                 std::fs::create_dir_all(parent)?;
             }
             let mut outfile = std::fs::File::create(&out_path)?;
-            std::io::copy(&mut entry, &mut outfile)?;
+            let written = std::io::copy(&mut entry, &mut outfile)?;
+            total_extracted += written;
+            if total_extracted > MAX_EXTRACT_SIZE {
+                anyhow::bail!(
+                    "Zip extraction exceeded maximum size limit ({} bytes extracted)",
+                    total_extracted
+                );
+            }
             extracted.push(entry_path.to_string_lossy().to_string());
         }
     }

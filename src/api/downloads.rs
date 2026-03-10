@@ -285,6 +285,33 @@ async fn start_http_mirror(
                     "Only HTTP/HTTPS URLs are supported for mirrors",
                 ));
             }
+            // SSRF protection: reject localhost, private IPs, and link-local addresses
+            if let Some(host) = parsed.host_str() {
+                let h = host.to_lowercase();
+                if h == "localhost"
+                    || h == "127.0.0.1"
+                    || h == "[::1]"
+                    || h == "0.0.0.0"
+                    || h.starts_with("10.")
+                    || h.starts_with("192.168.")
+                    || h.starts_with("169.254.")
+                    || h.starts_with("172.")
+                        && h.split('.')
+                            .nth(1)
+                            .and_then(|s| s.parse::<u8>().ok())
+                            .is_some_and(|n| (16..=31).contains(&n))
+                {
+                    return axum::response::IntoResponse::into_response((
+                        axum::http::StatusCode::BAD_REQUEST,
+                        "Mirror URL must not point to private/local addresses",
+                    ));
+                }
+            } else {
+                return axum::response::IntoResponse::into_response((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "Mirror URL must have a valid host",
+                ));
+            }
         }
         Err(_) => {
             return axum::response::IntoResponse::into_response((

@@ -1302,7 +1302,7 @@ function startMirror(event, id) {
     return;
   }
 
-  var token = localStorage.getItem('auth_token');
+  var token = localStorage.getItem('dload_token');
   fetch('/api/downloads/' + encodeURIComponent(id) + '/http-mirror', {
     method: 'POST',
     headers: {

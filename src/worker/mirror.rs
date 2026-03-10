@@ -6,7 +6,6 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio_util::sync::CancellationToken;
 
 /// Downloads a file via HTTP to a fixed path without mutating any Download fields.
-#[allow(dead_code)]
 pub struct MirrorDownloader {
     url: String,
     target_path: String,
@@ -15,13 +14,10 @@ pub struct MirrorDownloader {
     pub total_size: Arc<AtomicU64>,
 }
 
-#[allow(dead_code)]
 pub struct MirrorResult {
     pub is_zip: bool,
-    pub bytes_downloaded: u64,
 }
 
-#[allow(dead_code)]
 impl MirrorDownloader {
     pub fn new(url: String, target_path: String, cancel_token: CancellationToken) -> Self {
         Self {
@@ -96,10 +92,7 @@ impl MirrorDownloader {
                 .await?;
         }
 
-        Ok(MirrorResult {
-            is_zip,
-            bytes_downloaded: self.downloaded.load(Ordering::Relaxed),
-        })
+        Ok(MirrorResult { is_zip })
     }
 
     async fn download_single_from_response(
@@ -191,7 +184,6 @@ impl MirrorDownloader {
     }
 }
 
-#[allow(dead_code)]
 async fn mirror_download_range(
     client: &reqwest::Client,
     url: &str,
@@ -256,7 +248,6 @@ async fn mirror_download_range(
 
 /// Extract a zip file to a target directory with path traversal protection.
 /// Returns the list of extracted file paths (relative to target_dir).
-#[allow(dead_code)]
 pub fn extract_zip_safe(zip_path: &str, target_dir: &str) -> anyhow::Result<Vec<String>> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -278,10 +269,7 @@ pub fn extract_zip_safe(zip_path: &str, target_dir: &str) -> anyhow::Result<Vec<
         let out_path = target.join(&entry_path);
 
         // Double-check the resolved path is within target
-        let canonical_target = target
-            .canonicalize()
-            .unwrap_or_else(|_| target.to_path_buf());
-        if !out_path.starts_with(&canonical_target) {
+        if !out_path.starts_with(target) {
             tracing::warn!("Zip entry escapes target dir: {:?}", entry_path);
             continue;
         }

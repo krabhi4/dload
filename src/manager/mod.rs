@@ -765,7 +765,6 @@ impl ManagerState {
 
     /// Start an HTTP mirror for a torrent download.
     /// Downloads file(s) via HTTP, then re-adds the torrent for hash verification.
-    #[allow(dead_code)]
     pub async fn start_http_mirror(
         self: Arc<Self>,
         id: String,
@@ -799,7 +798,6 @@ impl ManagerState {
         });
     }
 
-    #[allow(dead_code)]
     async fn run_http_mirror(
         self: &Arc<Self>,
         id: String,
@@ -808,38 +806,39 @@ impl ManagerState {
     ) -> anyhow::Result<()> {
         use crate::worker::mirror::{extract_zip_safe, MirrorDownloader};
 
-        // 1. Get and validate download
-        let download = self
-            .get_download(&id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Download not found"))?;
+        // 1. Atomically validate download and set mirror status (prevents race condition)
+        let (snapshot_save_path, snapshot_content_path, snapshot_filename) = {
+            let mut downloads = self.downloads.write().await;
+            let download = downloads
+                .get_mut(&id)
+                .ok_or_else(|| anyhow::anyhow!("Download not found"))?;
 
-        if download.protocol != Protocol::Torrent {
-            anyhow::bail!("Not a torrent download");
-        }
-        if download.http_mirror_status.is_some() {
-            anyhow::bail!("Mirror already in progress");
-        }
+            if download.protocol != Protocol::Torrent {
+                anyhow::bail!("Not a torrent download");
+            }
+            if download.http_mirror_status.is_some() {
+                anyhow::bail!("Mirror already in progress");
+            }
 
-        // 2. Snapshot arr-safe fields
-        let snapshot_save_path = download.save_path.clone();
-        let snapshot_content_path = download.content_path.clone();
-        let snapshot_filename = download.filename.clone();
+            // Snapshot arr-safe fields
+            let snap = (
+                download.save_path.clone(),
+                download.content_path.clone(),
+                download.filename.clone(),
+            );
 
-        // Determine output_dir for re-add (parent of save_path, not global download_dir)
+            // Set mirror status atomically with the check
+            download.http_mirror_status = Some("downloading".to_string());
+            download.http_mirror_url = Some(mirror_url.clone());
+
+            snap
+        };
+
+        // 2. Determine output_dir for re-add (parent of save_path, not global download_dir)
         let output_dir = match std::path::Path::new(&snapshot_save_path).parent() {
             Some(p) => p.to_string_lossy().to_string(),
             None => self.download_dir().await,
         };
-
-        // 3. Set mirror status
-        {
-            let mut downloads = self.downloads.write().await;
-            if let Some(d) = downloads.get_mut(&id) {
-                d.http_mirror_status = Some("downloading".to_string());
-                d.http_mirror_url = Some(mirror_url.clone());
-            }
-        }
 
         // 4. Cancel any existing monitoring token FIRST (so monitor_torrent exits cleanly)
         self.cancel_download(&id).await;
@@ -1327,7 +1326,6 @@ impl ManagerState {
     /// Re-add a torrent to librqbit after HTTP mirror download.
     /// Unlike `session_add_and_wait`, this does NOT overwrite filename/save_path/content_path
     /// to preserve arr stack data.
-    #[allow(dead_code)]
     async fn mirror_readd_torrent(
         self: &Arc<Self>,
         download: &mut Download,

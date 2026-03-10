@@ -762,6 +762,341 @@ impl ManagerState {
         downloads.get(id).cloned()
     }
 
+    /// Start an HTTP mirror for a torrent download.
+    /// Downloads file(s) via HTTP, then re-adds the torrent for hash verification.
+    #[allow(dead_code)]
+    pub async fn start_http_mirror(
+        self: Arc<Self>,
+        id: String,
+        mirror_url: String,
+        keep_seeding: bool,
+    ) {
+        let state = Arc::clone(&self);
+
+        tokio::spawn(async move {
+            if let Err(e) = state
+                .run_http_mirror(id.clone(), mirror_url, keep_seeding)
+                .await
+            {
+                tracing::error!("HTTP mirror failed for {}: {}", id, e);
+                // Clear mirror status and set error
+                let snap = {
+                    let mut downloads = state.downloads.write().await;
+                    if let Some(d) = downloads.get_mut(&id) {
+                        d.http_mirror_status = None;
+                        d.http_mirror_url = None;
+                        d.error_message = Some(format!("HTTP mirror failed: {}", e));
+                        Some(d.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(snap) = snap {
+                    state.update_download(&snap).await;
+                }
+            }
+        });
+    }
+
+    #[allow(dead_code)]
+    async fn run_http_mirror(
+        self: &Arc<Self>,
+        id: String,
+        mirror_url: String,
+        keep_seeding: bool,
+    ) -> anyhow::Result<()> {
+        use crate::worker::mirror::{extract_zip_safe, MirrorDownloader};
+
+        // 1. Get and validate download
+        let download = self
+            .get_download(&id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Download not found"))?;
+
+        if download.protocol != Protocol::Torrent {
+            anyhow::bail!("Not a torrent download");
+        }
+        if download.http_mirror_status.is_some() {
+            anyhow::bail!("Mirror already in progress");
+        }
+
+        // 2. Snapshot arr-safe fields
+        let snapshot_save_path = download.save_path.clone();
+        let snapshot_content_path = download.content_path.clone();
+        let snapshot_filename = download.filename.clone();
+
+        // Determine output_dir for re-add (parent of save_path, not global download_dir)
+        let output_dir = match std::path::Path::new(&snapshot_save_path).parent() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => self.download_dir().await,
+        };
+
+        // 3. Set mirror status
+        {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(&id) {
+                d.http_mirror_status = Some("downloading".to_string());
+                d.http_mirror_url = Some(mirror_url.clone());
+            }
+        }
+
+        // 4. Cancel any existing monitoring token FIRST (so monitor_torrent exits cleanly)
+        self.cancel_download(&id).await;
+        // Brief yield to let monitor_torrent react to cancellation
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // 5. Pause torrent in librqbit and delete from session (keep files)
+        let torrent_id = {
+            let mut handles = self.torrent_handles.write().await;
+            handles.remove(&id)
+        };
+        if let Some(tid) = torrent_id {
+            if let Ok(session) = self.get_torrent_session().await {
+                if let Some(handle) = session.get(TorrentIdOrHash::Id(tid)) {
+                    let _ = session.pause(&handle).await;
+                }
+                let _ = session.delete(TorrentIdOrHash::Id(tid), false).await;
+            }
+        }
+
+        // 6. Register cancel token for HTTP download phase
+        let http_cancel = self.register_cancel_token(&id).await;
+        let was_cancelled = http_cancel.clone();
+
+        // 7. Always download to a temp file first.
+        let tmp_dir = format!("{}/.tmp", output_dir);
+        let tmp_download_path = format!("{}/{}.mirror", tmp_dir, id);
+        tokio::fs::create_dir_all(&tmp_dir).await?;
+
+        let target_path = snapshot_content_path
+            .as_deref()
+            .unwrap_or(&snapshot_save_path);
+
+        let downloader = MirrorDownloader::new(
+            mirror_url.clone(),
+            tmp_download_path.clone(),
+            http_cancel.clone(),
+        );
+        let downloaded_atomic = Arc::clone(&downloader.downloaded);
+        let total_size_atomic = Arc::clone(&downloader.total_size);
+
+        let download_task = tokio::spawn(async move { downloader.run().await });
+
+        // 8. Monitor loop
+        let mut last_downloaded: u64 = 0;
+        let mut last_time = std::time::Instant::now();
+        let mut db_tick: u32 = 0;
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            if download_task.is_finished() {
+                break;
+            }
+
+            if http_cancel.is_cancelled() {
+                download_task.abort();
+                break;
+            }
+
+            let current_downloaded =
+                downloaded_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            let current_total =
+                total_size_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(last_time).as_secs_f64();
+
+            let speed = if elapsed > 0.0 {
+                (current_downloaded.saturating_sub(last_downloaded) as f64 / elapsed) as u64
+            } else {
+                0
+            };
+
+            last_downloaded = current_downloaded;
+            last_time = now;
+
+            {
+                let mut downloads = self.downloads.write().await;
+                if let Some(d) = downloads.get_mut(&id) {
+                    d.downloaded_size = current_downloaded;
+                    d.speed = speed;
+                    d.upload_speed = 0;
+                    if current_total > 0 {
+                        d.total_size = current_total;
+                        d.progress =
+                            (current_downloaded as f64 / current_total as f64) * 100.0;
+                        if speed > 0 {
+                            let remaining =
+                                current_total.saturating_sub(current_downloaded);
+                            let eta_secs = remaining / speed;
+                            let hours = eta_secs / 3600;
+                            let mins = (eta_secs % 3600) / 60;
+                            let secs = eta_secs % 60;
+                            d.eta = if hours > 0 {
+                                Some(format!("{}h{}m{}s", hours, mins, secs))
+                            } else if mins > 0 {
+                                Some(format!("{}m{}s", mins, secs))
+                            } else {
+                                Some(format!("{}s", secs))
+                            };
+                        } else {
+                            d.eta = None;
+                        }
+                    }
+                }
+            }
+
+            db_tick += 1;
+            if db_tick >= 5 {
+                db_tick = 0;
+                if let Some(snap) = self.get_download(&id).await {
+                    let repo = Arc::clone(&self.repo);
+                    tokio::task::spawn_blocking(move || {
+                        let _ = repo.update_download(&snap);
+                    });
+                }
+            }
+        }
+
+        // 9. Handle download result
+        let (http_succeeded, is_zip) = match download_task.await {
+            Ok(Ok(result)) => (true, result.is_zip),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "HTTP mirror download error (will still re-add torrent): {}",
+                    e
+                );
+                (false, false)
+            }
+            Err(_) => {
+                tracing::warn!("HTTP mirror task aborted (will still re-add torrent)");
+                (false, false)
+            }
+        };
+
+        // 10. Move or extract the downloaded file
+        if http_succeeded {
+            if is_zip {
+                {
+                    let mut downloads = self.downloads.write().await;
+                    if let Some(d) = downloads.get_mut(&id) {
+                        d.http_mirror_status = Some("extracting".to_string());
+                    }
+                }
+
+                let tmp_zip_path = format!("{}/{}.zip", tmp_dir, id);
+                let _ = tokio::fs::rename(&tmp_download_path, &tmp_zip_path).await;
+
+                let extract_target = output_dir.clone();
+                let zip_path = tmp_zip_path.clone();
+                match tokio::task::spawn_blocking(move || {
+                    extract_zip_safe(&zip_path, &extract_target)
+                })
+                .await
+                {
+                    Ok(Ok(files)) => {
+                        tracing::info!(
+                            "Extracted {} files from mirror zip",
+                            files.len()
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!("Zip extraction failed: {}", e);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Zip extraction task panicked: {}", e);
+                    }
+                }
+
+                let _ = tokio::fs::remove_file(&tmp_zip_path).await;
+            } else {
+                // Single-file: move temp file to the torrent's target path
+                if let Err(e) =
+                    tokio::fs::rename(&tmp_download_path, target_path).await
+                {
+                    if let Err(e2) =
+                        tokio::fs::copy(&tmp_download_path, target_path).await
+                    {
+                        tracing::warn!(
+                            "Failed to move mirror file: rename={}, copy={}",
+                            e,
+                            e2
+                        );
+                    }
+                    let _ = tokio::fs::remove_file(&tmp_download_path).await;
+                }
+            }
+        }
+        // Clean up temp file if it still exists
+        let _ = tokio::fs::remove_file(&tmp_download_path).await;
+
+        // 11. Set rechecking status
+        {
+            let mut downloads = self.downloads.write().await;
+            if let Some(d) = downloads.get_mut(&id) {
+                d.http_mirror_status = Some("rechecking".to_string());
+                d.speed = 0;
+            }
+        }
+
+        // 12. Re-add torrent
+        let mut download = self
+            .get_download(&id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Download disappeared during mirror"))?;
+
+        let torrent_id = self
+            .mirror_readd_torrent(&mut download, &output_dir)
+            .await?;
+
+        // 13. Restore snapshotted fields
+        download.save_path = snapshot_save_path;
+        download.content_path = snapshot_content_path;
+        download.filename = snapshot_filename;
+        download.status = DownloadStatus::Downloading;
+        download.http_mirror_status = None;
+        download.http_mirror_url = None;
+        self.update_download(&download).await;
+
+        // 14. If HTTP phase was cancelled, pause the re-added torrent immediately
+        if was_cancelled.is_cancelled() {
+            if let Ok(session) = self.get_torrent_session().await {
+                if let Some(handle) = session.get(TorrentIdOrHash::Id(torrent_id)) {
+                    let _ = session.pause(&handle).await;
+                }
+            }
+            let mut d = download;
+            d.status = DownloadStatus::Paused;
+            d.speed = 0;
+            self.update_download(&d).await;
+            return Ok(());
+        }
+
+        // 15. Register new cancel token and start monitoring
+        let monitor_cancel = self.register_cancel_token(&id).await;
+        let state = Arc::clone(self);
+        state
+            .monitor_torrent(id.clone(), torrent_id, monitor_cancel)
+            .await;
+
+        // 16. After monitoring: handle keep_seeding preference
+        if !keep_seeding {
+            let latest = self.get_download(&id).await;
+            if let Some(d) = latest {
+                if d.status == DownloadStatus::Seeding {
+                    self.cancel_download(&id).await;
+                    let mut stopped = d;
+                    stopped.status = DownloadStatus::Completed;
+                    stopped.upload_speed = 0;
+                    stopped.speed = 0;
+                    self.update_download(&stopped).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn handle_torrent_download(
         self: Arc<Self>,
         mut download: Download,
@@ -1001,6 +1336,65 @@ impl ManagerState {
             let sleep_dur = if stats.finished { 2 } else { 1 };
             tokio::time::sleep(std::time::Duration::from_secs(sleep_dur)).await;
         }
+    }
+
+    /// Re-add a torrent to librqbit after HTTP mirror download.
+    /// Unlike `session_add_and_wait`, this does NOT overwrite filename/save_path/content_path
+    /// to preserve arr stack data.
+    #[allow(dead_code)]
+    async fn mirror_readd_torrent(
+        self: &Arc<Self>,
+        download: &mut Download,
+        output_dir: &str,
+    ) -> anyhow::Result<usize> {
+        let url = download.url.clone();
+        let add = if url.starts_with("magnet:") {
+            librqbit::AddTorrent::from_url(&url)
+        } else if url.starts_with("torrent://") {
+            let download_dir = self.download_dir().await;
+            let torrent_file = std::path::Path::new(&download_dir)
+                .join(".torrents")
+                .join(format!("{}.torrent", download.id));
+            let bytes = tokio::fs::read(&torrent_file).await.map_err(|e| {
+                anyhow::anyhow!("Failed to read persisted torrent file: {}", e)
+            })?;
+            librqbit::AddTorrent::from_bytes(bytes)
+        } else {
+            let resp = reqwest::get(&url).await?;
+            let bytes = resp.bytes().await?;
+            librqbit::AddTorrent::from_bytes(bytes)
+        };
+
+        let session = self.get_torrent_session().await?;
+        let opts = librqbit::AddTorrentOptions {
+            overwrite: true,
+            output_folder: Some(output_dir.to_string()),
+            force_tracker_interval: Some(std::time::Duration::from_secs(120)),
+            ..Default::default()
+        };
+
+        let handle = session
+            .add_torrent(add, Some(opts))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to re-add torrent: {}", e))?
+            .into_handle()
+            .ok_or_else(|| anyhow::anyhow!("Torrent was a duplicate or couldn't get handle"))?;
+
+        let torrent_id = handle.id();
+
+        // Store handle mapping — but do NOT overwrite filename/save_path/content_path
+        {
+            let mut handles = self.torrent_handles.write().await;
+            handles.insert(download.id.clone(), torrent_id);
+        }
+
+        // Only update info_hash if not already set
+        let hash_str = handle.info_hash().as_string();
+        if download.info_hash.is_none() {
+            download.info_hash = Some(hash_str);
+        }
+
+        Ok(torrent_id)
     }
 }
 

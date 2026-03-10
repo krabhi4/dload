@@ -1418,7 +1418,6 @@ async fn session_add_and_wait(
     let download_dir = state.download_dir().await;
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
-        output_folder: Some(download_dir.clone()),
         force_tracker_interval: Some(std::time::Duration::from_secs(120)),
         ..Default::default()
     };

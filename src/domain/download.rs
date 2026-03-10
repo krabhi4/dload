@@ -73,6 +73,8 @@ pub struct Download {
     pub info_hash: Option<String>,
     pub category: Option<String>,
     pub content_path: Option<String>,
+    pub http_mirror_status: Option<String>,
+    pub http_mirror_url: Option<String>,
 }
 
 impl Download {
@@ -102,6 +104,8 @@ impl Download {
             info_hash: None,
             category: None,
             content_path: None,
+            http_mirror_status: None,
+            http_mirror_url: None,
         }
     }
 }

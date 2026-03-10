@@ -16,8 +16,8 @@ impl Repository {
         conn.execute(
             "INSERT INTO downloads (id, url, filename, save_path, total_size, downloaded_size,
              speed, progress, status, protocol, connections, created_at, completed_at, error_message,
-             info_hash, category, content_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             info_hash, category, content_path, http_mirror_status, http_mirror_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 download.id,
                 download.url,
@@ -36,6 +36,8 @@ impl Repository {
                 download.info_hash,
                 download.category,
                 download.content_path,
+                download.http_mirror_status,
+                download.http_mirror_url,
             ],
         )?;
         Ok(())
@@ -46,7 +48,8 @@ impl Repository {
         conn.execute(
             "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
              speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10,
-             info_hash=?11, category=?12, content_path=?13 WHERE id=?14",
+             info_hash=?11, category=?12, content_path=?13, http_mirror_status=?14, http_mirror_url=?15
+             WHERE id=?16",
             params![
                 download.filename,
                 download.save_path,
@@ -61,6 +64,8 @@ impl Repository {
                 download.info_hash,
                 download.category,
                 download.content_path,
+                download.http_mirror_status,
+                download.http_mirror_url,
                 download.id,
             ],
         )?;
@@ -72,7 +77,7 @@ impl Repository {
         let mut stmt = conn.prepare(
             "SELECT id, url, filename, save_path, total_size, downloaded_size, speed,
              progress, status, protocol, connections, created_at, completed_at, error_message,
-             info_hash, category, content_path
+             info_hash, category, content_path, http_mirror_status, http_mirror_url
              FROM downloads ORDER BY created_at DESC",
         )?;
 
@@ -109,6 +114,8 @@ impl Repository {
                     info_hash: row.get(14)?,
                     category: row.get(15)?,
                     content_path: row.get(16)?,
+                    http_mirror_status: row.get(17)?,
+                    http_mirror_url: row.get(18)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

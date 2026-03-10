@@ -59,6 +59,10 @@ impl Database {
              ALTER TABLE downloads ADD COLUMN category TEXT;
              ALTER TABLE downloads ADD COLUMN content_path TEXT;",
         );
+        let _ = conn.execute_batch(
+            "ALTER TABLE downloads ADD COLUMN http_mirror_status TEXT;
+             ALTER TABLE downloads ADD COLUMN http_mirror_url TEXT;",
+        );
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);",
         )?;

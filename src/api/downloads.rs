@@ -15,6 +15,17 @@ pub struct DeleteParams {
     delete_files: bool,
 }
 
+#[derive(serde::Deserialize)]
+pub struct HttpMirrorRequest {
+    url: String,
+    #[serde(default = "default_true")]
+    keep_seeding: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn extract_token(headers: &axum::http::HeaderMap) -> &str {
     headers
         .get("authorization")
@@ -58,6 +69,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/downloads/:id/cancel", post(cancel_download))
         .route("/api/downloads/:id/resume", post(resume_download))
         .route("/api/downloads/:id/torrent", get(export_torrent))
+        .route("/api/downloads/:id/http-mirror", post(start_http_mirror))
         .with_state(state)
 }
 
@@ -244,6 +256,81 @@ async fn export_torrent(
         .unwrap()
 }
 
+async fn start_http_mirror(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<HttpMirrorRequest>,
+) -> axum::response::Response {
+    if let Err(e) = require_admin(extract_token(&headers)) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            e,
+        ));
+    }
+
+    let url = payload.url.trim().to_string();
+    if url.is_empty() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "URL is required",
+        ));
+    }
+
+    // Reuse the same validation as regular downloads (SSRF, scheme, credentials, etc.)
+    if let Err(e) = validate_mirror_url(&url) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            e,
+        ));
+    }
+
+    let download = state.get_download(&id).await;
+    let download = match download {
+        Some(d) => d,
+        None => {
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::NOT_FOUND,
+                "Download not found",
+            ));
+        }
+    };
+
+    if download.protocol != crate::domain::Protocol::Torrent {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "HTTP mirror is only available for torrent downloads",
+        ));
+    }
+
+    if download.http_mirror_status.is_some() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::CONFLICT,
+            "HTTP mirror is already in progress for this download",
+        ));
+    }
+
+    match download.status {
+        DownloadStatus::Downloading | DownloadStatus::Paused | DownloadStatus::Seeding => {}
+        _ => {
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::BAD_REQUEST,
+                "Download must be in Downloading, Paused, or Seeding status",
+            ));
+        }
+    }
+
+    let state_clone = Arc::clone(&state);
+    state_clone
+        .start_http_mirror(id, url, payload.keep_seeding)
+        .await;
+
+    axum::response::IntoResponse::into_response((
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({ "success": true })),
+    ))
+}
+
 fn validate_download_url(url: &str) -> Result<(), String> {
     if url.is_empty() {
         return Err("URL is required".to_string());
@@ -306,6 +393,47 @@ fn is_private_ip(ip: &IpAddr) -> bool {
                 || v4.is_unspecified()                 // 0.0.0.0
                 || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // 100.64.0.0/10 (CGNAT)
         }
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.to_ipv4_mapped().is_some_and(|v4| {
+                    is_private_ip(&IpAddr::V4(v4))
+                })
+        }
     }
+}
+
+/// Validate mirror URL: must be HTTP/HTTPS, not private/internal.
+fn validate_mirror_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err("Only HTTP/HTTPS URLs are supported for mirrors".to_string()),
+    }
+
+    if let Some(host) = parsed.host_str() {
+        let host_lower = host.to_lowercase();
+        if host_lower == "localhost"
+            || host_lower == "metadata.google.internal"
+            || host_lower.ends_with(".internal")
+            || host_lower.ends_with(".local")
+        {
+            return Err("Internal hosts not allowed".to_string());
+        }
+
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if is_private_ip(&ip) {
+                return Err("Private/internal IP addresses not allowed".to_string());
+            }
+        }
+
+        if parsed.username() != "" || parsed.password().is_some() {
+            return Err("URLs with embedded credentials not allowed".to_string());
+        }
+    } else {
+        return Err("Mirror URL must have a valid host".to_string());
+    }
+
+    Ok(())
 }

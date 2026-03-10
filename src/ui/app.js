@@ -321,6 +321,8 @@ function buildDownloadItem(d) {
   var progress = Math.min(d.progress, 100);
   var isActive = d.status === "Downloading";
   var isTorrent = d.protocol === "Torrent";
+  var canMirror = isTorrent && !d.http_mirror_status
+      && (safeStatus === 'Downloading' || safeStatus === 'Paused' || safeStatus === 'Seeding');
 
   if (d.status === "Completed" && d.total_size === 0 && d.downloaded_size > 0) {
     progress = 100;
@@ -375,6 +377,15 @@ function buildDownloadItem(d) {
 
   // ETA display
   var etaDisplay = isActive && d.eta ? escapeHtml(d.eta) : "";
+
+  // Mirror status label
+  var mirrorLabel = d.http_mirror_status
+      ? '<span class="mirror-status">' + ({
+          'downloading': 'HTTP Mirror',
+          'extracting': 'Extracting...',
+          'rechecking': 'Rechecking...'
+      }[d.http_mirror_status] || escapeHtml(d.http_mirror_status)) + '</span>'
+      : '';
 
   // Action buttons (admin only)
   var actions = "";
@@ -499,6 +510,7 @@ function buildDownloadItem(d) {
     + '<span class="speed">' + displaySpeed + '</span>'
     + '<span class="conn">' + connDisplay + '</span>'
     + '<span class="eta">' + etaDisplay + '</span>'
+    + mirrorLabel
     + '</div>'
     + '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
     + '<div class="actions">'
@@ -516,8 +528,20 @@ function buildDownloadItem(d) {
       + '<button onclick="downloadTorrent(event, \'' + safeId + '\')">'
       + 'Download .torrent'
       + '</button>'
+      + (canMirror ? '<button onclick="showMirrorForm(event, \'' + safeId + '\')">'
+      + 'Add HTTP Mirror'
+      + '</button>' : '')
+      + '</div>'
+      + '</div>'
+      + (isTorrent ? '<div class="mirror-form" id="mirror-form-' + safeId + '" style="display:none">'
+      + '<input type="text" id="mirror-url-' + safeId + '" placeholder="HTTP/HTTPS mirror URL" class="mirror-input">'
+      + '<label class="mirror-checkbox"><input type="checkbox" id="mirror-seed-' + safeId + '" checked> Keep seeding</label>'
+      + '<div class="mirror-actions">'
+      + '<button class="mirror-start-btn" onclick="startMirror(event, \'' + safeId + '\')">Start</button>'
+      + '<button class="mirror-cancel-btn" onclick="hideMirrorForm(\'' + safeId + '\')">Cancel</button>'
       + '</div>'
       + '</div>' : '')
+      : '')
     + (isAdmin ? '<div class="delete-dropdown">'
       + '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove">'
       + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
@@ -1246,6 +1270,60 @@ async function downloadTorrent(event, id) {
   } catch (e) {
     showToast('error', 'Download failed', e.message || 'Could not download .torrent file');
   }
+}
+
+function showMirrorForm(event, id) {
+  event.stopPropagation();
+  // Close all menus
+  document.querySelectorAll('.more-menu').forEach(function(m) { m.classList.remove('open'); });
+  document.querySelectorAll('.delete-menu').forEach(function(m) { m.classList.remove('open'); });
+  openMenuId = null;
+  openMoreMenuId = null;
+  var form = document.getElementById('mirror-form-' + CSS.escape(id));
+  if (form) {
+    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+  }
+}
+
+function hideMirrorForm(id) {
+  var form = document.getElementById('mirror-form-' + CSS.escape(id));
+  if (form) form.style.display = 'none';
+}
+
+function startMirror(event, id) {
+  event.stopPropagation();
+  var urlInput = document.getElementById('mirror-url-' + CSS.escape(id));
+  var seedCheckbox = document.getElementById('mirror-seed-' + CSS.escape(id));
+  var url = urlInput ? urlInput.value.trim() : '';
+  var keepSeeding = seedCheckbox ? seedCheckbox.checked : true;
+
+  if (!url) {
+    alert('Please enter a mirror URL');
+    return;
+  }
+
+  var token = localStorage.getItem('dload_token');
+  fetch('/api/downloads/' + encodeURIComponent(id) + '/http-mirror', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    },
+    body: JSON.stringify({ url: url, keep_seeding: keepSeeding })
+  })
+  .then(function(resp) {
+    if (!resp.ok) {
+      return resp.text().then(function(t) { throw new Error(t); });
+    }
+    return resp.json();
+  })
+  .then(function() {
+    hideMirrorForm(id);
+    refreshDownloads();
+  })
+  .catch(function(err) {
+    alert('Failed to start mirror: ' + err.message);
+  });
 }
 
 async function deleteDownload(id, deleteFiles) {

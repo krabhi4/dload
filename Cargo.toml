@@ -1,6 +1,6 @@
 [package]
 name = "dload"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -26,6 +26,7 @@ urlencoding = "2"
 futures = "0.3"
 tokio-util = "0.7"
 bytes = "1"
+zip = "2"
 librqbit = "8"
 
 [profile.release]

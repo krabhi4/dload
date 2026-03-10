@@ -102,8 +102,16 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "num_leechs": d.peers,
     });
 
-    let amount_left = if is_finished || progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
-    let completed = if is_finished || progress >= 1.0 { d.total_size } else { d.downloaded_size };
+    let amount_left = if is_finished || progress >= 1.0 {
+        0
+    } else {
+        d.total_size.saturating_sub(d.downloaded_size)
+    };
+    let completed = if is_finished || progress >= 1.0 {
+        d.total_size
+    } else {
+        d.downloaded_size
+    };
 
     let extra = serde_json::json!({
         "num_complete": d.seeds,
@@ -256,15 +264,28 @@ pub async fn properties(
         Some(d) => {
             let now = chrono::Utc::now();
             let elapsed = (now - d.created_at).num_seconds();
-            let is_finished = d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed;
+            let is_finished =
+                d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed;
             let seeding_time = if is_finished {
                 d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
             } else {
                 0
             };
-            let progress = if is_finished || d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
-            let amount_left = if is_finished || progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
-            let completed = if is_finished || progress >= 1.0 { d.total_size } else { d.downloaded_size };
+            let progress = if is_finished || d.progress >= 100.0 {
+                1.0
+            } else {
+                d.progress / 100.0
+            };
+            let amount_left = if is_finished || progress >= 1.0 {
+                0
+            } else {
+                d.total_size.saturating_sub(d.downloaded_size)
+            };
+            let completed = if is_finished || progress >= 1.0 {
+                d.total_size
+            } else {
+                d.downloaded_size
+            };
             Json(serde_json::json!({
                 "hash": d.info_hash.as_deref().unwrap_or(&d.id),
                 "name": d.filename,
@@ -484,7 +505,10 @@ pub async fn add(
             Err(e) => Err(e),
         }
     } else {
-        Err(anyhow::anyhow!("Unsupported content type: {}", content_type))
+        Err(anyhow::anyhow!(
+            "Unsupported content type: {}",
+            content_type
+        ))
     };
 
     match result {
@@ -496,10 +520,7 @@ pub async fn add(
     }
 }
 
-async fn handle_add_urlencoded(
-    state: QbitState,
-    bytes: axum::body::Bytes,
-) -> anyhow::Result<()> {
+async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> anyhow::Result<()> {
     let params: Vec<(String, String)> = url::form_urlencoded::parse(&bytes).into_owned().collect();
 
     let mut urls: Vec<String> = Vec::new();

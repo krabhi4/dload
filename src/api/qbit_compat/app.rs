@@ -3,11 +3,11 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use super::QbitState;
 
 pub async fn version() -> impl IntoResponse {
-    (StatusCode::OK, "v5.0.0")
+    (StatusCode::OK, "4.3.9")
 }
 
 pub async fn webapi_version() -> impl IntoResponse {
-    (StatusCode::OK, "2.11.0")
+    (StatusCode::OK, "2.8.1")
 }
 
 pub async fn preferences(State(state): State<QbitState>) -> impl IntoResponse {

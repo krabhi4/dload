@@ -33,10 +33,10 @@ fn to_qbit_state(status: &DownloadStatus) -> &'static str {
         DownloadStatus::Queued => "queuedDL",
         DownloadStatus::Downloading => "downloading",
         DownloadStatus::Paused => "pausedDL",
-        DownloadStatus::Completed => "pausedUP",
+        DownloadStatus::Completed => "stalledUP",
         DownloadStatus::Failed => "error",
         DownloadStatus::Stopped => "pausedDL",
-        DownloadStatus::Seeding => "pausedUP",
+        DownloadStatus::Seeding => "upDL",
     }
 }
 
@@ -102,6 +102,8 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "num_leechs": d.peers,
     });
 
+    let amount_left = if progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
+
     let extra = serde_json::json!({
         "num_complete": d.seeds,
         "num_incomplete": d.peers,
@@ -115,7 +117,7 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "uploaded": 0,
         "dl_limit": -1,
         "up_limit": -1,
-        "amount_left": d.total_size.saturating_sub(d.downloaded_size),
+        "amount_left": amount_left,
         "completed": d.downloaded_size,
         "total_size": d.total_size,
         "time_active": time_active,
@@ -125,7 +127,7 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "seq_dl": false,
         "f_l_piece_prio": false,
         "auto_tmm": false,
-        "availability": if d.progress >= 100.0 { -1.0 } else { progress },
+        "availability": if progress >= 1.0 { -1.0 } else { progress },
         "force_start": false,
         "max_ratio": -1,
         "max_seeding_time": -1,
@@ -259,6 +261,8 @@ pub async fn properties(
                 } else {
                     0
                 };
+            let progress = if d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
+            let amount_left = if progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
             Json(serde_json::json!({
                 "hash": d.info_hash.as_deref().unwrap_or(&d.id),
                 "name": d.filename,
@@ -286,6 +290,7 @@ pub async fn properties(
                 "share_ratio": 0,
                 "time_elapsed": elapsed,
                 "seeding_time": seeding_time,
+                "amount_left": amount_left,
                 "dl_limit": -1,
                 "up_limit": -1,
                 "comment": "",
@@ -450,9 +455,36 @@ pub async fn create_category(State(state): State<QbitState>, body: String) -> im
 
 pub async fn add(
     State(state): State<QbitState>,
-    multipart: axum_extra::extract::Multipart,
+    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
 ) -> impl IntoResponse {
-    match handle_add(state, multipart).await {
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let result = if content_type.starts_with("multipart/form-data") {
+        use axum::extract::FromRequest;
+        let multipart = axum_extra::extract::Multipart::from_request(request, &state)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse multipart: {}", e));
+        match multipart {
+            Ok(mp) => handle_add_multipart(state, mp).await,
+            Err(e) => Err(e),
+        }
+    } else if content_type.starts_with("application/x-www-form-urlencoded") {
+        let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read body: {}", e));
+        match bytes {
+            Ok(b) => handle_add_urlencoded(state, b).await,
+            Err(e) => Err(e),
+        }
+    } else {
+        Err(anyhow::anyhow!("Unsupported content type: {}", content_type))
+    };
+
+    match result {
         Ok(_) => (StatusCode::OK, "Ok.").into_response(),
         Err(e) => {
             tracing::error!("qBit compat add failed: {}", e);
@@ -461,7 +493,82 @@ pub async fn add(
     }
 }
 
-async fn handle_add(
+async fn handle_add_urlencoded(
+    state: QbitState,
+    bytes: axum::body::Bytes,
+) -> anyhow::Result<()> {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(&bytes).into_owned().collect();
+
+    let mut urls: Vec<String> = Vec::new();
+    let mut category: Option<String> = None;
+    let mut savepath: Option<String> = None;
+
+    for (k, v) in params {
+        match k.as_str() {
+            "urls" => {
+                for line in v.lines() {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        urls.push(line.to_string());
+                    }
+                }
+            }
+            "category" => {
+                if !v.is_empty() {
+                    category = Some(v);
+                }
+            }
+            "savepath" => {
+                if !v.is_empty() {
+                    let p = v.trim();
+                    if p.starts_with('/') && !p.contains("..") {
+                        savepath = Some(p.to_string());
+                    } else {
+                        tracing::warn!("qbit_compat: rejected invalid savepath: {}", v);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let settings = state.manager.settings.read().await;
+    let default_dir = settings.download_dir.clone();
+    let download_dir = match savepath {
+        Some(ref p) => {
+            let p = p.trim_end_matches('/');
+            let default_trimmed = default_dir.trim_end_matches('/');
+            if p == default_trimmed || p.starts_with(&format!("{}/", default_trimmed)) {
+                p.to_string()
+            } else {
+                tracing::warn!(
+                    "qbit_compat: savepath '{}' outside download_dir, ignoring",
+                    p
+                );
+                default_dir.clone()
+            }
+        }
+        None => default_dir.clone(),
+    };
+    drop(settings);
+
+    for url in urls {
+        let mut download = Download::new(url.clone(), &download_dir);
+        download.protocol = Protocol::Torrent;
+        download.info_hash = crate::worker::extract_info_hash(&url);
+        download.category = category.clone();
+        download.content_path = Some(download.save_path.clone());
+        download.status = DownloadStatus::Downloading;
+
+        state.manager.add_download(download.clone()).await;
+        let mgr = Arc::clone(&state.manager);
+        mgr.start_download(download).await;
+    }
+
+    Ok(())
+}
+
+async fn handle_add_multipart(
     state: QbitState,
     mut multipart: axum_extra::extract::Multipart,
 ) -> anyhow::Result<()> {

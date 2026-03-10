@@ -384,7 +384,7 @@ function buildDownloadItem(d) {
           'downloading': 'HTTP Mirror',
           'extracting': 'Extracting...',
           'rechecking': 'Rechecking...'
-      }[d.http_mirror_status] || d.http_mirror_status) + '</span>'
+      }[d.http_mirror_status] || escapeHtml(d.http_mirror_status)) + '</span>'
       : '';
 
   // Action buttons (admin only)

@@ -49,14 +49,16 @@ impl ManagerState {
                         dl.http_mirror_url = None;
                         let _ = repo.update_download(&dl);
 
-                        // Clean up any leftover temp zip file
-                        let data_dir =
-                            std::env::var("DLOAD_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
-                        let tmp_zip = std::path::Path::new(&data_dir)
-                            .join(".tmp")
-                            .join(format!("{}.zip", dl.id));
-                        if tmp_zip.exists() {
-                            let _ = std::fs::remove_file(&tmp_zip);
+                        // Clean up leftover temp files (.mirror and .zip) in save_path parent
+                        let tmp_dir = std::path::Path::new(&dl.save_path)
+                            .parent()
+                            .map(|p| p.join(".tmp"))
+                            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+                        for ext in &["mirror", "zip"] {
+                            let tmp_file = tmp_dir.join(format!("{}.{}", dl.id, ext));
+                            if tmp_file.exists() {
+                                let _ = std::fs::remove_file(&tmp_file);
+                            }
                         }
                     }
                     map.insert(dl.id.clone(), dl);
@@ -779,6 +781,20 @@ impl ManagerState {
                 .await
             {
                 tracing::error!("HTTP mirror failed for {}: {}", id, e);
+
+                // Clean up any orphaned torrent handle (if re-add succeeded but later steps failed)
+                let orphaned_tid = {
+                    let mut handles = state.torrent_handles.write().await;
+                    handles.remove(&id)
+                };
+                if let Some(tid) = orphaned_tid {
+                    if let Ok(session) = state.get_torrent_session().await {
+                        let _ = session
+                            .delete(TorrentIdOrHash::Id(tid), false)
+                            .await;
+                    }
+                }
+
                 // Clear mirror status and set error
                 let snap = {
                     let mut downloads = state.downloads.write().await;
@@ -839,6 +855,13 @@ impl ManagerState {
             Some(p) => p.to_string_lossy().to_string(),
             None => self.download_dir().await,
         };
+
+        // 3. Persist mirror status to DB immediately (crash safety: if we crash after
+        // removing the torrent from the session, startup recovery will see mirror status
+        // and know to clean up rather than leaving an orphaned download)
+        if let Some(snap) = self.get_download(&id).await {
+            self.update_download(&snap).await;
+        }
 
         // 4. Cancel any existing monitoring token FIRST (so monitor_torrent exits cleanly)
         self.cancel_download(&id).await;
@@ -1344,7 +1367,11 @@ impl ManagerState {
                 .map_err(|e| anyhow::anyhow!("Failed to read persisted torrent file: {}", e))?;
             librqbit::AddTorrent::from_bytes(bytes)
         } else {
-            let resp = reqwest::get(&url).await?;
+            let client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .read_timeout(std::time::Duration::from_secs(30))
+                .build()?;
+            let resp = client.get(&url).send().await?;
             let bytes = resp.bytes().await?;
             librqbit::AddTorrent::from_bytes(bytes)
         };

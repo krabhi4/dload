@@ -64,14 +64,14 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
 
     let now = chrono::Utc::now();
     let time_active = (now - d.created_at).num_seconds();
-    let seeding_time =
-        if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
-            d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
-        } else {
-            0
-        };
+    let is_finished = d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed;
+    let seeding_time = if is_finished {
+        d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
+    } else {
+        0
+    };
 
-    let progress = if d.progress >= 100.0 {
+    let progress = if is_finished || d.progress >= 100.0 {
         1.0
     } else {
         d.progress / 100.0
@@ -102,7 +102,8 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "num_leechs": d.peers,
     });
 
-    let amount_left = if progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
+    let amount_left = if is_finished || progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
+    let completed = if is_finished || progress >= 1.0 { d.total_size } else { d.downloaded_size };
 
     let extra = serde_json::json!({
         "num_complete": d.seeds,
@@ -118,7 +119,7 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "dl_limit": -1,
         "up_limit": -1,
         "amount_left": amount_left,
-        "completed": d.downloaded_size,
+        "completed": completed,
         "total_size": d.total_size,
         "time_active": time_active,
         "tracker": "",
@@ -255,14 +256,15 @@ pub async fn properties(
         Some(d) => {
             let now = chrono::Utc::now();
             let elapsed = (now - d.created_at).num_seconds();
-            let seeding_time =
-                if d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed {
-                    d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
-                } else {
-                    0
-                };
-            let progress = if d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
-            let amount_left = if progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
+            let is_finished = d.status == DownloadStatus::Seeding || d.status == DownloadStatus::Completed;
+            let seeding_time = if is_finished {
+                d.completed_at.map(|c| (now - c).num_seconds()).unwrap_or(0)
+            } else {
+                0
+            };
+            let progress = if is_finished || d.progress >= 100.0 { 1.0 } else { d.progress / 100.0 };
+            let amount_left = if is_finished || progress >= 1.0 { 0 } else { d.total_size.saturating_sub(d.downloaded_size) };
+            let completed = if is_finished || progress >= 1.0 { d.total_size } else { d.downloaded_size };
             Json(serde_json::json!({
                 "hash": d.info_hash.as_deref().unwrap_or(&d.id),
                 "name": d.filename,
@@ -291,6 +293,7 @@ pub async fn properties(
                 "time_elapsed": elapsed,
                 "seeding_time": seeding_time,
                 "amount_left": amount_left,
+                "completed": completed,
                 "dl_limit": -1,
                 "up_limit": -1,
                 "comment": "",

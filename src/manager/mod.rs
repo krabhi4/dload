@@ -789,9 +789,7 @@ impl ManagerState {
                 };
                 if let Some(tid) = orphaned_tid {
                     if let Ok(session) = state.get_torrent_session().await {
-                        let _ = session
-                            .delete(TorrentIdOrHash::Id(tid), false)
-                            .await;
+                        let _ = session.delete(TorrentIdOrHash::Id(tid), false).await;
                     }
                 }
 

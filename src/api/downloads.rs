@@ -15,6 +15,17 @@ pub struct DeleteParams {
     delete_files: bool,
 }
 
+#[derive(serde::Deserialize)]
+pub struct HttpMirrorRequest {
+    url: String,
+    #[serde(default = "default_true")]
+    keep_seeding: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn extract_token(headers: &axum::http::HeaderMap) -> &str {
     headers
         .get("authorization")
@@ -58,6 +69,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/downloads/:id/cancel", post(cancel_download))
         .route("/api/downloads/:id/resume", post(resume_download))
         .route("/api/downloads/:id/torrent", get(export_torrent))
+        .route("/api/downloads/:id/http-mirror", post(start_http_mirror))
         .with_state(state)
 }
 
@@ -242,6 +254,92 @@ async fn export_torrent(
         .header("Content-Disposition", disposition)
         .body(axum::body::Body::from(bytes))
         .unwrap()
+}
+
+async fn start_http_mirror(
+    State(state): State<SharedState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<HttpMirrorRequest>,
+) -> axum::response::Response {
+    if let Err(e) = require_admin(extract_token(&headers)) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            e,
+        ));
+    }
+
+    let url = payload.url.trim().to_string();
+    if url.is_empty() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "URL is required",
+        ));
+    }
+
+    match url::Url::parse(&url) {
+        Ok(parsed) => {
+            if parsed.scheme() != "http" && parsed.scheme() != "https" {
+                return axum::response::IntoResponse::into_response((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "Only HTTP/HTTPS URLs are supported for mirrors",
+                ));
+            }
+        }
+        Err(_) => {
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::BAD_REQUEST,
+                "Invalid URL format",
+            ));
+        }
+    }
+
+    let download = state.get_download(&id).await;
+    let download = match download {
+        Some(d) => d,
+        None => {
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::NOT_FOUND,
+                "Download not found",
+            ));
+        }
+    };
+
+    if download.protocol != crate::domain::Protocol::Torrent {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "HTTP mirror is only available for torrent downloads",
+        ));
+    }
+
+    if download.http_mirror_status.is_some() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::CONFLICT,
+            "HTTP mirror is already in progress for this download",
+        ));
+    }
+
+    match download.status {
+        DownloadStatus::Downloading
+        | DownloadStatus::Paused
+        | DownloadStatus::Seeding => {}
+        _ => {
+            return axum::response::IntoResponse::into_response((
+                axum::http::StatusCode::BAD_REQUEST,
+                "Download must be in Downloading, Paused, or Seeding status",
+            ));
+        }
+    }
+
+    let state_clone = Arc::clone(&state);
+    state_clone
+        .start_http_mirror(id, url, payload.keep_seeding)
+        .await;
+
+    axum::response::IntoResponse::into_response((
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({ "success": true })),
+    ))
 }
 
 fn validate_download_url(url: &str) -> Result<(), String> {

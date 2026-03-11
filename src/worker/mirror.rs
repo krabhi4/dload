@@ -34,7 +34,8 @@ impl MirrorDownloader {
             .tcp_nodelay(true)
             .pool_max_idle_per_host(6)
             .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(60))
+            .read_timeout(Duration::from_secs(30))
+            .user_agent(format!("DLoad/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
         // HEAD to get size and range support
@@ -65,7 +66,7 @@ impl MirrorDownloader {
         self.total_size.store(content_length, Ordering::Relaxed);
 
         // Decide connections
-        let min_chunk: u64 = 2 * 1024 * 1024; // 2MB minimum per chunk
+        let min_chunk: u64 = 20 * 1024 * 1024; // 20MB minimum per chunk
         let max_conns = 4usize;
         let num_conns = if accepts_ranges && content_length > min_chunk {
             let possible = (content_length / min_chunk) as usize;
@@ -109,7 +110,7 @@ impl MirrorDownloader {
         }
 
         let file = tokio::fs::File::create(&self.target_path).await?;
-        let mut writer = BufWriter::with_capacity(256 * 1024, file);
+        let mut writer = BufWriter::with_capacity(1024 * 1024, file);
         let mut stream = response.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
@@ -205,6 +206,49 @@ async fn mirror_download_range(
     downloaded: &Arc<AtomicU64>,
     cancel_token: &CancellationToken,
 ) -> anyhow::Result<()> {
+    let max_retries = 3;
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+        match mirror_download_range_inner(client, url, path, start, end, downloaded, cancel_token)
+            .await
+        {
+            Ok(()) => return Ok(()),
+            Err(e) if cancel_token.is_cancelled() => return Err(e),
+            Err(e) if attempt >= max_retries => {
+                return Err(anyhow::anyhow!(
+                    "Mirror range {}-{} failed after {} attempts: {}",
+                    start,
+                    end,
+                    max_retries,
+                    e
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Mirror range {}-{} attempt {}/{} failed: {}, retrying...",
+                    start,
+                    end,
+                    attempt,
+                    max_retries,
+                    e
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+}
+
+async fn mirror_download_range_inner(
+    client: &reqwest::Client,
+    url: &str,
+    path: &str,
+    start: u64,
+    end: u64,
+    downloaded: &Arc<AtomicU64>,
+    cancel_token: &CancellationToken,
+) -> anyhow::Result<()> {
     let resp = client
         .get(url)
         .header("Range", format!("bytes={}-{}", start, end))
@@ -226,26 +270,57 @@ async fn mirror_download_range(
 
     let mut file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
     file.seek(std::io::SeekFrom::Start(start)).await?;
-    let mut writer = BufWriter::with_capacity(256 * 1024, file);
+    let mut writer = BufWriter::with_capacity(1024 * 1024, file);
 
     let expected = end - start + 1;
     let mut bytes_written: u64 = 0;
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        if cancel_token.is_cancelled() {
-            let _ = writer.flush().await;
-            return Err(anyhow::anyhow!("Mirror download cancelled"));
+
+    // Use break-with-value so ALL error paths go through a single cleanup point
+    let loop_result: anyhow::Result<()> = loop {
+        let chunk_result = tokio::time::timeout(Duration::from_secs(15), stream.next()).await;
+        match chunk_result {
+            Ok(Some(chunk)) => {
+                if cancel_token.is_cancelled() {
+                    let _ = writer.flush().await;
+                    break Err(anyhow::anyhow!("Mirror download cancelled"));
+                }
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => break Err(e.into()),
+                };
+                if let Err(e) = writer.write_all(&chunk).await {
+                    break Err(e.into());
+                }
+                let len = chunk.len() as u64;
+                bytes_written += len;
+                downloaded.fetch_add(len, Ordering::Relaxed);
+            }
+            Ok(None) => break Ok(()),
+            Err(_) => {
+                let _ = writer.flush().await;
+                break Err(anyhow::anyhow!(
+                    "Mirror range {}-{}: stalled for 15s after {} bytes",
+                    start,
+                    end,
+                    bytes_written
+                ));
+            }
         }
-        let chunk = chunk?;
-        writer.write_all(&chunk).await?;
-        let len = chunk.len() as u64;
-        bytes_written += len;
-        downloaded.fetch_add(len, Ordering::Relaxed);
+    };
+
+    if let Err(e) = loop_result {
+        downloaded.fetch_sub(bytes_written, Ordering::Relaxed);
+        return Err(e);
     }
 
-    writer.flush().await?;
+    if let Err(e) = writer.flush().await {
+        downloaded.fetch_sub(bytes_written, Ordering::Relaxed);
+        return Err(e.into());
+    }
 
     if bytes_written != expected {
+        downloaded.fetch_sub(bytes_written, Ordering::Relaxed);
         return Err(anyhow::anyhow!(
             "Range {}-{}: expected {} bytes, got {}",
             start,

@@ -143,9 +143,11 @@ impl Repository {
                 "download_dir" => settings.download_dir = value,
                 "max_concurrent" => settings.max_concurrent = value.parse().unwrap_or(3),
                 "max_connections_per_file" => {
-                    settings.max_connections_per_file = value.parse().unwrap_or(4)
+                    settings.max_connections_per_file = value.parse().unwrap_or(8)
                 }
-                "chunk_size" => settings.chunk_size = value.parse().unwrap_or(131072),
+                "chunk_size" | "min_split_size" => {
+                    settings.min_split_size = value.parse().unwrap_or(20 * 1024 * 1024)
+                }
                 "username" => settings.username = value,
                 "port" => settings.port = value.parse().unwrap_or(8080),
                 _ => {}
@@ -163,7 +165,7 @@ impl Repository {
                 "max_connections_per_file",
                 settings.max_connections_per_file.to_string(),
             ),
-            ("chunk_size", settings.chunk_size.to_string()),
+            ("min_split_size", settings.min_split_size.to_string()),
             ("username", settings.username.clone()),
             ("port", settings.port.to_string()),
         ];
@@ -174,6 +176,8 @@ impl Repository {
                 params![key, value],
             )?;
         }
+        // Clean up legacy key from older versions
+        conn.execute("DELETE FROM settings WHERE key = 'chunk_size'", params![])?;
         Ok(())
     }
 

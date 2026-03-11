@@ -124,10 +124,13 @@ impl ManagerState {
         let opts = librqbit::SessionOptions {
             enable_upnp_port_forwarding: true,
             listen_port_range: Some(6881..6891),
+            fastresume: true,
+            defer_writes_up_to: Some(32),
+            concurrent_init_limit: Some(5),
             peer_opts: Some(librqbit::PeerConnectionOptions {
-                connect_timeout: Some(std::time::Duration::from_secs(5)),
-                read_write_timeout: Some(std::time::Duration::from_secs(10)),
-                ..Default::default()
+                connect_timeout: Some(std::time::Duration::from_secs(10)),
+                read_write_timeout: Some(std::time::Duration::from_secs(30)),
+                keep_alive_interval: Some(std::time::Duration::from_secs(120)),
             }),
             trackers: [
                 "udp://tracker.opentrackr.org:1337/announce",
@@ -136,6 +139,10 @@ impl ManagerState {
                 "udp://open.demonii.com:1337/announce",
                 "udp://explodie.org:6969/announce",
                 "udp://tracker.tiny-vps.com:6969/announce",
+                "udp://tracker.openbittorrent.com:6969/announce",
+                "udp://tracker.pomf.se:80/announce",
+                "udp://p4p.arenabg.com:1337/announce",
+                "udp://exodus.desync.com:6969/announce",
             ]
             .iter()
             .filter_map(|u| url::Url::parse(u).ok())
@@ -458,12 +465,20 @@ impl ManagerState {
         download: Download,
         cancel_token: CancellationToken,
     ) {
-        let max_conns = {
+        let (max_conns, min_split_size) = {
             let settings = self.settings.read().await;
-            settings.max_connections_per_file as usize
+            (
+                settings.max_connections_per_file as usize,
+                settings.min_split_size as u64,
+            )
         };
 
-        let worker = HttpDownloader::new(download.clone(), max_conns, cancel_token.clone());
+        let worker = HttpDownloader::new(
+            download.clone(),
+            max_conns,
+            min_split_size,
+            cancel_token.clone(),
+        );
         let downloaded_atomic = Arc::clone(&worker.downloaded);
         let active_conns_atomic = Arc::clone(&worker.active_conns);
         let total_size_atomic = Arc::clone(&worker.total_size);
@@ -1378,7 +1393,8 @@ impl ManagerState {
         let opts = librqbit::AddTorrentOptions {
             overwrite: true,
             output_folder: Some(output_dir.to_string()),
-            force_tracker_interval: Some(std::time::Duration::from_secs(120)),
+            force_tracker_interval: Some(std::time::Duration::from_secs(60)),
+            defer_writes: Some(true),
             ..Default::default()
         };
 
@@ -1418,7 +1434,8 @@ async fn session_add_and_wait(
     let download_dir = state.download_dir().await;
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
-        force_tracker_interval: Some(std::time::Duration::from_secs(120)),
+        force_tracker_interval: Some(std::time::Duration::from_secs(60)),
+        defer_writes: Some(true),
         ..Default::default()
     };
 

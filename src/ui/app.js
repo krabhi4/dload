@@ -1576,7 +1576,7 @@ async function saveSettings() {
       max_connections_per_file: parseInt(
         document.getElementById("settings-connections").value,
       ),
-      chunk_size: current.chunk_size || 131072,
+      min_split_size: current.min_split_size || 20971520,
       username: current.username || "",
       port: current.port || 8080,
     };

@@ -44,8 +44,23 @@ async fn main() {
         }
     };
 
-    let manager: manager::SharedState = Arc::new(manager::ManagerState::new(settings, repo));
+    let (manager_state, auto_resume_ids) = manager::ManagerState::new(settings, repo);
+    let manager: manager::SharedState = Arc::new(manager_state);
     let sessions = Arc::new(SessionStore::new());
+
+    // Auto-resume torrents that were active before shutdown
+    if !auto_resume_ids.is_empty() {
+        tracing::info!(
+            "{} torrents will auto-resume after startup",
+            auto_resume_ids.len()
+        );
+        let mgr = manager.clone();
+        tokio::spawn(async move {
+            // Let server start and system settle before resuming
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            mgr.resume_all_downloads(auto_resume_ids, 3).await;
+        });
+    }
 
     let allowed_origin = std::env::var("DLOAD_CORS_ORIGIN").unwrap_or_default();
     let cors = if allowed_origin.is_empty() {

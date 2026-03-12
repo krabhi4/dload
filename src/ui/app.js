@@ -141,6 +141,7 @@ function showDownloads() {
     '<span class="stat-val" id="active-count">0</span> Active' +
     ' <span class="stat-sep">&middot;</span> ' +
     '&darr; <span class="stat-val speed-val" id="total-speed">0 B/s</span>' +
+    '<button id="resume-all-btn" class="btn-ghost" style="display:none;margin-left:auto;font-size:0.8em;padding:4px 10px" onclick="resumeAllDownloads()">Resume All</button>' +
     "</div>" +
     '<div class="add-section">' +
     '<form id="add-download-form" class="input-group">' +
@@ -709,6 +710,15 @@ function updateStats(downloads) {
   if (el) el.textContent = active;
   el = document.getElementById("total-speed");
   if (el) el.textContent = formatSpeed(totalSpeed);
+
+  // Show/hide Resume All button
+  var pausedCount = downloads.filter(function (d) {
+    return d.status === "Paused" || d.status === "Failed" || d.status === "Stopped";
+  }).length;
+  var resumeBtn = document.getElementById("resume-all-btn");
+  if (resumeBtn) {
+    resumeBtn.style.display = pausedCount > 0 ? "" : "none";
+  }
 }
 
 // ─── Data Loading ───────────────────────────────────
@@ -1384,6 +1394,32 @@ async function resumeDownload(id) {
     loadDownloads();
   } catch (e) {
     showToast("error", "Failed to resume", e.message);
+  }
+}
+
+var resumeAllInProgress = false;
+
+async function resumeAllDownloads() {
+  if (resumeAllInProgress) return;
+  resumeAllInProgress = true;
+  var btn = document.getElementById("resume-all-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Resuming\u2026";
+  }
+  try {
+    var result = await apiRequest("/downloads/resume-all", { method: "POST" });
+    showToast("success", "Resume All", "Resuming " + (result.count || 0) + " downloads");
+    lastDownloads = [];
+    loadDownloads();
+  } catch (e) {
+    showToast("error", "Resume All Failed", e.message);
+  } finally {
+    resumeAllInProgress = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Resume All";
+    }
   }
 }
 

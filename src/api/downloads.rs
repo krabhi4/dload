@@ -70,6 +70,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/downloads/:id/resume", post(resume_download))
         .route("/api/downloads/:id/torrent", get(export_torrent))
         .route("/api/downloads/:id/http-mirror", post(start_http_mirror))
+        .route("/api/downloads/resume-all", post(resume_all_downloads))
         .with_state(state)
 }
 
@@ -201,6 +202,37 @@ async fn resume_download(
     }
     state.resume_download(&id).await;
     Json(serde_json::json!({ "success": true }))
+}
+
+async fn resume_all_downloads(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+) -> Json<serde_json::Value> {
+    if let Err(e) = require_admin(extract_token(&headers)) {
+        return Json(serde_json::json!({ "success": false, "error": e }));
+    }
+
+    let ids: Vec<String> = state
+        .get_all()
+        .await
+        .iter()
+        .filter(|d| {
+            d.status == DownloadStatus::Paused
+                || d.status == DownloadStatus::Failed
+                || d.status == DownloadStatus::Stopped
+        })
+        .map(|d| d.id.clone())
+        .collect();
+
+    let count = ids.len();
+
+    // Spawn throttled resume in background so API responds immediately
+    let state_clone = Arc::clone(&state);
+    tokio::spawn(async move {
+        state_clone.resume_all_downloads(ids, 2).await;
+    });
+
+    Json(serde_json::json!({ "success": true, "count": count }))
 }
 
 async fn export_torrent(

@@ -23,11 +23,31 @@ function closeSidebar() {
 // ─── Toast Notifications ────────────────────────────
 
 var toastCounter = 0;
+var MAX_TOASTS = 3;
 
 function showToast(type, title, message, duration) {
   duration = duration || 5000;
   var container = document.getElementById("toast-container");
   if (!container) return;
+
+  // Deduplicate: skip if an identical toast is already visible
+  var existing = container.querySelectorAll('.toast:not(.removing)');
+  for (var i = 0; i < existing.length; i++) {
+    var t = existing[i];
+    var tTitle = t.querySelector('.toast-title');
+    var tMsg = t.querySelector('.toast-message');
+    if (tTitle && tTitle.textContent === title &&
+        (!message && !tMsg || tMsg && tMsg.textContent === message)) {
+      return;
+    }
+  }
+
+  // Limit visible toasts — dismiss oldest if at max
+  var visible = container.querySelectorAll('.toast:not(.removing)');
+  while (visible.length >= MAX_TOASTS) {
+    dismissToast(visible[0].id);
+    visible = container.querySelectorAll('.toast:not(.removing)');
+  }
 
   var id = "toast-" + ++toastCounter;
   var icons = {
@@ -159,6 +179,7 @@ function showDownloads() {
     "</div>" +
     '<div class="add-section">' +
     '<form id="add-download-form" class="input-group">' +
+    '<label for="download-url" class="sr-only">Download URL</label>' +
     '<input type="text" id="download-url" placeholder="Paste URL — http, ftp, sftp, magnet, or .torrent" required>' +
     '<button type="submit" class="btn-primary">Download</button>' +
     "</form>" +
@@ -248,15 +269,15 @@ function showProfile() {
     '<form id="change-password-form">' +
     '<div class="form-field">' +
     '<label for="current-password">Current Password</label>' +
-    '<input type="password" id="current-password" required>' +
+    '<input type="password" id="current-password" required autocomplete="current-password">' +
     "</div>" +
     '<div class="form-field">' +
     '<label for="new-password">New Password</label>' +
-    '<input type="password" id="new-password" required>' +
+    '<input type="password" id="new-password" required autocomplete="new-password">' +
     "</div>" +
     '<div class="form-field">' +
     '<label for="confirm-password">Confirm New Password</label>' +
-    '<input type="password" id="confirm-password" required>' +
+    '<input type="password" id="confirm-password" required autocomplete="new-password">' +
     "</div>" +
     '<button type="submit" class="btn-primary">Update Password</button>' +
     "</form>" +
@@ -1129,6 +1150,7 @@ async function loadUserManagement() {
       "</div>" +
       '<div class="form-field">' +
       "<h3>Existing Users</h3>" +
+      '<div class="table-scroll-wrapper">' +
       '<table class="user-table">' +
       "<thead>" +
       "<tr>" +
@@ -1166,9 +1188,24 @@ async function loadUserManagement() {
       });
     }
 
-    userTable += "</tbody>" + "</table>" + "</div>" + "</div>";
+    userTable += "</tbody>" + "</table>" + "</div>" + "</div>" + "</div>";
 
-    userSection.innerHTML = userTable;
+    renderHtml(userSection, userTable);
+
+    // Hide scroll fade when table is scrolled to the end
+    var scrollWrapper = userSection.querySelector('.table-scroll-wrapper');
+    var scrollTable = scrollWrapper ? scrollWrapper.querySelector('.user-table') : null;
+    if (scrollTable) {
+      scrollTable.addEventListener('scroll', function () {
+        var atEnd = scrollTable.scrollLeft + scrollTable.clientWidth >= scrollTable.scrollWidth - 2;
+        scrollWrapper.classList.toggle('scrolled-end', atEnd);
+        scrollWrapper.classList.toggle('scrolled-start', scrollTable.scrollLeft <= 2);
+      });
+      // If table fits without scrolling, hide the fade
+      if (scrollTable.scrollWidth <= scrollTable.clientWidth) {
+        scrollWrapper.classList.add('scrolled-end');
+      }
+    }
 
     // Bind the create user form
     var createUserForm = document.getElementById("create-user-form");
@@ -1305,6 +1342,7 @@ function renderHistory(items) {
         '">' +
         '<label class="history-checkbox">' +
         '<input type="checkbox" ' +
+        'aria-label="Select ' + escapeHtml(h.filename) + '" ' +
         (isSelected ? "checked" : "") +
         " onchange=\"toggleHistorySelect('" +
         escapeHtml(h.id) +
@@ -1449,11 +1487,37 @@ function closeAllMenus() {
   openMoreMenuId = null;
 }
 
+function focusFirstMenuItem(menu) {
+  var first = menu.querySelector('button, a, [role="menuitem"]');
+  if (first) first.focus();
+}
+
+function handleMenuKeydown(e, triggerBtnId) {
+  var menu = e.currentTarget;
+  var items = Array.prototype.slice.call(menu.querySelectorAll('button, a, [role="menuitem"]'));
+  if (items.length === 0) return;
+  var idx = items.indexOf(document.activeElement);
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    items[(idx + 1) % items.length].focus();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[(idx - 1 + items.length) % items.length].focus();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeAllMenus();
+    var trigger = document.getElementById(triggerBtnId);
+    if (trigger) trigger.focus();
+  }
+}
+
 function toggleDeleteMenu(event, id) {
   event.stopPropagation();
+  var wasOpen = openMenuId === id;
   closeAllMenus();
 
-  if (openMenuId === id) {
+  if (wasOpen) {
     return;
   }
 
@@ -1463,14 +1527,17 @@ function toggleDeleteMenu(event, id) {
     menu.classList.add("show");
     if (btn) btn.setAttribute('aria-expanded', 'true');
     openMenuId = id;
+    menu.onkeydown = function (e) { handleMenuKeydown(e, 'delete-btn-' + id); };
+    focusFirstMenuItem(menu);
   }
 }
 
 function toggleMoreMenu(event, id) {
   event.stopPropagation();
+  var wasOpen = openMoreMenuId === id;
   closeAllMenus();
 
-  if (openMoreMenuId === id) {
+  if (wasOpen) {
     return;
   }
   var menu = document.getElementById('more-menu-' + id);
@@ -1479,6 +1546,8 @@ function toggleMoreMenu(event, id) {
     menu.classList.add('show');
     if (btn) btn.setAttribute('aria-expanded', 'true');
     openMoreMenuId = id;
+    menu.onkeydown = function (e) { handleMenuKeydown(e, 'more-btn-' + id); };
+    focusFirstMenuItem(menu);
   }
 }
 
@@ -2002,7 +2071,7 @@ async function checkFirstUser() {
     var result = await apiRequest("/auth/status");
     return result.needs_setup === true;
   } catch (e) {
-    return false;
+    return null; // null = connection error, false = no setup needed
   }
 }
 
@@ -2082,7 +2151,12 @@ async function init() {
     document.getElementById("login-username").focus();
     // Check if this is the first user
     checkFirstUser().then(function (isFirst) {
-      if (isFirst) {
+      if (isFirst === null) {
+        // Connection failed — show error in login hint
+        var hint = document.getElementById("login-hint");
+        if (hint) hint.textContent = "Cannot reach server. Check your connection and refresh.";
+        if (hint) hint.style.color = "var(--danger)";
+      } else if (isFirst) {
         var hint = document.getElementById("login-hint");
         if (hint) hint.textContent = "Create your admin account to get started";
         var subtitle = document.querySelector(".login-subtitle");

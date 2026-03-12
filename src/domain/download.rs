@@ -75,6 +75,10 @@ pub struct Download {
     pub content_path: Option<String>,
     pub http_mirror_status: Option<String>,
     pub http_mirror_url: Option<String>,
+    /// Persisted flag: true when download should auto-resume after app restart.
+    /// Set true on start/resume, false on user-initiated pause or completion.
+    #[serde(default)]
+    pub restart_resume: bool,
 }
 
 impl Download {
@@ -106,6 +110,7 @@ impl Download {
             content_path: None,
             http_mirror_status: None,
             http_mirror_url: None,
+            restart_resume: false,
         }
     }
 }

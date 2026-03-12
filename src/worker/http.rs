@@ -266,8 +266,16 @@ async fn download_range(
 
     loop {
         attempt += 1;
-        match download_range_inner(client, url, path, current_start, end, downloaded, cancel_token)
-            .await
+        match download_range_inner(
+            client,
+            url,
+            path,
+            current_start,
+            end,
+            downloaded,
+            cancel_token,
+        )
+        .await
         {
             Ok(()) => return Ok(()),
             Err((e, _)) if cancel_token.is_cancelled() => return Err(e),

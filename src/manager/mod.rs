@@ -34,12 +34,13 @@ impl ManagerState {
             Ok(dl_list) => {
                 let mut map = HashMap::new();
                 for mut dl in dl_list {
+                    // Collect torrent downloads with restart_resume flag for auto-resume
+                    if dl.restart_resume && dl.protocol == Protocol::Torrent {
+                        auto_resume_ids.push(dl.id.clone());
+                    }
+
                     // Downloads that were in-progress when the app stopped are now paused
                     if dl.status == DownloadStatus::Downloading {
-                        // Collect torrent IDs for auto-resume
-                        if dl.protocol == Protocol::Torrent {
-                            auto_resume_ids.push(dl.id.clone());
-                        }
                         dl.status = DownloadStatus::Paused;
                         dl.speed = 0;
                         dl.upload_speed = 0;
@@ -49,7 +50,6 @@ impl ManagerState {
                     // HTTP seeding shouldn't happen, but mark completed if it does
                     if dl.status == DownloadStatus::Seeding {
                         if dl.protocol == Protocol::Torrent {
-                            auto_resume_ids.push(dl.id.clone());
                             dl.status = DownloadStatus::Paused;
                         } else {
                             dl.status = DownloadStatus::Completed;
@@ -193,6 +193,70 @@ impl ManagerState {
         }
         let mut downloads = self.downloads.write().await;
         downloads.insert(download.id.clone(), download);
+    }
+
+    /// Count downloads that are actively running (Downloading or Seeding).
+    pub async fn active_download_count(&self) -> usize {
+        let downloads = self.downloads.read().await;
+        downloads
+            .values()
+            .filter(|d| {
+                d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Seeding
+            })
+            .count()
+    }
+
+    /// Add a download and start it if under the concurrent limit, otherwise queue it.
+    pub async fn add_and_maybe_start(self: &Arc<Self>, mut download: Download) {
+        let max_concurrent = self.settings.read().await.max_concurrent as usize;
+        let active = self.active_download_count().await;
+
+        if active >= max_concurrent {
+            download.status = DownloadStatus::Queued;
+            if download.protocol == Protocol::Torrent {
+                download.restart_resume = true;
+            }
+            self.add_download(download).await;
+        } else {
+            download.status = DownloadStatus::Downloading;
+            self.add_download(download.clone()).await;
+            let state = Arc::clone(self);
+            state.start_download(download).await;
+        }
+    }
+
+    /// Promote the oldest queued download when a slot opens.
+    /// Call this after a download completes, fails, pauses, or is deleted.
+    pub async fn try_start_queued(self: &Arc<Self>) {
+        let max_concurrent = self.settings.read().await.max_concurrent as usize;
+        let active = self.active_download_count().await;
+
+        if active >= max_concurrent {
+            return;
+        }
+
+        // Find the oldest queued download (by created_at)
+        let queued = {
+            let downloads = self.downloads.read().await;
+            let mut queued: Vec<_> = downloads
+                .values()
+                .filter(|d| d.status == DownloadStatus::Queued)
+                .cloned()
+                .collect();
+            queued.sort_by_key(|d| d.created_at);
+            queued.into_iter().take(max_concurrent - active).collect::<Vec<_>>()
+        };
+
+        for dl in queued {
+            tracing::info!("Promoting queued download: {} ({})", dl.filename, dl.id);
+            let state = Arc::clone(self);
+            let id = dl.id.clone();
+            // Use resume_download (not start_download) so displaced torrents
+            // with live paused handles get properly unpaused via the fast path.
+            tokio::spawn(async move {
+                state.resume_download(&id).await;
+            });
+        }
     }
 
     pub async fn update_download(&self, download: &Download) {
@@ -366,6 +430,7 @@ impl ManagerState {
                     d.status = DownloadStatus::Paused;
                     d.speed = 0;
                     d.upload_speed = 0;
+                    d.restart_resume = false;
                 }
                 Some(d.clone())
             } else {
@@ -392,8 +457,52 @@ impl ManagerState {
         if d.status != DownloadStatus::Paused
             && d.status != DownloadStatus::Failed
             && d.status != DownloadStatus::Stopped
+            && d.status != DownloadStatus::Queued
         {
             return;
+        }
+
+        // If at capacity, queue the oldest active download to make room
+        let max_concurrent = self.settings.read().await.max_concurrent as usize;
+        let active = self.active_download_count().await;
+        if active >= max_concurrent {
+            let oldest_active_id = {
+                let downloads = self.downloads.read().await;
+                let mut active_list: Vec<_> = downloads
+                    .values()
+                    .filter(|d| {
+                        d.id != id
+                            && (d.status == DownloadStatus::Downloading
+                                || d.status == DownloadStatus::Seeding)
+                    })
+                    .collect();
+                active_list.sort_by_key(|d| d.created_at);
+                active_list.first().map(|d| d.id.clone())
+            };
+            if let Some(oldest_id) = oldest_active_id {
+                tracing::info!(
+                    "Queue full: displacing oldest active download {} to make room for {}",
+                    oldest_id,
+                    id
+                );
+                // Pause the download but set to Queued (not Paused) so it can be
+                // re-promoted by try_start_queued when a slot opens. Keep restart_resume
+                // true so it survives restarts.
+                self.pause_download(&oldest_id).await;
+                let snap = {
+                    let mut downloads = self.downloads.write().await;
+                    if let Some(d) = downloads.get_mut(&oldest_id) {
+                        d.status = DownloadStatus::Queued;
+                        d.restart_resume = true;
+                        Some(d.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(d) = snap {
+                    self.update_download(&d).await;
+                }
+            }
         }
 
         // Try native librqbit unpause first (torrent was paused, not removed)
@@ -416,11 +525,13 @@ impl ManagerState {
                                 if let Some(dl) = downloads.get_mut(id) {
                                     dl.status = DownloadStatus::Downloading;
                                     dl.error_message = None;
+                                    dl.restart_resume = true;
                                 }
                             }
                             let mut d = d.clone();
                             d.status = DownloadStatus::Downloading;
                             d.error_message = None;
+                            d.restart_resume = true;
                             self.update_download(&d).await;
 
                             // Spawn a monitoring task
@@ -459,6 +570,7 @@ impl ManagerState {
                     d.status == DownloadStatus::Paused
                         || d.status == DownloadStatus::Failed
                         || d.status == DownloadStatus::Stopped
+                        || d.status == DownloadStatus::Queued
                 })
             };
 
@@ -485,6 +597,7 @@ impl ManagerState {
             let mut download = download;
             download.protocol = protocol.clone();
             download.status = DownloadStatus::Downloading;
+            download.restart_resume = true;
 
             state.update_download(&download).await;
 
@@ -638,6 +751,7 @@ impl ManagerState {
                 completed.connections = 0;
                 completed.eta = None;
                 completed.completed_at = Some(chrono::Utc::now());
+                completed.restart_resume = false;
                 self.update_download(&completed).await;
 
                 // If the downloaded file is a .torrent, auto-start it
@@ -672,6 +786,7 @@ impl ManagerState {
                             torrent_download.filename = name;
                             torrent_download.protocol = Protocol::Torrent;
                             torrent_download.status = DownloadStatus::Downloading;
+                            torrent_download.restart_resume = true;
 
                             let torrent_cancel =
                                 self.register_cancel_token(&torrent_download.id).await;
@@ -724,6 +839,7 @@ impl ManagerState {
                 if !cancel_token.is_cancelled() {
                     let mut failed = download;
                     failed.status = DownloadStatus::Failed;
+                    failed.restart_resume = false;
                     failed.error_message = Some(e.to_string());
                     failed.speed = 0;
                     failed.connections = 0;
@@ -735,6 +851,7 @@ impl ManagerState {
                 if !cancel_token.is_cancelled() {
                     let mut failed = download;
                     failed.status = DownloadStatus::Failed;
+                    failed.restart_resume = false;
                     failed.error_message = Some("Download task aborted".to_string());
                     failed.speed = 0;
                     failed.connections = 0;
@@ -757,6 +874,7 @@ impl ManagerState {
         tokio::spawn(async move {
             download.protocol = Protocol::Torrent;
             download.status = DownloadStatus::Downloading;
+            download.restart_resume = true;
 
             // Persist the torrent file first so it survives restarts
             let download_dir = state.download_dir().await;
@@ -1187,6 +1305,7 @@ impl ManagerState {
                 Ok(bytes) => librqbit::AddTorrent::from_bytes(bytes),
                 Err(e) => {
                     download.status = DownloadStatus::Failed;
+                    download.restart_resume = false;
                     download.error_message =
                         Some(format!("Failed to read persisted torrent file: {}", e));
                     self.update_download(&download).await;
@@ -1231,6 +1350,7 @@ impl ManagerState {
                 }
                 _ => {
                     download.status = DownloadStatus::Failed;
+                    download.restart_resume = false;
                     download.error_message = Some(format!("Torrent failed: {}", e));
                     self.update_download(&download).await;
                 }

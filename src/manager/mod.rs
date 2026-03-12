@@ -276,26 +276,18 @@ impl ManagerState {
     }
 
     pub async fn update_download(&self, download: &Download) {
+        let mut dl = download.clone();
         {
             let mut downloads = self.downloads.write().await;
-            if let Some(d) = downloads.get_mut(&download.id) {
-                *d = download.clone();
-            }
             // Push failed downloads to the bottom of the list
-            if download.status == DownloadStatus::Failed {
+            if dl.status == DownloadStatus::Failed {
                 let max_pos = downloads.values().map(|d| d.position).max().unwrap_or(0);
-                if let Some(d) = downloads.get_mut(&download.id) {
-                    d.position = max_pos + 1;
-                }
+                dl.position = max_pos + 1;
             }
-        } // lock released before DB call
-        let dl = {
-            let downloads = self.downloads.read().await;
-            downloads
-                .get(&download.id)
-                .cloned()
-                .unwrap_or_else(|| download.clone())
-        };
+            if let Some(d) = downloads.get_mut(&dl.id) {
+                *d = dl.clone();
+            }
+        }
         if let Err(e) = self
             .repo_blocking(move |repo| repo.update_download(&dl))
             .await
@@ -358,10 +350,13 @@ impl ManagerState {
                     let in_top_n = i < max_concurrent;
 
                     match d.status {
-                        DownloadStatus::Downloading | DownloadStatus::Seeding => {
+                        DownloadStatus::Downloading => {
                             if !in_top_n {
                                 queue_ids.push(id.clone());
                             }
+                        }
+                        DownloadStatus::Seeding => {
+                            // Never demote Seeding — arr stack needs pausedUP to import/delete
                         }
                         DownloadStatus::Queued
                         | DownloadStatus::Paused
@@ -618,9 +613,8 @@ impl ManagerState {
                 let mut active_list: Vec<_> = downloads
                     .values()
                     .filter(|d| {
-                        d.id != id
-                            && (d.status == DownloadStatus::Downloading
-                                || d.status == DownloadStatus::Seeding)
+                        d.id != id && d.status == DownloadStatus::Downloading
+                        // Skip Seeding — arr stack needs pausedUP to import/delete
                     })
                     .collect();
                 active_list.sort_by_key(|d| d.position);

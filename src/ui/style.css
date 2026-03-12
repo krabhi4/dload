@@ -21,6 +21,7 @@
   --info-dim: rgba(94, 142, 255, 0.12);
   --info-subtle: rgba(94, 142, 255, 0.2);
   --accent-subtle: rgba(52, 211, 153, 0.2);
+  --accent-light: #6ee7b7;
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
@@ -54,6 +55,20 @@ body {
   overflow: hidden;
   height: 100vh;
   height: 100dvh;
+}
+
+/* ========== Screen Reader Only ========== */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ========== Skip Link ========== */
@@ -411,6 +426,8 @@ input:focus {
   align-items: center;
   justify-content: center;
   width: 16px;
+  padding: 8px;
+  margin: -8px;
   flex-shrink: 0;
   color: var(--text-tertiary);
   opacity: 0;
@@ -552,10 +569,24 @@ input:focus {
 
 .progress-fill.completed {
   background: var(--info);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 3px,
+    rgba(255, 255, 255, 0.15) 3px,
+    rgba(255, 255, 255, 0.15) 6px
+  );
 }
 
 .progress-fill.failed {
   background: var(--danger);
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    rgba(0, 0, 0, 0.2) 3px,
+    rgba(0, 0, 0, 0.2) 6px
+  );
 }
 
 .actions {
@@ -934,15 +965,21 @@ input:focus {
 }
 
 select {
+  appearance: none;
+  -webkit-appearance: none;
   background: var(--bg-base);
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%238d8b84' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
-  padding: 11px 14px;
+  padding: 11px 36px 11px 14px;
   font-family: var(--font-sans);
   font-size: 0.875rem;
   color: var(--text-primary);
   transition: border-color var(--transition), box-shadow var(--transition);
   width: 100%;
+  cursor: pointer;
 }
 
 select:focus {
@@ -1114,7 +1151,7 @@ select:focus {
 
 /* Progress bar shimmer */
 .downloading .progress-fill {
-  background: linear-gradient(90deg, var(--accent), #6ee7b7, var(--accent));
+  background: linear-gradient(90deg, var(--accent), var(--accent-light), var(--accent));
   background-size: 200% 100%;
   animation: shimmer 2s ease-in-out infinite;
 }
@@ -1731,6 +1768,29 @@ select:focus {
   }
 
   /* User table */
+  .table-scroll-wrapper {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .table-scroll-wrapper::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 32px;
+    background: linear-gradient(to right, transparent, var(--bg-base));
+    pointer-events: none;
+    z-index: 1;
+    opacity: 1;
+    transition: opacity var(--transition);
+  }
+
+  .table-scroll-wrapper.scrolled-end::after {
+    opacity: 0;
+  }
+
   .user-table {
     font-size: 0.75rem;
     display: block;
@@ -1800,6 +1860,16 @@ select:focus {
   .delete-menu.show,
   .more-menu.show {
     animation: sheetIn 200ms var(--ease-out);
+  }
+
+  /* Backdrop scrim behind bottom sheet */
+  .delete-menu.show::before,
+  .more-menu.show::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: -1;
   }
 
   .delete-menu button,
@@ -1969,6 +2039,7 @@ select:focus {
     --accent-dim: rgba(10, 122, 82, 0.08);
     --accent-glow: rgba(10, 122, 82, 0.15);
     --accent-subtle: rgba(10, 122, 82, 0.15);
+    --accent-light: #34d399;
     --danger: #c42b47;
     --danger-dim: rgba(196, 43, 71, 0.08);
     --danger-subtle: rgba(196, 43, 71, 0.12);

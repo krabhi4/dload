@@ -414,7 +414,8 @@ function buildDownloadItem(d) {
     } else if (
       d.status === "Paused" ||
       d.status === "Failed" ||
-      d.status === "Stopped"
+      d.status === "Stopped" ||
+      d.status === "Queued"
     ) {
       actions =
         '<button class="action-btn resume-btn" onclick="event.stopPropagation(); resumeDownload(\'' +
@@ -713,7 +714,7 @@ function updateStats(downloads) {
 
   // Show/hide Resume All button
   var pausedCount = downloads.filter(function (d) {
-    return d.status === "Paused" || d.status === "Failed" || d.status === "Stopped";
+    return d.status === "Paused" || d.status === "Failed" || d.status === "Stopped" || d.status === "Queued";
   }).length;
   var resumeBtn = document.getElementById("resume-all-btn");
   if (resumeBtn) {

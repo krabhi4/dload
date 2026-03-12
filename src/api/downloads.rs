@@ -111,15 +111,16 @@ async fn add_download(
     let download_dir = settings.download_dir.clone();
     drop(settings);
 
-    let mut download = Download::new(url, &download_dir);
-    download.status = crate::domain::DownloadStatus::Downloading;
+    let download = Download::new(url, &download_dir);
 
-    state.add_download(download.clone()).await;
+    state.add_and_maybe_start(download.clone()).await;
 
-    let state_clone = Arc::clone(&state);
-    state_clone.start_download(download.clone()).await;
-
-    axum::response::IntoResponse::into_response(Json(download))
+    // Re-read to get the actual status (Downloading or Queued)
+    let actual = {
+        let downloads = state.downloads.read().await;
+        downloads.get(&download.id).cloned().unwrap_or(download)
+    };
+    axum::response::IntoResponse::into_response(Json(actual))
 }
 
 async fn remove_download(
@@ -220,6 +221,7 @@ async fn resume_all_downloads(
             d.status == DownloadStatus::Paused
                 || d.status == DownloadStatus::Failed
                 || d.status == DownloadStatus::Stopped
+                || d.status == DownloadStatus::Queued
         })
         .map(|d| d.id.clone())
         .collect();

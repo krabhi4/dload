@@ -63,6 +63,32 @@ impl Database {
             "ALTER TABLE downloads ADD COLUMN http_mirror_status TEXT;
              ALTER TABLE downloads ADD COLUMN http_mirror_url TEXT;",
         );
+        let _ = conn.execute_batch(
+            "ALTER TABLE downloads ADD COLUMN restart_resume INTEGER DEFAULT 0;",
+        );
+        // One-time migration: existing torrent downloads should auto-resume.
+        // Includes Paused because the old code marked active torrents as Paused on shutdown,
+        // so there's no way to distinguish user-paused from system-paused on first upgrade.
+        // Guarded by a settings flag so it only runs once (not on every restart).
+        {
+            let already_done: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key = 'migration_restart_resume'",
+                    [],
+                    |row| row.get::<_, i32>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if !already_done {
+                let _ = conn.execute_batch(
+                    "UPDATE downloads SET restart_resume = 1
+                     WHERE protocol = 'Torrent'
+                     AND status IN ('Downloading', 'Seeding', 'Paused', 'Queued')
+                     AND restart_resume = 0;
+                     INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_restart_resume', '1');",
+                );
+            }
+        }
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);",
         )?;

@@ -62,6 +62,17 @@ async fn main() {
         });
     }
 
+    // Periodic queue promotion: check every 2s for queued downloads that can start
+    {
+        let mgr = manager.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                mgr.try_start_queued().await;
+            }
+        });
+    }
+
     let allowed_origin = std::env::var("DLOAD_CORS_ORIGIN").unwrap_or_default();
     let cors = if allowed_origin.is_empty() {
         // No CORS — only same-origin requests allowed (safest default)

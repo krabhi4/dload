@@ -11,4 +11,8 @@ services:
       - RUST_LOG=info
       - DLOAD_JWT_SECRET=changeme-generate-a-random-secret
       # - DLOAD_CORS_ORIGIN=https://your-domain.com
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped

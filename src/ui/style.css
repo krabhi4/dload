@@ -1,25 +1,31 @@
 :root {
-  --bg-base: #0a0a0f;
-  --bg-surface: #111118;
-  --bg-raised: #19191f;
-  --bg-overlay: #1f1f28;
+  --bg-base: #0c0c0a;
+  --bg-surface: #131312;
+  --bg-raised: #1b1b18;
+  --bg-overlay: #22221f;
   --border: rgba(255, 255, 255, 0.06);
   --border-light: rgba(255, 255, 255, 0.1);
-  --text-primary: #e8e8ed;
-  --text-secondary: #8b8b9e;
-  --text-tertiary: #5a5a6e;
-  --accent: #00d4aa;
-  --accent-dim: rgba(0, 212, 170, 0.12);
-  --accent-glow: rgba(0, 212, 170, 0.3);
+  --text-primary: #e8e7e3;
+  --text-secondary: #8d8b84;
+  --text-tertiary: #5d5a54;
+  --accent: #34d399;
+  --accent-dim: rgba(52, 211, 153, 0.12);
+  --accent-glow: rgba(52, 211, 153, 0.3);
   --danger: #ff4d6a;
   --danger-dim: rgba(255, 77, 106, 0.12);
+  --danger-subtle: rgba(255, 77, 106, 0.2);
   --warning: #ffb443;
-  --success: #00d4aa;
+  --warning-dim: rgba(255, 180, 67, 0.12);
+  --success: #34d399;
   --info: #5e8eff;
+  --info-dim: rgba(94, 142, 255, 0.12);
+  --info-subtle: rgba(94, 142, 255, 0.2);
+  --accent-subtle: rgba(52, 211, 153, 0.2);
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
   --radius-xl: 20px;
+  --radius-pill: 100px;
   --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -128,12 +134,17 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   padding: 8px 10px;
+  border: none;
+  background: none;
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all var(--transition);
+  font-family: var(--font-sans);
   font-size: 0.85rem;
   color: var(--text-secondary);
+  text-align: left;
 }
 
 .user-pill:hover {
@@ -171,7 +182,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   margin-left: 4px;
 }
 
@@ -247,7 +258,7 @@ main {
 .filter-tab {
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: 100px;
+  border-radius: var(--radius-pill);
   padding: 6px 14px;
   font-family: var(--font-sans);
   font-size: 0.8rem;
@@ -316,7 +327,6 @@ input[type="password"] {
   font-size: 0.875rem;
   color: var(--text-primary);
   transition: all var(--transition);
-  outline: none;
   width: 100%;
 }
 
@@ -325,6 +335,7 @@ input::placeholder {
 }
 
 input:focus {
+  outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
@@ -352,6 +363,13 @@ input:focus {
   transform: scale(0.98);
 }
 
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+  box-shadow: none;
+}
+
 .btn-full {
   width: 100%;
 }
@@ -372,6 +390,15 @@ input:focus {
 .btn-ghost:hover {
   border-color: var(--text-tertiary);
   color: var(--text-primary);
+}
+
+.btn-ghost:active {
+  transform: scale(0.98);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ========== Downloads List ========== */
@@ -438,7 +465,7 @@ input:focus {
   z-index: 9999;
   opacity: 0.85;
   pointer-events: none;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-lg);
   border: 1px solid var(--accent);
   border-radius: var(--radius-lg);
   transform: scale(0.97);
@@ -460,6 +487,16 @@ input:focus {
   justify-content: center;
   flex-shrink: 0;
   color: var(--text-secondary);
+}
+
+.protocol-icon.http {
+  color: var(--info);
+  background: var(--info-dim);
+}
+
+.protocol-icon.torrent {
+  color: var(--warning);
+  background: var(--warning-dim);
 }
 
 .download-info {
@@ -517,7 +554,7 @@ input:focus {
   flex: 1;
   height: 6px;
   background: var(--bg-overlay);
-  border-radius: 100px;
+  border-radius: var(--radius-pill);
   overflow: hidden;
   position: relative;
 }
@@ -525,7 +562,7 @@ input:focus {
 .progress-fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 100px;
+  border-radius: var(--radius-pill);
   transition: width 400ms ease;
   position: relative;
 }
@@ -538,7 +575,7 @@ input:focus {
   bottom: 0;
   width: 60px;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15));
-  border-radius: 100px;
+  border-radius: var(--radius-pill);
 }
 
 .progress-fill.completed {
@@ -571,7 +608,7 @@ input:focus {
   font-size: 0.7rem;
   font-weight: 600;
   padding: 3px 10px;
-  border-radius: 100px;
+  border-radius: var(--radius-pill);
   letter-spacing: 0.02em;
 }
 
@@ -581,12 +618,12 @@ input:focus {
 }
 
 .status-badge.seeding {
-  background: rgba(0, 212, 170, 0.12);
+  background: var(--accent-dim);
   color: var(--accent);
 }
 
 .status-badge.completed {
-  background: rgba(94, 142, 255, 0.12);
+  background: var(--info-dim);
   color: var(--info);
 }
 
@@ -596,26 +633,30 @@ input:focus {
 }
 
 .status-badge.queued {
-  background: rgba(255, 180, 67, 0.12);
+  background: var(--warning-dim);
   color: var(--warning);
 }
 
 .status-badge.paused {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--border);
   color: var(--text-secondary);
 }
 
 .status-badge.stopped {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--border);
   color: var(--text-tertiary);
 }
 
-.action-btn {
+.action-btn,
+.delete-btn,
+.more-btn {
   background: none;
   border: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  padding: 4px;
+  padding: 8px;
+  min-width: 36px;
+  min-height: 36px;
   border-radius: var(--radius-sm);
   transition: all var(--transition);
   display: flex;
@@ -624,8 +665,8 @@ input:focus {
 }
 
 .action-btn.pause-btn:hover {
-  background: rgba(255, 193, 7, 0.12);
-  color: #ffc107;
+  background: var(--warning-dim);
+  color: var(--warning);
 }
 
 .action-btn.cancel-btn:hover {
@@ -638,17 +679,8 @@ input:focus {
   color: var(--accent);
 }
 
-.delete-btn {
-  background: none;
-  border: none;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: var(--radius-sm);
-  transition: all var(--transition);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.action-btn:active {
+  transform: scale(0.9);
 }
 
 .delete-btn:hover {
@@ -657,7 +689,7 @@ input:focus {
 }
 
 .torrent-info {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   padding: 4px 0 0;
   letter-spacing: 0.02em;
@@ -667,41 +699,48 @@ input:focus {
   position: relative;
 }
 
-.delete-menu {
+.delete-menu,
+.more-menu {
   display: none;
   position: absolute;
   right: 0;
-  top: 100%;
-  margin-top: 4px;
+  top: calc(100% + 4px);
   background: var(--bg-overlay);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-sm);
   overflow: hidden;
   z-index: 100;
   min-width: 160px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-lg);
 }
 
-.delete-menu.show {
+.delete-menu.show,
+.more-menu.show {
   display: block;
 }
 
-.delete-menu button {
+.delete-menu button,
+.more-menu button,
+.more-menu-link {
   display: block;
   width: 100%;
   padding: 8px 14px;
   background: none;
   border: none;
   color: var(--text-primary);
+  font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
-  font-size: 13px;
   white-space: nowrap;
+  text-decoration: none;
+  box-sizing: border-box;
   transition: background var(--transition);
 }
 
-.delete-menu button:hover {
-  background: rgba(255, 255, 255, 0.06);
+.delete-menu button:hover,
+.more-menu button:hover,
+.more-menu-link:hover {
+  background: var(--border);
 }
 
 .delete-menu button.danger {
@@ -715,13 +754,17 @@ input:focus {
 /* ========== Detail Panel (expandable) ========== */
 
 .download-detail {
-  max-height: 0;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 300ms ease;
+}
+
+.download-detail > .detail-content {
   overflow: hidden;
-  transition: max-height 300ms ease;
 }
 
 .download-detail.open {
-  max-height: 400px;
+  grid-template-rows: 1fr;
 }
 
 .detail-content {
@@ -884,7 +927,7 @@ input:focus {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .role-badge.admin {
@@ -900,7 +943,7 @@ input:focus {
 .btn-danger {
   background: var(--danger-dim);
   color: var(--danger);
-  border: 1px solid rgba(255, 77, 106, 0.2);
+  border: 1px solid var(--danger-subtle);
   border-radius: var(--radius-sm);
   padding: 6px 14px;
   font-family: var(--font-sans);
@@ -911,12 +954,16 @@ input:focus {
 }
 
 .btn-danger:hover {
-  background: rgba(255, 77, 106, 0.2);
+  background: var(--danger-subtle);
+}
+
+.btn-danger:active {
+  transform: scale(0.98);
 }
 
 .btn-small {
-  padding: 4px 10px;
-  font-size: 0.75rem;
+  padding: 6px 12px;
+  font-size: 0.78rem;
 }
 
 select {
@@ -928,11 +975,11 @@ select {
   font-size: 0.875rem;
   color: var(--text-primary);
   transition: all var(--transition);
-  outline: none;
   width: 100%;
 }
 
 select:focus {
+  outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
@@ -1039,19 +1086,8 @@ select:focus {
 
 /* ========== Animations ========== */
 
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
 .downloading .progress-fill {
-  animation: none;
-  background: linear-gradient(90deg, var(--accent), #00e6b8, var(--accent));
+  background: linear-gradient(90deg, var(--accent), #6ee7b7, var(--accent));
   background-size: 200% 100%;
   animation: shimmer 2s ease-in-out infinite;
 }
@@ -1077,7 +1113,7 @@ select:focus {
 
 ::-webkit-scrollbar-thumb {
   background: var(--bg-overlay);
-  border-radius: 100px;
+  border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -1157,8 +1193,10 @@ select:focus {
   border: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  padding: 2px;
-  border-radius: 4px;
+  padding: 8px;
+  min-width: 32px;
+  min-height: 32px;
+  border-radius: var(--radius-sm);
   transition: all var(--transition);
   display: flex;
   align-items: center;
@@ -1166,7 +1204,7 @@ select:focus {
 }
 
 .toast-close:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--border-light);
   color: var(--text-primary);
 }
 
@@ -1174,13 +1212,15 @@ select:focus {
   position: absolute;
   bottom: 0;
   left: 0;
+  right: 0;
   height: 2px;
   border-radius: 0 0 var(--radius-md) var(--radius-md);
+  transform-origin: left;
   animation: toastTimer linear forwards;
 }
 
 .toast.error {
-  border-color: rgba(255, 77, 106, 0.2);
+  border-color: var(--danger-subtle);
 }
 
 .toast.error .toast-icon {
@@ -1192,7 +1232,7 @@ select:focus {
 }
 
 .toast.success {
-  border-color: rgba(0, 212, 170, 0.2);
+  border-color: var(--accent-subtle);
 }
 
 .toast.success .toast-icon {
@@ -1204,7 +1244,7 @@ select:focus {
 }
 
 .toast.info {
-  border-color: rgba(94, 142, 255, 0.2);
+  border-color: var(--info-subtle);
 }
 
 .toast.info .toast-icon {
@@ -1239,10 +1279,10 @@ select:focus {
 
 @keyframes toastTimer {
   from {
-    width: 100%;
+    transform: scaleX(1);
   }
   to {
-    width: 0%;
+    transform: scaleX(0);
   }
 }
 
@@ -1336,8 +1376,6 @@ select:focus {
   gap: 8px;
   margin-top: 16px;
 }
-
-/* ========== Responsive ========== */
 
 /* ========== History ========== */
 
@@ -1440,11 +1478,6 @@ select:focus {
 
 .btn-danger-outline:hover {
   background: var(--danger-dim);
-}
-
-.btn-small {
-  padding: 7px 14px;
-  font-size: 0.8rem;
 }
 
 /* ========== Mobile Header ========== */
@@ -1743,121 +1776,145 @@ select:focus {
 
 /* ─── More (⋯) dropdown ───────────────────── */
 
-.more-btn {
-    background: none;
-    border: none;
-    color: var(--text-tertiary);
-    cursor: pointer;
-    padding: 4px 6px;
-    border-radius: var(--radius-sm);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all var(--transition);
-}
-
 .more-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text-primary);
+  background: var(--border-light);
+  color: var(--text-primary);
 }
 
 .more-dropdown {
-    position: relative;
+  position: relative;
 }
 
-.more-menu {
-    display: none;
-    position: absolute;
-    right: 0;
-    top: calc(100% + 4px);
-    background: var(--bg-overlay);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-sm);
-    min-width: 160px;
-    z-index: 100;
-    overflow: hidden;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-}
-
-.more-menu.show {
-    display: block;
-}
-
-.more-menu button,
-.more-menu-link {
-    display: block;
-    width: 100%;
-    padding: 8px 14px;
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    font-size: 0.82rem;
-    text-align: left;
-    cursor: pointer;
-    white-space: nowrap;
-    text-decoration: none;
-    box-sizing: border-box;
-    transition: background var(--transition);
-}
-
-.more-menu button:hover,
-.more-menu-link:hover {
-    background: rgba(255, 255, 255, 0.06);
-}
+/* ─── Mirror Form ───────────────────── */
 
 .mirror-form {
-    padding: 8px 12px;
-    background: var(--bg-secondary, #1e1e2e);
-    border: 1px solid var(--border, #333);
-    border-radius: 6px;
-    margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
 }
+
 .mirror-input {
-    width: 100%;
-    padding: 6px 8px;
-    background: var(--bg-primary, #11111b);
-    color: var(--text, #cdd6f4);
-    border: 1px solid var(--border, #333);
-    border-radius: 4px;
-    font-size: 13px;
-    margin-bottom: 6px;
-    box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  margin-bottom: 8px;
+  box-sizing: border-box;
 }
+
+.mirror-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
 .mirror-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--text-secondary, #a6adc8);
-    margin-bottom: 6px;
-    cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  cursor: pointer;
 }
+
 .mirror-actions {
-    display: flex;
-    gap: 6px;
+  display: flex;
+  gap: 6px;
 }
+
 .mirror-start-btn {
-    padding: 4px 12px;
-    background: var(--accent, #89b4fa);
-    color: var(--bg-primary, #11111b);
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 600;
+  padding: 6px 14px;
+  background: var(--accent);
+  color: var(--bg-base);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: all var(--transition);
 }
+
+.mirror-start-btn:hover {
+  filter: brightness(1.1);
+}
+
 .mirror-cancel-btn {
-    padding: 4px 12px;
-    background: transparent;
-    color: var(--text-secondary, #a6adc8);
-    border: 1px solid var(--border, #333);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 12px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  transition: all var(--transition);
 }
+
+.mirror-cancel-btn:hover {
+  border-color: var(--text-tertiary);
+  color: var(--text-primary);
+}
+
 .mirror-status {
-    font-size: 11px;
-    color: var(--accent, #89b4fa);
-    font-weight: 500;
-    margin-left: 8px;
+  font-size: 0.7rem;
+  color: var(--accent);
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+/* ========== Focus Indicators ========== */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.nav-item:focus-visible,
+.action-btn:focus-visible,
+.delete-btn:focus-visible,
+.more-btn:focus-visible,
+.filter-tab:focus-visible,
+.user-pill:focus-visible,
+.btn-primary:focus-visible,
+.btn-ghost:focus-visible,
+.btn-danger:focus-visible,
+.btn-danger-outline:focus-visible,
+.toast-close:focus-visible,
+.menu-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.download-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-color: var(--accent);
+}
+
+/* ========== Reduced Motion ========== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ========== Firefox Scrollbar ========== */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-overlay) transparent;
 }

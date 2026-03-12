@@ -401,20 +401,20 @@ function buildDownloadItem(d) {
       actions =
         '<button class="action-btn pause-btn" onclick="event.stopPropagation(); pauseDownload(\'' +
         safeId +
-        '\')" title="Pause">' +
-        '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>' +
+        '\')" title="Pause" aria-label="Pause download">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>' +
         "</button>" +
         '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' +
         safeId +
-        '\')" title="Cancel">' +
-        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+        '\')" title="Cancel" aria-label="Cancel download">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
         "</button>";
     } else if (d.status === "Seeding") {
       actions =
         '<button class="action-btn cancel-btn" onclick="event.stopPropagation(); cancelDownload(\'' +
         safeId +
-        '\')" title="Stop Seeding">' +
-        '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>' +
+        '\')" title="Stop Seeding" aria-label="Stop seeding">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>' +
         "</button>";
     } else if (
       d.status === "Paused" ||
@@ -425,8 +425,8 @@ function buildDownloadItem(d) {
       actions =
         '<button class="action-btn resume-btn" onclick="event.stopPropagation(); resumeDownload(\'' +
         safeId +
-        '\')" title="Resume">' +
-        '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>' +
+        '\')" title="Resume" aria-label="Resume download">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>' +
         "</button>";
     }
   }
@@ -484,38 +484,20 @@ function buildDownloadItem(d) {
 
   var isExpanded = expandedId === d.id;
 
-  if (d.completed_at) {
-    detailRows += '<span class="detail-label">Completed</span>'
-      + '<span class="detail-value">' + escapeHtml(new Date(d.completed_at).toLocaleString()) + '</span>';
-  }
-
-  if (isTorrent) {
-    detailRows += '<span class="detail-label">Peers</span>'
-      + '<span class="detail-value detail-peers">' + (d.peers || 0) + '</span>'
-      + '<span class="detail-label">Seeds</span>'
-      + '<span class="detail-value detail-seeds">' + (d.seeds || 0) + '</span>'
-      + '<span class="detail-label">Upload Speed</span>'
-      + '<span class="detail-value detail-upload-speed">' + formatSpeed(d.upload_speed) + '</span>';
-  }
-
-  if (d.error_message) {
-    detailRows += '<span class="detail-label">Error</span>'
-      + '<span class="detail-value error">' + escapeHtml(d.error_message) + '</span>';
-  }
-
-  var isExpanded = (expandedId === d.id);
-
   var isCompleted = d.status === 'Completed';
   return '<div class="download-item ' + statusClass + '" data-id="' + safeId + '"'
     + (isCompleted ? '' : ' draggable="true"')
-    + ' onclick="toggleDetail(\'' + safeId + '\', event)">'
+    + ' tabindex="0" role="button" aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
+    + ' aria-label="' + safeName + ' \u2014 ' + safeStatus + '"'
+    + ' onclick="toggleDetail(\'' + safeId + '\', event)"'
+    + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();toggleDetail(\'' + safeId + '\', event)}">'
     + '<div class="download-row">'
     + (isCompleted ? '' : '<div class="drag-handle" title="Drag to reorder">'
     + '<svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">'
     + '<circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="8" r="1.5"/><circle cx="4" cy="13" r="1.5"/>'
     + '<circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>'
     + '</svg></div>')
-    + '<div class="protocol-icon">' + protocolIcon + '</div>'
+    + '<div class="protocol-icon ' + (isTorrent ? 'torrent' : 'http') + '">' + protocolIcon + '</div>'
     + '<div class="download-info">'
     + '<div class="download-name">' + safeName + '</div>'
     + '<div class="download-url" title="' + safeUrl + '">' + safeUrl + '</div>'
@@ -531,8 +513,8 @@ function buildDownloadItem(d) {
     + '<div class="actions">'
     + actions
     + (isTorrent ? '<div class="more-dropdown">'
-      + '<button class="more-btn" onclick="toggleMoreMenu(event, \'' + safeId + '\')" title="More options">'
-      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">'
+      + '<button class="more-btn" onclick="toggleMoreMenu(event, \'' + safeId + '\')" title="More options" aria-label="More options" aria-haspopup="true">'
+      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'
       + '<circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>'
       + '</svg>'
       + '</button>'
@@ -558,12 +540,12 @@ function buildDownloadItem(d) {
       + '</div>' : '')
       : '')
     + (isAdmin ? '<div class="delete-dropdown">'
-      + '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove">'
-      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      + '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove" aria-label="Remove download" aria-haspopup="true">'
+      + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
       + '</svg>'
       + '</button>'
-      + '<div class="delete-menu" id="delete-menu-' + safeId + '">'
+      + '<div class="delete-menu" id="delete-menu-' + safeId + '" role="menu">'
       + '<button onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
       + '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
       + '</div>'
@@ -571,7 +553,7 @@ function buildDownloadItem(d) {
     + '</div>'
     + '</div>'
     + '<div class="download-progress">'
-    + '<div class="progress-bar">'
+    + '<div class="progress-bar" role="progressbar" aria-valuenow="' + progress + '" aria-valuemin="0" aria-valuemax="100" aria-label="Download progress">'
     + '<div class="progress-fill ' + progressClass + '" style="width: ' + progress + '%"></div>'
     + '</div>'
     + '</div>'
@@ -1349,8 +1331,8 @@ function renderHistory(items) {
         "</div>" +
         '<button class="delete-btn" onclick="deleteHistoryItem(\'' +
         escapeHtml(h.id) +
-        '\')" title="Remove from history">' +
-        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+        '\')" title="Remove from history" aria-label="Remove from history">' +
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
         "</button>" +
         "</div>"
       );
@@ -1580,7 +1562,7 @@ function startMirror(event, id) {
   var keepSeeding = seedCheckbox ? seedCheckbox.checked : true;
 
   if (!url) {
-    alert('Please enter a mirror URL');
+    showToast('error', 'Missing URL', 'Please enter a mirror URL');
     return;
   }
 
@@ -1604,7 +1586,7 @@ function startMirror(event, id) {
     refreshDownloads();
   })
   .catch(function(err) {
-    alert('Failed to start mirror: ' + err.message);
+    showToast('error', 'Mirror failed', err.message || 'Could not start HTTP mirror');
   });
 }
 

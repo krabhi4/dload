@@ -23,12 +23,12 @@
         <div class="logo">
           <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
             <rect width="28" height="28" rx="8" fill="var(--accent)"/>
-            <path d="M14 7v10m0 0l-4-4m4 4l4-4M8 21h12" stroke="#0a0a0f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M14 7v10m0 0l-4-4m4 4l4-4M8 21h12" stroke="var(--bg-base)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           <span>DLoad</span>
         </div>
       </header>
-      <div class="sidebar-overlay" onclick="closeSidebar()"></div>
+      <div class="sidebar-overlay" onclick="closeSidebar()" role="presentation"></div>
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="logo">
@@ -36,7 +36,7 @@
               <rect width="28" height="28" rx="8" fill="var(--accent)" />
               <path
                 d="M14 7v10m0 0l-4-4m4 4l4-4M8 21h12"
-                stroke="#0a0a0f"
+                stroke="var(--bg-base)"
                 stroke-width="2.2"
                 stroke-linecap="round"
                 stroke-linejoin="round"
@@ -45,7 +45,7 @@
             <span>DLoad</span>
           </div>
         </div>
-        <nav class="nav-links">
+        <nav class="nav-links" aria-label="Main navigation">
           <a href="#downloads" class="nav-item active" data-page="downloads">
             <svg
               width="18"
@@ -56,6 +56,7 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
               <polyline points="7 10 12 15 17 10" />
@@ -73,6 +74,7 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
               <polyline points="22 4 12 14.01 9 11.01" />
@@ -89,6 +91,7 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <circle cx="12" cy="12" r="10" />
               <polyline points="12 6 12 12 16 14" />
@@ -105,6 +108,7 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <circle cx="12" cy="12" r="3" />
               <path
@@ -123,6 +127,7 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
               <circle cx="12" cy="7" r="4" />
@@ -131,7 +136,7 @@
           </a>
         </nav>
         <div class="sidebar-footer">
-          <div class="user-pill" onclick="logout()">
+          <button class="user-pill" onclick="logout()" aria-label="Sign out">
             <div class="user-avatar" id="user-avatar">A</div>
             <span id="username">admin</span>
             <span id="user-role" class="user-role">ADMIN</span>
@@ -144,12 +149,13 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
               <polyline points="16 17 21 12 16 7" />
               <line x1="21" y1="12" x2="9" y2="12" />
             </svg>
-          </div>
+          </button>
         </div>
       </aside>
 
@@ -164,7 +170,7 @@
             <rect width="28" height="28" rx="8" fill="var(--accent)" />
             <path
               d="M14 7v10m0 0l-4-4m4 4l4-4M8 21h12"
-              stroke="#0a0a0f"
+              stroke="var(--bg-base)"
               stroke-width="2.2"
               stroke-linecap="round"
               stroke-linejoin="round"
@@ -200,7 +206,7 @@
       </div>
     </div>
 
-    <div class="toast-container" id="toast-container"></div>
+    <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="false"></div>
     <script src="/ui/app.js"></script>
   </body>
 </html>

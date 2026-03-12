@@ -244,7 +244,10 @@ impl ManagerState {
                 .cloned()
                 .collect();
             queued.sort_by_key(|d| d.created_at);
-            queued.into_iter().take(max_concurrent - active).collect::<Vec<_>>()
+            queued
+                .into_iter()
+                .take(max_concurrent - active)
+                .collect::<Vec<_>>()
         };
 
         for dl in queued {

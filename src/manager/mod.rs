@@ -390,13 +390,36 @@ impl ManagerState {
             }
         }
 
-        // Demote active downloads that were moved below top N (do this first to free slots)
+        // Demote active downloads that were moved below top N (do this first to free slots).
+        // We avoid calling pause_download() here because it sets an intermediate Paused
+        // status that can race with the monitor_torrent loop (which also detects is_paused
+        // and overwrites the status). Instead, we stop the download work and set Queued
+        // directly in one step.
         for id in &to_queue {
-            self.pause_download(id).await;
+            // Stop the actual download work
+            let torrent_id = {
+                let handles = self.torrent_handles.read().await;
+                handles.get(id).copied()
+            };
+            if let Some(tid) = torrent_id {
+                // Torrent: use native pause (keeps librqbit state for fast unpause later)
+                if let Ok(session) = self.get_torrent_session().await {
+                    if let Some(handle) = session.get(TorrentIdOrHash::Id(tid)) {
+                        let _ = session.pause(&handle).await;
+                    }
+                }
+            } else {
+                // HTTP: fire cancellation token to stop the worker
+                self.cancel_download(id).await;
+            }
+
+            // Set status directly to Queued (skip the Paused intermediate state)
             let snap = {
                 let mut downloads = self.downloads.write().await;
                 if let Some(d) = downloads.get_mut(id) {
                     d.status = DownloadStatus::Queued;
+                    d.speed = 0;
+                    d.upload_speed = 0;
                     d.restart_resume = true;
                     Some(d.clone())
                 } else {
@@ -1585,6 +1608,12 @@ impl ManagerState {
                 let snap = {
                     let mut downloads = self.downloads.write().await;
                     if let Some(d) = downloads.get_mut(&download_id) {
+                        // Don't overwrite Queued status — reorder_downloads sets Queued
+                        // when demoting a download, and the torrent is paused as part of
+                        // that transition. We should not revert it back to Paused.
+                        if d.status == DownloadStatus::Queued {
+                            return;
+                        }
                         d.status = DownloadStatus::Paused;
                         d.speed = 0;
                         d.upload_speed = 0;

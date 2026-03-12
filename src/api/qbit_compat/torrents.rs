@@ -702,13 +702,11 @@ async fn handle_add_multipart(
             download.restart_resume = true;
 
             // Persist .torrent bytes so queued downloads can start later
-            let torrents_dir =
-                std::path::Path::new(&download_dir).join(".torrents");
+            let torrents_dir = std::path::Path::new(&download_dir).join(".torrents");
             if let Err(e) = tokio::fs::create_dir_all(&torrents_dir).await {
                 tracing::warn!("Failed to create .torrents dir: {}", e);
             }
-            let torrent_file =
-                torrents_dir.join(format!("{}.torrent", download.id));
+            let torrent_file = torrents_dir.join(format!("{}.torrent", download.id));
             if let Err(e) = tokio::fs::write(&torrent_file, &bytes).await {
                 tracing::warn!("Failed to persist .torrent file: {}", e);
             }

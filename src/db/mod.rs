@@ -63,9 +63,8 @@ impl Database {
             "ALTER TABLE downloads ADD COLUMN http_mirror_status TEXT;
              ALTER TABLE downloads ADD COLUMN http_mirror_url TEXT;",
         );
-        let _ = conn.execute_batch(
-            "ALTER TABLE downloads ADD COLUMN restart_resume INTEGER DEFAULT 0;",
-        );
+        let _ = conn
+            .execute_batch("ALTER TABLE downloads ADD COLUMN restart_resume INTEGER DEFAULT 0;");
         // One-time migration: existing torrent downloads should auto-resume.
         // Includes Paused because the old code marked active torrents as Paused on shutdown,
         // so there's no way to distinguish user-paused from system-paused on first upgrade.

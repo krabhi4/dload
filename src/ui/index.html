@@ -2,17 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>DLoad</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" /></noscript>
     <link rel="stylesheet" href="/ui/style.css" />
   </head>
   <body>
+    <a href="#main-content" class="skip-link">Skip to content</a>
     <div id="app">
       <header class="mobile-header">
         <button class="menu-btn" onclick="toggleSidebar()" aria-label="Menu">
@@ -162,7 +166,7 @@
       <main id="main-content"></main>
     </div>
 
-    <div id="login-modal" class="modal">
+    <div id="login-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="login-heading">
       <div class="modal-backdrop"></div>
       <div class="modal-content">
         <div class="login-logo">
@@ -176,7 +180,7 @@
               stroke-linejoin="round"
             />
           </svg>
-          <h2>DLoad</h2>
+          <h2 id="login-heading">DLoad</h2>
           <p class="login-subtitle">Sign in to your download manager</p>
         </div>
         <form id="login-form">

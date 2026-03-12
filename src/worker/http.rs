@@ -225,24 +225,29 @@ impl HttpDownloader {
             });
         }
 
-        // Wait for all tasks
+        // Wait for all tasks — don't abort others if one fails
+        let mut first_error: Option<anyhow::Error> = None;
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    join_set.abort_all();
-                    self.active_conns.store(0, Ordering::Relaxed);
-                    return Err(e);
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
                 }
                 Err(e) => {
-                    join_set.abort_all();
-                    self.active_conns.store(0, Ordering::Relaxed);
-                    return Err(anyhow::anyhow!("Task panicked: {}", e));
+                    if first_error.is_none() {
+                        first_error = Some(anyhow::anyhow!("Task panicked: {}", e));
+                    }
                 }
             }
         }
+        self.active_conns.store(0, Ordering::Relaxed);
 
-        Ok(())
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
@@ -255,38 +260,51 @@ async fn download_range(
     downloaded: &Arc<AtomicU64>,
     cancel_token: &CancellationToken,
 ) -> anyhow::Result<()> {
-    let max_retries = 3;
+    let max_retries = 5;
     let mut attempt = 0;
+    let mut current_start = start;
 
     loop {
         attempt += 1;
-        match download_range_inner(client, url, path, start, end, downloaded, cancel_token).await {
+        match download_range_inner(client, url, path, current_start, end, downloaded, cancel_token)
+            .await
+        {
             Ok(()) => return Ok(()),
-            Err(e) if cancel_token.is_cancelled() => return Err(e),
-            Err(e) if attempt >= max_retries => {
-                return Err(anyhow::anyhow!(
-                    "Range {}-{} failed after {} attempts: {}",
-                    start,
-                    end,
-                    max_retries,
-                    e
-                ));
-            }
-            Err(e) => {
+            Err((e, _)) if cancel_token.is_cancelled() => return Err(e),
+            Err((e, bytes_written)) => {
+                // Advance past successfully written bytes so retry resumes
+                current_start += bytes_written;
+                if current_start > end {
+                    return Ok(()); // Already got everything despite the error
+                }
+                if attempt >= max_retries {
+                    return Err(anyhow::anyhow!(
+                        "Range {}-{} failed after {} attempts: {}",
+                        start,
+                        end,
+                        max_retries,
+                        e
+                    ));
+                }
+                let backoff = Duration::from_secs(2u64.pow(attempt as u32 - 1).min(30));
                 tracing::warn!(
-                    "Range {}-{} attempt {}/{} failed: {}, retrying...",
+                    "Range {}-{} attempt {}/{} failed at byte {}: {}, retrying in {:?}...",
                     start,
                     end,
                     attempt,
                     max_retries,
-                    e
+                    current_start,
+                    e,
+                    backoff,
                 );
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(backoff).await;
             }
         }
     }
 }
 
+/// Returns Ok(()) on success, or Err((error, bytes_successfully_written)) on failure.
+/// Bytes written are NOT subtracted from `downloaded` — the caller handles resume logic.
 async fn download_range_inner(
     client: &reqwest::Client,
     url: &str,
@@ -295,39 +313,56 @@ async fn download_range_inner(
     end: u64,
     downloaded: &Arc<AtomicU64>,
     cancel_token: &CancellationToken,
-) -> anyhow::Result<()> {
+) -> Result<(), (anyhow::Error, u64)> {
     let resp = client
         .get(url)
         .header("Range", format!("bytes={}-{}", start, end))
         .send()
-        .await?;
+        .await
+        .map_err(|e| (e.into(), 0u64))?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::OK && start > 0 {
-        return Err(anyhow::anyhow!(
-            "Server ignored Range header (returned 200 instead of 206 for bytes {}-{})",
-            start,
-            end
+        return Err((
+            anyhow::anyhow!(
+                "Server ignored Range header (returned 200 instead of 206 for bytes {}-{})",
+                start,
+                end
+            ),
+            0,
+        ));
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+    {
+        return Err((
+            anyhow::anyhow!("Server throttling: {} for range {}-{}", status, start, end),
+            0,
         ));
     }
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
-        return Err(anyhow::anyhow!(
-            "Unexpected status {} for range request",
-            status
+        return Err((
+            anyhow::anyhow!("Unexpected status {} for range request", status),
+            0,
         ));
     }
 
-    let mut file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
-    file.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .await
+        .map_err(|e| (e.into(), 0u64))?;
+    file.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(|e| (e.into(), 0u64))?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, file);
 
     let expected = end - start + 1;
     let mut bytes_written: u64 = 0;
     let mut stream = resp.bytes_stream();
 
-    // Use break-with-value so ALL error paths go through a single cleanup point
-    let loop_result: anyhow::Result<()> = loop {
-        let chunk_result = tokio::time::timeout(Duration::from_secs(15), stream.next()).await;
+    let loop_result: Result<(), anyhow::Error> = loop {
+        let chunk_result = tokio::time::timeout(Duration::from_secs(60), stream.next()).await;
         match chunk_result {
             Ok(Some(chunk)) => {
                 if cancel_token.is_cancelled() {
@@ -349,33 +384,35 @@ async fn download_range_inner(
             Err(_) => {
                 let _ = writer.flush().await;
                 break Err(anyhow::anyhow!(
-                    "Range {}-{}: stalled for 15s after {} bytes",
-                    start,
-                    end,
-                    bytes_written
+                    "Stalled for 60s after {} of {} bytes",
+                    bytes_written,
+                    expected
                 ));
             }
         }
     };
 
     if let Err(e) = loop_result {
-        downloaded.fetch_sub(bytes_written, Ordering::Relaxed);
-        return Err(e);
+        // Flush what we have — caller will resume from bytes_written offset
+        let _ = writer.flush().await;
+        return Err((e, bytes_written));
     }
 
     if let Err(e) = writer.flush().await {
-        downloaded.fetch_sub(bytes_written, Ordering::Relaxed);
-        return Err(e.into());
+        return Err((e.into(), bytes_written));
     }
 
-    if bytes_written != expected {
-        downloaded.fetch_sub(bytes_written, Ordering::Relaxed);
-        return Err(anyhow::anyhow!(
-            "Range {}-{}: expected {} bytes, got {}",
-            start,
-            end,
-            expected,
-            bytes_written
+    // Allow slight overshoot (some servers send extra bytes) but catch short reads
+    if bytes_written < expected {
+        return Err((
+            anyhow::anyhow!(
+                "Range {}-{}: expected {} bytes, got {}",
+                start,
+                end,
+                expected,
+                bytes_written
+            ),
+            bytes_written,
         ));
     }
 

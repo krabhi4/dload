@@ -809,11 +809,15 @@ pub async fn resume(State(state): State<QbitState>, body: String) -> impl IntoRe
             continue;
         }
         if hash == "all" {
-            for d in &all {
-                if d.protocol == Protocol::Torrent {
-                    state.manager.resume_download(&d.id).await;
-                }
-            }
+            let ids: Vec<String> = all
+                .iter()
+                .filter(|d| d.protocol == Protocol::Torrent)
+                .map(|d| d.id.clone())
+                .collect();
+            let mgr = state.manager.clone();
+            tokio::spawn(async move {
+                mgr.resume_all_downloads(ids, 2).await;
+            });
             break;
         }
         if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {

@@ -24,7 +24,11 @@ pub struct ManagerState {
 }
 
 impl ManagerState {
-    pub fn new(settings: Settings, repo: Arc<Repository>) -> Self {
+    /// Returns `(Self, auto_resume_ids)` where `auto_resume_ids` are torrent download IDs
+    /// that were actively downloading or seeding before shutdown and should be auto-resumed.
+    pub fn new(settings: Settings, repo: Arc<Repository>) -> (Self, Vec<String>) {
+        let mut auto_resume_ids = Vec::new();
+
         // Load existing downloads from DB
         let downloads = match repo.get_all_downloads() {
             Ok(dl_list) => {
@@ -32,14 +36,25 @@ impl ManagerState {
                 for mut dl in dl_list {
                     // Downloads that were in-progress when the app stopped are now paused
                     if dl.status == DownloadStatus::Downloading {
+                        // Collect torrent IDs for auto-resume
+                        if dl.protocol == Protocol::Torrent {
+                            auto_resume_ids.push(dl.id.clone());
+                        }
                         dl.status = DownloadStatus::Paused;
                         dl.speed = 0;
                         dl.upload_speed = 0;
                         let _ = repo.update_download(&dl);
                     }
-                    // Torrents that were seeding when the app stopped are now completed
+                    // Torrents that were seeding → paused (so they can auto-resume back to seeding)
+                    // HTTP seeding shouldn't happen, but mark completed if it does
                     if dl.status == DownloadStatus::Seeding {
-                        dl.status = DownloadStatus::Completed;
+                        if dl.protocol == Protocol::Torrent {
+                            auto_resume_ids.push(dl.id.clone());
+                            dl.status = DownloadStatus::Paused;
+                        } else {
+                            dl.status = DownloadStatus::Completed;
+                        }
+                        dl.speed = 0;
                         dl.upload_speed = 0;
                         let _ = repo.update_download(&dl);
                     }
@@ -72,14 +87,17 @@ impl ManagerState {
             }
         };
 
-        Self {
-            downloads: Arc::new(RwLock::new(downloads)),
-            settings: Arc::new(RwLock::new(settings)),
-            repo,
-            torrent_session: Arc::new(RwLock::new(None)),
-            cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
-            torrent_handles: Arc::new(RwLock::new(HashMap::new())),
-        }
+        (
+            Self {
+                downloads: Arc::new(RwLock::new(downloads)),
+                settings: Arc::new(RwLock::new(settings)),
+                repo,
+                torrent_session: Arc::new(RwLock::new(None)),
+                cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+                torrent_handles: Arc::new(RwLock::new(HashMap::new())),
+            },
+            auto_resume_ids,
+        )
     }
 
     /// Read the current download directory from settings (always up-to-date).
@@ -125,12 +143,11 @@ impl ManagerState {
             enable_upnp_port_forwarding: true,
             listen_port_range: Some(6881..6891),
             fastresume: true,
-            defer_writes_up_to: Some(32),
             concurrent_init_limit: Some(5),
             peer_opts: Some(librqbit::PeerConnectionOptions {
-                connect_timeout: Some(std::time::Duration::from_secs(10)),
-                read_write_timeout: Some(std::time::Duration::from_secs(30)),
-                keep_alive_interval: Some(std::time::Duration::from_secs(120)),
+                connect_timeout: Some(std::time::Duration::from_secs(5)),
+                read_write_timeout: Some(std::time::Duration::from_secs(10)),
+                ..Default::default()
             }),
             trackers: [
                 "udp://tracker.opentrackr.org:1337/announce",
@@ -423,6 +440,40 @@ impl ManagerState {
         // Fallback: re-start from scratch (for HTTP, failed torrents, etc.)
         let state = Arc::clone(self);
         state.start_download(d).await;
+    }
+
+    /// Resume multiple downloads with a staggered delay between each to avoid
+    /// overwhelming the system (especially librqbit session init).
+    pub async fn resume_all_downloads(self: &Arc<Self>, ids: Vec<String>, delay_secs: u64) {
+        let total = ids.len();
+        tracing::info!(
+            "Resuming {} downloads with {}s delay between each",
+            total,
+            delay_secs
+        );
+
+        for (i, id) in ids.iter().enumerate() {
+            let should_resume = {
+                let downloads = self.downloads.read().await;
+                downloads.get(id).is_some_and(|d| {
+                    d.status == DownloadStatus::Paused
+                        || d.status == DownloadStatus::Failed
+                        || d.status == DownloadStatus::Stopped
+                })
+            };
+
+            if should_resume {
+                tracing::info!("Resuming download {}/{}: {}", i + 1, total, id);
+                self.resume_download(id).await;
+
+                // Stagger: wait between each resume (except the last one)
+                if i + 1 < total {
+                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                }
+            }
+        }
+
+        tracing::info!("Resume complete: processed {} downloads", total);
     }
 
     pub async fn start_download(self: Arc<Self>, download: Download) {
@@ -1394,7 +1445,6 @@ impl ManagerState {
             overwrite: true,
             output_folder: Some(output_dir.to_string()),
             force_tracker_interval: Some(std::time::Duration::from_secs(60)),
-            defer_writes: Some(true),
             ..Default::default()
         };
 
@@ -1435,7 +1485,6 @@ async fn session_add_and_wait(
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
         force_tracker_interval: Some(std::time::Duration::from_secs(60)),
-        defer_writes: Some(true),
         ..Default::default()
     };
 

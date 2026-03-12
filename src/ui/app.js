@@ -6,6 +6,18 @@ var openMenuId = null;
 var openMoreMenuId = null;
 var expandedId = null;
 
+// ─── Mobile Sidebar ─────────────────────────────────
+
+function toggleSidebar() {
+  document.querySelector(".sidebar").classList.toggle("open");
+  document.querySelector(".sidebar-overlay").classList.toggle("open");
+}
+
+function closeSidebar() {
+  document.querySelector(".sidebar").classList.remove("open");
+  document.querySelector(".sidebar-overlay").classList.remove("open");
+}
+
 // ─── Toast Notifications ────────────────────────────
 
 var toastCounter = 0;
@@ -1652,6 +1664,9 @@ function navigate(hash) {
   expandedId = null;
   selectedHistoryIds.clear();
   safeRender(document.getElementById("main-content"), render());
+
+  // Close mobile sidebar on navigation
+  closeSidebar();
 
   // Update active nav
   document.querySelectorAll(".nav-item").forEach(function (item) {

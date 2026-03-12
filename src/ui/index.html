@@ -14,6 +14,21 @@
   </head>
   <body>
     <div id="app">
+      <header class="mobile-header">
+        <button class="menu-btn" onclick="toggleSidebar()" aria-label="Menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <div class="logo">
+          <svg width="24" height="24" viewBox="0 0 28 28" fill="none">
+            <rect width="28" height="28" rx="8" fill="var(--accent)"/>
+            <path d="M14 7v10m0 0l-4-4m4 4l4-4M8 21h12" stroke="#0a0a0f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>DLoad</span>
+        </div>
+      </header>
+      <div class="sidebar-overlay" onclick="closeSidebar()"></div>
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="logo">

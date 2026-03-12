@@ -8,16 +8,11 @@ var expandedId = null;
 var dragSrcId = null;
 var isDragging = false;
 
-// ─── Mobile Sidebar ─────────────────────────────────
+// ─── App Loading ─────────────────────────────────────
 
-function toggleSidebar() {
-  document.querySelector(".sidebar").classList.toggle("open");
-  document.querySelector(".sidebar-overlay").classList.toggle("open");
-}
-
-function closeSidebar() {
-  document.querySelector(".sidebar").classList.remove("open");
-  document.querySelector(".sidebar-overlay").classList.remove("open");
+function hideAppLoading() {
+  var el = document.getElementById('app-loading');
+  if (el) el.style.display = 'none';
 }
 
 // ─── Toast Notifications ────────────────────────────
@@ -171,12 +166,6 @@ var currentPage = "downloads";
 
 function showDownloads() {
   return (
-    '<div class="stats-bar">' +
-    '<span class="stat-val" id="active-count">0</span> Active' +
-    ' <span class="stat-sep">&middot;</span> ' +
-    '&darr; <span class="stat-val speed-val" id="total-speed">0 B/s</span>' +
-    '<button id="resume-all-btn" class="btn-ghost" style="display:none;margin-left:auto;font-size:0.8em;padding:4px 10px" onclick="resumeAllDownloads()">Resume All</button>' +
-    "</div>" +
     '<div class="add-section">' +
     '<form id="add-download-form" class="input-group">' +
     '<label for="download-url" class="sr-only">Download URL</label>' +
@@ -184,8 +173,35 @@ function showDownloads() {
     '<button type="submit" class="btn-primary">Download</button>' +
     "</form>" +
     "</div>" +
-    '<div id="downloads-list"></div>'
+    '<div class="stats-bar">' +
+    '<span class="stat-val" id="active-count">0</span> Active' +
+    '<span class="stat-sep">&middot;</span>' +
+    '&darr; <span class="stat-val speed-val" id="total-speed">0 B/s</span>' +
+    '<span class="stat-sep" id="upload-sep" style="display:none">&middot;</span>' +
+    '<span id="upload-stat" style="display:none">&uarr; <span class="stat-val" id="total-upload">0 B/s</span></span>' +
+    '<span class="stat-sep" id="queue-sep" style="display:none">&middot;</span>' +
+    '<span id="queue-stat" style="display:none"><span class="stat-val" id="queued-count">0</span> Queued</span>' +
+    '<button id="resume-all-btn" class="btn-ghost" style="display:none;margin-left:auto;font-size:0.8em;padding:4px 10px" onclick="resumeAllDownloads()">Resume All</button>' +
+    "</div>" +
+    '<div id="downloads-list">' + renderSkeletons() + '</div>'
   );
+}
+
+function renderSkeletons() {
+  var html = '';
+  for (var i = 0; i < 4; i++) {
+    html += '<div class="skeleton-item">'
+      + '<div class="skeleton-row">'
+      + '<div class="skeleton skeleton-icon"></div>'
+      + '<div style="flex:1">'
+      + '<div class="skeleton skeleton-text skeleton-text-lg"></div>'
+      + '<div class="skeleton skeleton-text skeleton-text-sm"></div>'
+      + '</div>'
+      + '</div>'
+      + '<div class="skeleton skeleton-bar"></div>'
+      + '</div>';
+  }
+  return html;
 }
 
 function showCompleted() {
@@ -881,9 +897,30 @@ function renderDownloads(downloads) {
       lastDownloads = filtered;
       return;
     }
+
+    // Detect newly completed downloads for flash animation
+    var newlyCompleted = [];
+    if (lastDownloads.length > 0) {
+      filtered.forEach(function (d) {
+        if (d.status === 'Completed') {
+          var prev = lastDownloads.find(function (p) { return p.id === d.id; });
+          if (prev && prev.status !== 'Completed') {
+            newlyCompleted.push(d.id);
+          }
+        }
+      });
+    }
+
     // Full rebuild
     var html = filtered.map(buildDownloadItem).join('');
     renderHtml(container, html);
+
+    // Apply completion flash
+    newlyCompleted.forEach(function (id) {
+      var el = container.querySelector('[data-id="' + CSS.escape(id) + '"]');
+      if (el) el.classList.add('just-completed');
+    });
+
     // Restore expanded detail
     if (expandedId !== null) {
       var detail = document.getElementById('detail-' + expandedId);
@@ -982,6 +1019,12 @@ function updateStats(downloads) {
   var totalSpeed = downloads.reduce(function (sum, d) {
     return sum + (d.status === "Downloading" ? d.speed || 0 : 0);
   }, 0);
+  var totalUpload = downloads.reduce(function (sum, d) {
+    return sum + ((d.status === "Seeding" || d.status === "Downloading") ? d.upload_speed || 0 : 0);
+  }, 0);
+  var queued = downloads.filter(function (d) {
+    return d.status === "Queued";
+  }).length;
 
   var el;
   el = document.getElementById("active-count");
@@ -989,13 +1032,37 @@ function updateStats(downloads) {
   el = document.getElementById("total-speed");
   if (el) el.textContent = formatSpeed(totalSpeed);
 
-  // Show/hide Resume All button
+  // Upload stats
+  var showUpload = totalUpload > 0;
+  el = document.getElementById("upload-sep");
+  if (el) el.style.display = showUpload ? "" : "none";
+  el = document.getElementById("upload-stat");
+  if (el) el.style.display = showUpload ? "" : "none";
+  el = document.getElementById("total-upload");
+  if (el) el.textContent = formatSpeed(totalUpload);
+
+  // Queue stats
+  var showQueue = queued > 0;
+  el = document.getElementById("queue-sep");
+  if (el) el.style.display = showQueue ? "" : "none";
+  el = document.getElementById("queue-stat");
+  if (el) el.style.display = showQueue ? "" : "none";
+  el = document.getElementById("queued-count");
+  if (el) el.textContent = queued;
+
+  // Show/hide Resume All button with entrance animation
   var pausedCount = downloads.filter(function (d) {
     return d.status === "Paused" || d.status === "Failed" || d.status === "Stopped" || d.status === "Queued";
   }).length;
   var resumeBtn = document.getElementById("resume-all-btn");
   if (resumeBtn) {
+    var wasHidden = resumeBtn.style.display === "none";
     resumeBtn.style.display = pausedCount > 0 ? "" : "none";
+    if (pausedCount > 0 && wasHidden) {
+      resumeBtn.classList.remove("resume-all-enter");
+      void resumeBtn.offsetHeight;
+      resumeBtn.classList.add("resume-all-enter");
+    }
   }
 }
 
@@ -1960,9 +2027,11 @@ function navigate(hash) {
       ? "completed"
       : hash === "#history"
         ? "history"
-        : hash === "#profile"
-          ? "profile"
-          : "downloads";
+        : hash === "#settings"
+          ? "settings"
+          : hash === "#profile"
+            ? "profile"
+            : "downloads";
   lastDownloads = [];
   expandedId = null;
   selectedHistoryIds.clear();
@@ -1972,11 +2041,8 @@ function navigate(hash) {
   renderHtml(main, render());
   main.classList.add("page-enter");
 
-  // Close mobile sidebar on navigation
-  closeSidebar();
-
   // Update active nav
-  document.querySelectorAll(".nav-item").forEach(function (item) {
+  document.querySelectorAll(".nav-tab").forEach(function (item) {
     item.classList.toggle("active", item.getAttribute("href") === hash);
   });
 
@@ -2140,6 +2206,7 @@ async function init() {
   }
 
   if (!token) {
+    hideAppLoading();
     document.getElementById("login-modal").style.display = "flex";
     document.getElementById("login-username").focus();
     // Check if this is the first user
@@ -2168,6 +2235,8 @@ async function init() {
 }
 
 async function startApp() {
+  hideAppLoading();
+
   // Must resolve user role BEFORE rendering anything, otherwise
   // admin buttons won't appear until the next refresh cycle
   if (!window.currentUserRole) {

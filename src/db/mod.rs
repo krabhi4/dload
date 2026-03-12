@@ -88,6 +88,28 @@ impl Database {
                 );
             }
         }
+        let _ = conn.execute_batch("ALTER TABLE downloads ADD COLUMN position INTEGER DEFAULT 0;");
+        // One-time migration: backfill positions from created_at order so existing
+        // downloads get a sensible initial ordering.
+        {
+            let already_done: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key = 'migration_position_backfill'",
+                    [],
+                    |row| row.get::<_, i32>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if !already_done {
+                let _ = conn.execute_batch(
+                    "UPDATE downloads SET position = (
+                        SELECT COUNT(*) FROM downloads d2 WHERE d2.created_at < downloads.created_at
+                     );
+                     INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_position_backfill', '1');",
+                );
+            }
+        }
+
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);",
         )?;

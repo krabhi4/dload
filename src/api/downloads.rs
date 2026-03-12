@@ -61,9 +61,15 @@ fn require_admin(token: &str) -> Result<Claims, String> {
     })
 }
 
+#[derive(serde::Deserialize)]
+struct ReorderRequest {
+    ids: Vec<String>,
+}
+
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/api/downloads", get(list_downloads).post(add_download))
+        .route("/api/downloads/reorder", post(reorder_downloads_handler))
         .route("/api/downloads/:id", delete(remove_download))
         .route("/api/downloads/:id/pause", post(pause_download))
         .route("/api/downloads/:id/cancel", post(cancel_download))
@@ -85,6 +91,29 @@ async fn list_downloads(
         ));
     }
     axum::response::IntoResponse::into_response(Json(state.get_all().await))
+}
+
+async fn reorder_downloads_handler(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<ReorderRequest>,
+) -> axum::response::Response {
+    if require_auth(extract_token(&headers)).is_err() {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Authentication required",
+        ));
+    }
+
+    if payload.ids.len() > 1000 {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Too many IDs",
+        ));
+    }
+
+    state.reorder_downloads(payload.ids).await;
+    axum::response::IntoResponse::into_response(Json(serde_json::json!({ "success": true })))
 }
 
 async fn add_download(

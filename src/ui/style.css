@@ -390,6 +390,60 @@ input:focus {
   border-color: var(--border-light);
 }
 
+.download-item[draggable="true"] {
+  cursor: grab;
+}
+
+.download-item[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity var(--transition);
+  touch-action: none;
+}
+
+.download-item:hover .drag-handle {
+  opacity: 0.6;
+}
+
+.download-item .drag-handle:hover {
+  opacity: 1;
+}
+
+.download-item.dragging {
+  opacity: 0.4;
+  border-color: var(--accent);
+}
+
+.download-item.drag-over-top {
+  border-top: 2px solid var(--accent);
+  margin-top: -1px;
+}
+
+.download-item.drag-over-bottom {
+  border-bottom: 2px solid var(--accent);
+  margin-bottom: -1px;
+}
+
+.touch-drag-clone {
+  position: fixed;
+  z-index: 9999;
+  opacity: 0.85;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  transform: scale(0.97);
+}
+
 .download-row {
   display: flex;
   align-items: center;
@@ -1498,13 +1552,17 @@ select:focus {
   }
 
   /* Download items */
+  .drag-handle {
+    opacity: 0.5;
+  }
+
   .download-row {
     flex-wrap: wrap;
     gap: 8px;
   }
 
   .download-info {
-    flex: 1 1 calc(100% - 44px);
+    flex: 1 1 calc(100% - 68px);
     min-width: 0;
   }
 
@@ -1514,7 +1572,7 @@ select:focus {
     flex-wrap: wrap;
     gap: 6px 12px;
     font-size: 0.7rem;
-    padding-left: 44px;
+    padding-left: 60px;
   }
 
   .status-badge {

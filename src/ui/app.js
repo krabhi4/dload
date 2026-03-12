@@ -852,22 +852,19 @@ function renderDownloads(downloads) {
   if (filtered.length === 0) {
     if (currentPage === 'completed') {
       renderHtml(container, '<div class="empty-state">'
-        + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-        + '<path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>'
-        + '<polyline points="22 4 12 14.01 9 11.01"/>'
-        + '</svg>'
         + '<p>No completed downloads</p>'
-        + '<span>Downloads move here once they finish</span>'
+        + '<span>Active downloads will appear here once they finish</span>'
         + '</div>');
     } else {
       renderHtml(container, '<div class="empty-state">'
-        + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-        + '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>'
-        + '<polyline points="7 10 12 15 17 10"/>'
-        + '<line x1="12" y1="15" x2="12" y2="3"/>'
-        + '</svg>'
-        + '<p>No active downloads</p>'
-        + '<span>Paste a URL above to start &mdash; HTTP, magnet links, and .torrent files are supported</span>'
+        + '<p>Ready when you are</p>'
+        + '<span>Paste a URL, magnet link, or .torrent path into the input above</span>'
+        + '<div class="empty-protocols">'
+        + '<span class="empty-proto">HTTP / HTTPS</span>'
+        + '<span class="empty-proto">FTP / SFTP</span>'
+        + '<span class="empty-proto">Magnet</span>'
+        + '<span class="empty-proto">.torrent</span>'
+        + '</div>'
         + '</div>');
     }
     lastDownloads = filtered;
@@ -1296,12 +1293,8 @@ function renderHistory(items) {
     renderHtml(
       container,
       '<div class="empty-state">' +
-      '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-      '<circle cx="12" cy="12" r="10"/>' +
-      '<polyline points="12 6 12 12 16 14"/>' +
-      "</svg>" +
       "<p>No history yet</p>" +
-      "<span>Every download is logged here for reference, even after files are removed</span>" +
+      "<span>Completed and removed downloads are logged here for reference</span>" +
       "</div>",
     );
     var actionsDiv = document.getElementById("history-actions");
@@ -2056,9 +2049,9 @@ function logout() {
     }
   }
   var hint = document.getElementById("login-hint");
-  if (hint) hint.textContent = "Sign in to continue";
+  if (hint) { hint.textContent = ""; hint.style.color = ""; }
   var subtitle = document.querySelector(".login-subtitle");
-  if (subtitle) subtitle.textContent = "Sign in to your download manager";
+  if (subtitle) subtitle.textContent = "";
 
   document.getElementById("login-modal").style.display = "flex";
   document.getElementById("login-username").focus();

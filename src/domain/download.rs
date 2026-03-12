@@ -79,6 +79,9 @@ pub struct Download {
     /// Set true on start/resume, false on user-initiated pause or completion.
     #[serde(default)]
     pub restart_resume: bool,
+    /// Ordering position for drag-and-drop reordering. Lower = higher priority.
+    #[serde(default)]
+    pub position: i32,
 }
 
 impl Download {
@@ -111,6 +114,7 @@ impl Download {
             http_mirror_status: None,
             http_mirror_url: None,
             restart_resume: false,
+            position: 0,
         }
     }
 }

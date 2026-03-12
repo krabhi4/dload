@@ -206,8 +206,21 @@ impl ManagerState {
             .count()
     }
 
+    /// Assign a position for a new download (after all existing non-completed downloads).
+    async fn assign_new_download_position(&self) -> i32 {
+        let downloads = self.downloads.read().await;
+        downloads
+            .values()
+            .filter(|d| d.status != DownloadStatus::Completed)
+            .map(|d| d.position)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0)
+    }
+
     /// Add a download and start it if under the concurrent limit, otherwise queue it.
     pub async fn add_and_maybe_start(self: &Arc<Self>, mut download: Download) {
+        download.position = self.assign_new_download_position().await;
         let max_concurrent = self.settings.read().await.max_concurrent as usize;
         let active = self.active_download_count().await;
 
@@ -235,7 +248,7 @@ impl ManagerState {
             return;
         }
 
-        // Find the oldest queued download (by created_at)
+        // Find the highest-priority queued download (by position)
         let queued = {
             let downloads = self.downloads.read().await;
             let mut queued: Vec<_> = downloads
@@ -243,7 +256,7 @@ impl ManagerState {
                 .filter(|d| d.status == DownloadStatus::Queued)
                 .cloned()
                 .collect();
-            queued.sort_by_key(|d| d.created_at);
+            queued.sort_by_key(|d| d.position);
             queued
                 .into_iter()
                 .take(max_concurrent - active)
@@ -268,8 +281,21 @@ impl ManagerState {
             if let Some(d) = downloads.get_mut(&download.id) {
                 *d = download.clone();
             }
+            // Push failed downloads to the bottom of the list
+            if download.status == DownloadStatus::Failed {
+                let max_pos = downloads.values().map(|d| d.position).max().unwrap_or(0);
+                if let Some(d) = downloads.get_mut(&download.id) {
+                    d.position = max_pos + 1;
+                }
+            }
         } // lock released before DB call
-        let dl = download.clone();
+        let dl = {
+            let downloads = self.downloads.read().await;
+            downloads
+                .get(&download.id)
+                .cloned()
+                .unwrap_or_else(|| download.clone())
+        };
         if let Err(e) = self
             .repo_blocking(move |repo| repo.update_download(&dl))
             .await
@@ -294,6 +320,101 @@ impl ManagerState {
     pub async fn get_all(&self) -> Vec<Download> {
         let downloads = self.downloads.read().await;
         downloads.values().cloned().collect()
+    }
+
+    /// Reorder downloads by assigning positions from the given ordered ID list.
+    /// Downloads in the top `max_concurrent` positions are started/resumed;
+    /// downloads pushed below are queued.
+    pub async fn reorder_downloads(self: &Arc<Self>, ordered_ids: Vec<String>) {
+        let max_concurrent = self.settings.read().await.max_concurrent as usize;
+
+        // Build position map and collect any missing IDs not in the request
+        let (position_map, to_start, to_queue) = {
+            let mut downloads = self.downloads.write().await;
+
+            // Append any downloads not in the request, maintaining their relative order
+            let ordered_set: std::collections::HashSet<&String> = ordered_ids.iter().collect();
+            let mut missing: Vec<_> = downloads
+                .values()
+                .filter(|d| !ordered_set.contains(&d.id) && d.status != DownloadStatus::Completed)
+                .cloned()
+                .collect();
+            missing.sort_by_key(|d| d.position);
+
+            let full_ordered: Vec<String> = ordered_ids
+                .iter()
+                .cloned()
+                .chain(missing.iter().map(|d| d.id.clone()))
+                .collect();
+
+            let mut pos_map: Vec<(String, i32)> = Vec::new();
+            let mut start_ids: Vec<String> = Vec::new();
+            let mut queue_ids: Vec<String> = Vec::new();
+
+            for (i, id) in full_ordered.iter().enumerate() {
+                if let Some(d) = downloads.get_mut(id) {
+                    d.position = i as i32;
+                    pos_map.push((id.clone(), i as i32));
+                    let in_top_n = i < max_concurrent;
+
+                    match d.status {
+                        DownloadStatus::Downloading | DownloadStatus::Seeding => {
+                            if !in_top_n {
+                                queue_ids.push(id.clone());
+                            }
+                        }
+                        DownloadStatus::Queued
+                        | DownloadStatus::Paused
+                        | DownloadStatus::Failed
+                        | DownloadStatus::Stopped => {
+                            if in_top_n {
+                                start_ids.push(id.clone());
+                            }
+                        }
+                        DownloadStatus::Completed => {}
+                    }
+                }
+            }
+
+            (pos_map, start_ids, queue_ids)
+        };
+
+        // Persist positions to DB in a single transaction
+        if !position_map.is_empty() {
+            let pairs = position_map.clone();
+            if let Err(e) = self
+                .repo_blocking(move |repo| repo.update_positions(&pairs))
+                .await
+            {
+                tracing::error!("Failed to persist positions: {}", e);
+            }
+        }
+
+        // Demote active downloads that were moved below top N (do this first to free slots)
+        for id in &to_queue {
+            self.pause_download(id).await;
+            let snap = {
+                let mut downloads = self.downloads.write().await;
+                if let Some(d) = downloads.get_mut(id) {
+                    d.status = DownloadStatus::Queued;
+                    d.restart_resume = true;
+                    Some(d.clone())
+                } else {
+                    None
+                }
+            };
+            if let Some(d) = snap {
+                self.update_download(&d).await;
+            }
+        }
+
+        // Promote downloads that were moved into top N, limited to available slots
+        let active_now = self.active_download_count().await;
+        let slots = max_concurrent.saturating_sub(active_now);
+        for id in to_start.into_iter().take(slots) {
+            // Resume sequentially to avoid race conditions with displacement
+            self.resume_download(&id).await;
+        }
     }
 
     pub async fn remove(&self, id: &str) {
@@ -465,11 +586,11 @@ impl ManagerState {
             return;
         }
 
-        // If at capacity, queue the oldest active download to make room
+        // If at capacity, queue the lowest-priority active download to make room
         let max_concurrent = self.settings.read().await.max_concurrent as usize;
         let active = self.active_download_count().await;
         if active >= max_concurrent {
-            let oldest_active_id = {
+            let lowest_priority_id = {
                 let downloads = self.downloads.read().await;
                 let mut active_list: Vec<_> = downloads
                     .values()
@@ -479,12 +600,12 @@ impl ManagerState {
                                 || d.status == DownloadStatus::Seeding)
                     })
                     .collect();
-                active_list.sort_by_key(|d| d.created_at);
-                active_list.first().map(|d| d.id.clone())
+                active_list.sort_by_key(|d| d.position);
+                active_list.last().map(|d| d.id.clone())
             };
-            if let Some(oldest_id) = oldest_active_id {
+            if let Some(oldest_id) = lowest_priority_id {
                 tracing::info!(
-                    "Queue full: displacing oldest active download {} to make room for {}",
+                    "Queue full: displacing lowest-priority active download {} to make room for {}",
                     oldest_id,
                     id
                 );

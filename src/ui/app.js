@@ -5,6 +5,8 @@ var lastDownloads = [];
 var openMenuId = null;
 var openMoreMenuId = null;
 var expandedId = null;
+var dragSrcId = null;
+var isDragging = false;
 
 // ─── Mobile Sidebar ─────────────────────────────────
 
@@ -267,21 +269,12 @@ function showProfile() {
 // ─── Filter & Detail ────────────────────────────────
 
 function sortDownloads(downloads) {
-  var statusOrder = {
-    Downloading: 0,
-    Seeding: 1,
-    Queued: 2,
-    Paused: 3,
-    Stopped: 4,
-    Failed: 5,
-    Completed: 6,
-  };
   return downloads.slice().sort(function (a, b) {
-    var oa = statusOrder[a.status] !== undefined ? statusOrder[a.status] : 99;
-    var ob = statusOrder[b.status] !== undefined ? statusOrder[b.status] : 99;
-    if (oa !== ob) return oa - ob;
-    // Within same status, newest first
-    return new Date(b.created_at) - new Date(a.created_at);
+    // Completed page: sort by completed_at (newest first), not position
+    if (currentPage === 'completed') {
+      return new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at);
+    }
+    return (a.position || 0) - (b.position || 0);
   });
 }
 
@@ -299,7 +292,7 @@ function getPageDownloads(downloads) {
 }
 
 function toggleDetail(id, event) {
-  if (event.target.closest('button') || event.target.closest('.actions') || event.target.closest('.delete-dropdown') || event.target.closest('.more-dropdown')) {
+  if (event.target.closest('button') || event.target.closest('.actions') || event.target.closest('.delete-dropdown') || event.target.closest('.more-dropdown') || event.target.closest('.drag-handle')) {
     return;
   }
   if (expandedId === id) {
@@ -512,8 +505,16 @@ function buildDownloadItem(d) {
 
   var isExpanded = (expandedId === d.id);
 
-  return '<div class="download-item ' + statusClass + '" data-id="' + safeId + '" onclick="toggleDetail(\'' + safeId + '\', event)">'
+  var isCompleted = d.status === 'Completed';
+  return '<div class="download-item ' + statusClass + '" data-id="' + safeId + '"'
+    + (isCompleted ? '' : ' draggable="true"')
+    + ' onclick="toggleDetail(\'' + safeId + '\', event)">'
     + '<div class="download-row">'
+    + (isCompleted ? '' : '<div class="drag-handle" title="Drag to reorder">'
+    + '<svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">'
+    + '<circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="8" r="1.5"/><circle cx="4" cy="13" r="1.5"/>'
+    + '<circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>'
+    + '</svg></div>')
     + '<div class="protocol-icon">' + protocolIcon + '</div>'
     + '<div class="download-info">'
     + '<div class="download-name">' + safeName + '</div>'
@@ -584,6 +585,263 @@ function buildDownloadItem(d) {
     + '</div>';
 }
 
+// ─── Drag & Drop Reorder (Desktop + Mobile Touch) ────
+
+function bindDragEvents() {
+  if (currentPage !== 'downloads') return;
+  var items = document.querySelectorAll('#downloads-list .download-item[draggable="true"]');
+  items.forEach(function (el) {
+    // Desktop HTML5 drag events
+    el.addEventListener('dragstart', onDragStart);
+    el.addEventListener('dragend', onDragEnd);
+    el.addEventListener('dragover', onDragOver);
+    el.addEventListener('dragleave', onDragLeave);
+    el.addEventListener('drop', onDrop);
+    // Mobile touch events — only on the drag handle to avoid blocking scroll
+    var handle = el.querySelector('.drag-handle');
+    if (handle) {
+      handle.addEventListener('touchstart', onTouchStart, { passive: false });
+    }
+  });
+}
+
+// ─── Desktop Drag ────────────────────────────────────
+
+function onDragStart(e) {
+  if (e.target.closest('button') || e.target.closest('input') || e.target.closest('select') || e.target.closest('.actions')) {
+    e.preventDefault();
+    return;
+  }
+  dragSrcId = this.getAttribute('data-id');
+  isDragging = true;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragSrcId);
+  var self = this;
+  setTimeout(function () { self.classList.add('dragging'); }, 0);
+}
+
+function onDragEnd() {
+  isDragging = false;
+  dragSrcId = null;
+  clearDragClasses();
+}
+
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  var targetId = this.getAttribute('data-id');
+  if (targetId === dragSrcId) return;
+  showDropIndicator(this, e.clientY);
+}
+
+function onDragLeave(e) {
+  if (!this.contains(e.relatedTarget)) {
+    this.classList.remove('drag-over-top', 'drag-over-bottom');
+  }
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  finishDrop(this, e.clientY);
+}
+
+// ─── Mobile Touch Drag ──────────────────────────────
+
+var touchDragEl = null;
+var touchClone = null;
+var touchScrollTimer = null;
+
+function onTouchStart(e) {
+  var item = this.closest('.download-item');
+  if (!item) return;
+
+  // Require a brief hold to differentiate from scroll
+  var startY = e.touches[0].clientY;
+  var startX = e.touches[0].clientX;
+  var moved = false;
+  var holdTimer = setTimeout(function () {
+    beginTouchDrag(item, startY);
+  }, 150);
+
+  function onEarlyMove(ev) {
+    var dx = ev.touches[0].clientX - startX;
+    var dy = ev.touches[0].clientY - startY;
+    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+      // Moved too early — this is a scroll, not a drag
+      clearTimeout(holdTimer);
+      cleanup();
+    }
+  }
+  function cleanup() {
+    document.removeEventListener('touchmove', onEarlyMove);
+    document.removeEventListener('touchend', onEarlyCancel);
+  }
+  function onEarlyCancel() {
+    clearTimeout(holdTimer);
+    cleanup();
+  }
+
+  document.addEventListener('touchmove', onEarlyMove, { passive: true });
+  document.addEventListener('touchend', onEarlyCancel, { once: true });
+}
+
+function beginTouchDrag(item, startY) {
+  dragSrcId = item.getAttribute('data-id');
+  isDragging = true;
+  touchDragEl = item;
+  item.classList.add('dragging');
+
+  // Create a floating clone for visual feedback
+  touchClone = item.cloneNode(true);
+  touchClone.classList.add('touch-drag-clone');
+  touchClone.style.width = item.offsetWidth + 'px';
+  touchClone.style.top = (item.getBoundingClientRect().top) + 'px';
+  touchClone.style.left = item.getBoundingClientRect().left + 'px';
+  document.body.appendChild(touchClone);
+
+  document.addEventListener('touchmove', onTouchMove, { passive: false });
+  document.addEventListener('touchend', onTouchEnd, { once: true });
+}
+
+function onTouchMove(e) {
+  e.preventDefault();
+  var y = e.touches[0].clientY;
+
+  // Move the floating clone
+  if (touchClone) {
+    touchClone.style.top = (y - touchClone.offsetHeight / 2) + 'px';
+  }
+
+  // Auto-scroll near edges
+  clearTimeout(touchScrollTimer);
+  var edgeZone = 60;
+  if (y < edgeZone) {
+    window.scrollBy(0, -8);
+    touchScrollTimer = setTimeout(function () { onTouchMove(e); }, 16);
+  } else if (y > window.innerHeight - edgeZone) {
+    window.scrollBy(0, 8);
+    touchScrollTimer = setTimeout(function () { onTouchMove(e); }, 16);
+  }
+
+  // Find the element under the touch point (exclude the clone)
+  if (touchClone) touchClone.style.pointerEvents = 'none';
+  var target = document.elementFromPoint(e.touches[0].clientX, y);
+  if (touchClone) touchClone.style.pointerEvents = '';
+
+  if (target) {
+    var targetItem = target.closest('.download-item[draggable="true"]');
+    if (targetItem && targetItem.getAttribute('data-id') !== dragSrcId) {
+      showDropIndicator(targetItem, y);
+    }
+  }
+}
+
+function onTouchEnd(e) {
+  document.removeEventListener('touchmove', onTouchMove);
+  clearTimeout(touchScrollTimer);
+
+  // Find target under last touch position
+  var y = e.changedTouches[0].clientY;
+  if (touchClone) touchClone.style.pointerEvents = 'none';
+  var target = document.elementFromPoint(e.changedTouches[0].clientX, y);
+  if (touchClone) touchClone.style.pointerEvents = '';
+
+  // Remove clone
+  if (touchClone && touchClone.parentNode) {
+    touchClone.parentNode.removeChild(touchClone);
+  }
+  touchClone = null;
+  touchDragEl = null;
+
+  if (target) {
+    var targetItem = target.closest('.download-item[draggable="true"]');
+    if (targetItem && targetItem.getAttribute('data-id') !== dragSrcId) {
+      finishDrop(targetItem, y);
+      clearDragClasses();
+      return;
+    }
+  }
+
+  // No valid drop target — cancel
+  isDragging = false;
+  dragSrcId = null;
+  clearDragClasses();
+}
+
+// ─── Shared Helpers ─────────────────────────────────
+
+function clearDragClasses() {
+  document.querySelectorAll('.download-item').forEach(function (el) {
+    el.classList.remove('drag-over-top', 'drag-over-bottom', 'dragging');
+  });
+}
+
+function showDropIndicator(targetEl, clientY) {
+  var targetId = targetEl.getAttribute('data-id');
+  var rect = targetEl.getBoundingClientRect();
+  var isAbove = clientY < rect.top + rect.height / 2;
+
+  document.querySelectorAll('.download-item.drag-over-top, .download-item.drag-over-bottom').forEach(function (el) {
+    if (el.getAttribute('data-id') !== targetId) {
+      el.classList.remove('drag-over-top', 'drag-over-bottom');
+    }
+  });
+  targetEl.classList.remove('drag-over-top', 'drag-over-bottom');
+  targetEl.classList.add(isAbove ? 'drag-over-top' : 'drag-over-bottom');
+}
+
+function finishDrop(targetEl, clientY) {
+  var targetId = targetEl.getAttribute('data-id');
+  if (!dragSrcId || dragSrcId === targetId) return;
+
+  var container = document.getElementById('downloads-list');
+  var items = Array.from(container.querySelectorAll('.download-item'));
+  var ids = items.map(function (el) { return el.getAttribute('data-id'); });
+
+  var srcIdx = ids.indexOf(dragSrcId);
+  var dstIdx = ids.indexOf(targetId);
+  if (srcIdx === -1 || dstIdx === -1) return;
+
+  var rect = targetEl.getBoundingClientRect();
+  var isAbove = clientY < rect.top + rect.height / 2;
+
+  ids.splice(srcIdx, 1);
+  var insertIdx = ids.indexOf(targetId);
+  if (!isAbove) insertIdx++;
+  ids.splice(insertIdx, 0, dragSrcId);
+
+  // Optimistically reorder the DOM
+  var srcEl = container.querySelector('[data-id="' + CSS.escape(dragSrcId) + '"]');
+  var refEl = container.querySelector('[data-id="' + CSS.escape(targetId) + '"]');
+  if (srcEl && refEl) {
+    if (isAbove) {
+      container.insertBefore(srcEl, refEl);
+    } else {
+      container.insertBefore(srcEl, refEl.nextSibling);
+    }
+  }
+
+  isDragging = false;
+  dragSrcId = null;
+  sendReorder(ids);
+}
+
+var reorderTimer = null;
+function sendReorder(orderedIds) {
+  clearTimeout(reorderTimer);
+  reorderTimer = setTimeout(async function () {
+    try {
+      await apiRequest('/downloads/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ ids: orderedIds }),
+      });
+    } catch (e) {
+      showToast('error', 'Reorder failed', e.message || 'Could not reorder downloads');
+    }
+  }, 200);
+}
+
 function renderDownloads(downloads) {
   var container = document.getElementById("downloads-list");
   if (!container) return;
@@ -607,13 +865,13 @@ function renderDownloads(downloads) {
     return;
   }
 
-  // Check if the set of download IDs or their statuses changed — if so, full rebuild
-  var currentIds = filtered.map(function (d) { return d.id + ':' + d.status; }).join(',');
-  var prevIds = lastDownloads.map(function (d) { return d.id + ':' + d.status; }).join(',');
+  // Check if the set of download IDs, statuses, or positions changed — if so, full rebuild
+  var currentIds = filtered.map(function (d) { return d.id + ':' + d.status + ':' + (d.position || 0); }).join(',');
+  var prevIds = lastDownloads.map(function (d) { return d.id + ':' + d.status + ':' + (d.position || 0); }).join(',');
 
   if (currentIds !== prevIds) {
-    // Skip full rebuild if a menu is open (user is interacting)
-    if (openMenuId || openMoreMenuId) {
+    // Skip full rebuild if a menu is open or user is dragging
+    if (openMenuId || openMoreMenuId || isDragging) {
       lastDownloads = filtered;
       return;
     }
@@ -625,6 +883,7 @@ function renderDownloads(downloads) {
       var detail = document.getElementById('detail-' + expandedId);
       if (detail) detail.classList.add('open');
     }
+    bindDragEvents();
   } else {
     // Incremental update — only update changing values in-place
     filtered.forEach(function (d) {

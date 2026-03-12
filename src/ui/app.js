@@ -126,7 +126,7 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function safeRender(container, html) {
+function renderHtml(container, html) {
   container.innerHTML = html;
 }
 
@@ -171,7 +171,6 @@ function showCompleted() {
   return (
     '<div class="page-header">' +
     "<h1>Completed</h1>" +
-    "<p>Finished downloads</p>" +
     "</div>" +
     '<div id="downloads-list"></div>'
   );
@@ -184,7 +183,6 @@ function showHistory() {
     '<div class="page-header history-header">' +
     "<div>" +
     "<h1>History</h1>" +
-    "<p>All downloads</p>" +
     "</div>" +
     '<div class="history-actions" id="history-actions">' +
     '<button class="btn-danger-outline btn-small" id="delete-selected-btn" style="display:none" onclick="deleteSelectedHistory()">Delete Selected</button>' +
@@ -199,7 +197,6 @@ function showSettings() {
   return (
     '<div class="page-header">' +
     "<h1>Settings</h1>" +
-    "<p>Configure your download manager</p>" +
     "</div>" +
     '<form id="settings-form" class="settings-grid">' +
     '<div class="form-field">' +
@@ -213,10 +210,12 @@ function showSettings() {
     '<div class="form-field">' +
     '<label for="settings-max-concurrent">Max Concurrent Downloads</label>' +
     '<input type="number" id="settings-max-concurrent" value="3" min="1" max="10">' +
+    '<span class="hint">Additional downloads are queued and start automatically</span>' +
     "</div>" +
     '<div class="form-field">' +
     '<label for="settings-connections">Max Connections Per File</label>' +
     '<input type="number" id="settings-connections" value="4" min="1" max="16">' +
+    '<span class="hint">More connections can improve speed for HTTP downloads</span>' +
     "</div>" +
     '<div class="settings-actions">' +
     '<button type="submit" class="btn-primary">Save Settings</button>' +
@@ -230,7 +229,6 @@ function showProfile() {
   return (
     '<div class="page-header">' +
     "<h1>Profile</h1>" +
-    "<p>Manage your account settings</p>" +
     "</div>" +
     '<div class="profile-section">' +
     '<div class="form-field">' +
@@ -513,19 +511,19 @@ function buildDownloadItem(d) {
     + '<div class="actions">'
     + actions
     + (isTorrent ? '<div class="more-dropdown">'
-      + '<button class="more-btn" onclick="toggleMoreMenu(event, \'' + safeId + '\')" title="More options" aria-label="More options" aria-haspopup="true">'
+      + '<button class="more-btn" id="more-btn-' + safeId + '" onclick="toggleMoreMenu(event, \'' + safeId + '\')" title="More options" aria-label="More options" aria-haspopup="true" aria-expanded="false">'
       + '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">'
       + '<circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>'
       + '</svg>'
       + '</button>'
-      + '<div class="more-menu" id="more-menu-' + safeId + '">'
-      + '<button onclick="copyMagnet(event, \'' + safeId + '\')">'
+      + '<div class="more-menu" id="more-menu-' + safeId + '" role="menu">'
+      + '<button role="menuitem" onclick="copyMagnet(event, \'' + safeId + '\')">'
       + 'Copy Magnet'
       + '</button>'
-      + '<button onclick="downloadTorrent(event, \'' + safeId + '\')">'
+      + '<button role="menuitem" onclick="downloadTorrent(event, \'' + safeId + '\')">'
       + 'Download .torrent'
       + '</button>'
-      + (canMirror ? '<button onclick="showMirrorForm(event, \'' + safeId + '\')">'
+      + (canMirror ? '<button role="menuitem" onclick="showMirrorForm(event, \'' + safeId + '\')">'
       + 'Add HTTP Mirror'
       + '</button>' : '')
       + '</div>'
@@ -534,27 +532,27 @@ function buildDownloadItem(d) {
       + '<input type="text" id="mirror-url-' + safeId + '" placeholder="HTTP/HTTPS mirror URL" class="mirror-input">'
       + '<label class="mirror-checkbox"><input type="checkbox" id="mirror-seed-' + safeId + '" checked> Keep seeding</label>'
       + '<div class="mirror-actions">'
-      + '<button class="mirror-start-btn" onclick="startMirror(event, \'' + safeId + '\')">Start</button>'
-      + '<button class="mirror-cancel-btn" onclick="hideMirrorForm(\'' + safeId + '\')">Cancel</button>'
+      + '<button class="btn-primary btn-small" onclick="startMirror(event, \'' + safeId + '\')">Start</button>'
+      + '<button class="btn-ghost btn-small" onclick="hideMirrorForm(\'' + safeId + '\')">Cancel</button>'
       + '</div>'
       + '</div>' : '')
       : '')
     + (isAdmin ? '<div class="delete-dropdown">'
-      + '<button class="delete-btn" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove" aria-label="Remove download" aria-haspopup="true">'
+      + '<button class="delete-btn" id="delete-btn-' + safeId + '" onclick="toggleDeleteMenu(event, \'' + safeId + '\')" title="Remove" aria-label="Remove download" aria-haspopup="true" aria-expanded="false">'
       + '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>'
       + '</svg>'
       + '</button>'
       + '<div class="delete-menu" id="delete-menu-' + safeId + '" role="menu">'
-      + '<button onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
-      + '<button class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
+      + '<button role="menuitem" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', false)">Remove from list</button>'
+      + '<button role="menuitem" class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
       + '</div>'
       + '</div>' : '')
     + '</div>'
     + '</div>'
     + '<div class="download-progress">'
     + '<div class="progress-bar" role="progressbar" aria-valuenow="' + progress + '" aria-valuemin="0" aria-valuemax="100" aria-label="Download progress">'
-    + '<div class="progress-fill ' + progressClass + '" style="width: ' + progress + '%"></div>'
+    + '<div class="progress-fill ' + progressClass + '" style="transform: scaleX(' + (progress / 100) + ')"></div>'
     + '</div>'
     + '</div>'
     + '<div class="download-detail' + (isExpanded ? ' open' : '') + '" id="detail-' + safeId + '">'
@@ -830,19 +828,27 @@ function renderDownloads(downloads) {
 
   var filtered = getPageDownloads(downloads);
 
-  var emptyMsg = currentPage === 'completed'
-    ? '<p>No completed downloads</p><span>Finished downloads will appear here</span>'
-    : '<p>No active downloads</p><span>Add a URL above to start downloading</span>';
-
   if (filtered.length === 0) {
-    safeRender(container, '<div class="empty-state">'
-      + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-      + '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>'
-      + '<polyline points="7 10 12 15 17 10"/>'
-      + '<line x1="12" y1="15" x2="12" y2="3"/>'
-      + '</svg>'
-      + emptyMsg
-      + '</div>');
+    if (currentPage === 'completed') {
+      renderHtml(container, '<div class="empty-state">'
+        + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        + '<path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>'
+        + '<polyline points="22 4 12 14.01 9 11.01"/>'
+        + '</svg>'
+        + '<p>No completed downloads</p>'
+        + '<span>Downloads move here once they finish</span>'
+        + '</div>');
+    } else {
+      renderHtml(container, '<div class="empty-state">'
+        + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+        + '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>'
+        + '<polyline points="7 10 12 15 17 10"/>'
+        + '<line x1="12" y1="15" x2="12" y2="3"/>'
+        + '</svg>'
+        + '<p>No active downloads</p>'
+        + '<span>Paste a URL above to start &mdash; HTTP, magnet links, and .torrent files are supported</span>'
+        + '</div>');
+    }
     lastDownloads = filtered;
     return;
   }
@@ -859,7 +865,7 @@ function renderDownloads(downloads) {
     }
     // Full rebuild
     var html = filtered.map(buildDownloadItem).join('');
-    safeRender(container, html);
+    renderHtml(container, html);
     // Restore expanded detail
     if (expandedId !== null) {
       var detail = document.getElementById('detail-' + expandedId);
@@ -891,7 +897,7 @@ function renderDownloads(downloads) {
 
       // Update progress bar width
       var fill = el.querySelector('.progress-fill');
-      if (fill) fill.style.width = progress + '%';
+      if (fill) fill.style.transform = 'scaleX(' + (progress / 100) + ')';
 
       // Update metrics
       var metricsSpans = el.querySelectorAll('.download-metrics > span');
@@ -1021,7 +1027,7 @@ async function loadProfile() {
       ).toLocaleDateString();
     }
   } catch (e) {
-    console.error("Failed to load profile:", e);
+    showToast("error", "Failed to load profile", e.message);
   }
 }
 
@@ -1035,11 +1041,11 @@ async function changePassword() {
     return;
   }
 
-  if (newPassword.length < 6) {
+  if (newPassword.length < 8) {
     showToast(
       "error",
       "Weak password",
-      "Password must be at least 6 characters",
+      "Password must be at least 8 characters",
     );
     return;
   }
@@ -1085,7 +1091,7 @@ async function loadSettings() {
       loadUserManagement();
     }
   } catch (e) {
-    console.error("Failed to load settings:", e);
+    showToast("error", "Failed to load settings", e.message);
   }
 }
 
@@ -1173,7 +1179,7 @@ async function loadUserManagement() {
       });
     }
   } catch (e) {
-    console.error("Failed to load user management:", e);
+    showToast("error", "Failed to load users", e.message);
   }
 }
 
@@ -1187,11 +1193,11 @@ async function createUser() {
     return;
   }
 
-  if (password.length < 6) {
+  if (password.length < 8) {
     showToast(
       "error",
       "Weak password",
-      "Password must be at least 6 characters",
+      "Password must be at least 8 characters",
     );
     return;
   }
@@ -1241,7 +1247,7 @@ async function loadHistory() {
     var history = await apiRequest("/history");
     renderHistory(history);
   } catch (e) {
-    console.error("Failed to load history:", e);
+    showToast("error", "Failed to load history", e.message);
   }
 }
 
@@ -1250,7 +1256,7 @@ function renderHistory(items) {
   if (!container) return;
 
   if (!items || items.length === 0) {
-    safeRender(
+    renderHtml(
       container,
       '<div class="empty-state">' +
       '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
@@ -1258,7 +1264,7 @@ function renderHistory(items) {
       '<polyline points="12 6 12 12 16 14"/>' +
       "</svg>" +
       "<p>No history yet</p>" +
-      "<span>Downloads will appear here</span>" +
+      "<span>Every download is logged here for reference, even after files are removed</span>" +
       "</div>",
     );
     var actionsDiv = document.getElementById("history-actions");
@@ -1339,7 +1345,7 @@ function renderHistory(items) {
     })
     .join("");
 
-  safeRender(container, html);
+  renderHtml(container, html);
   updateSelectedBtn();
 }
 
@@ -1385,11 +1391,11 @@ async function deleteSelectedHistory() {
   var ids = Array.from(selectedHistoryIds);
   if (ids.length === 0) return;
   try {
-    for (var i = 0; i < ids.length; i++) {
-      await apiRequest("/history/" + encodeURIComponent(ids[i]), {
+    await Promise.all(ids.map(function (id) {
+      return apiRequest("/history/" + encodeURIComponent(id), {
         method: "DELETE",
       });
-    }
+    }));
     selectedHistoryIds.clear();
     showToast(
       "success",
@@ -1418,6 +1424,8 @@ async function clearAllHistory() {
 // ─── Actions ────────────────────────────────────────
 
 async function addDownload(url) {
+  var btn = document.querySelector('#add-download-form .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = "Adding\u2026"; }
   try {
     await apiRequest("/downloads", {
       method: "POST",
@@ -1427,50 +1435,56 @@ async function addDownload(url) {
     loadDownloads();
   } catch (e) {
     showToast("error", "Failed to add download", e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Download"; }
   }
+}
+
+function closeAllMenus() {
+  document.querySelectorAll('.delete-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  document.querySelectorAll('.delete-btn[aria-expanded="true"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  document.querySelectorAll('.more-btn[aria-expanded="true"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+  openMenuId = null;
+  openMoreMenuId = null;
 }
 
 function toggleDeleteMenu(event, id) {
   event.stopPropagation();
-  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
-  openMoreMenuId = null;
-  // Close all other menus
-  document.querySelectorAll('.delete-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  closeAllMenus();
 
   if (openMenuId === id) {
-    openMenuId = null;
     return;
   }
 
   var menu = document.getElementById("delete-menu-" + id);
+  var btn = document.getElementById("delete-btn-" + id);
   if (menu) {
     menu.classList.add("show");
+    if (btn) btn.setAttribute('aria-expanded', 'true');
     openMenuId = id;
   }
 }
 
 function toggleMoreMenu(event, id) {
   event.stopPropagation();
-  // Close delete menus
-  document.querySelectorAll('.delete-menu.show').forEach(function (m) { m.classList.remove('show'); });
-  openMenuId = null;
-  // Toggle this more menu
-  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  closeAllMenus();
+
   if (openMoreMenuId === id) {
-    openMoreMenuId = null;
     return;
   }
   var menu = document.getElementById('more-menu-' + id);
+  var btn = document.getElementById('more-btn-' + id);
   if (menu) {
     menu.classList.add('show');
+    if (btn) btn.setAttribute('aria-expanded', 'true');
     openMoreMenuId = id;
   }
 }
 
 async function copyMagnet(event, id) {
   event.stopPropagation();
-  openMoreMenuId = null;
-  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  closeAllMenus();
 
   var d = lastDownloads.find(function (x) { return x.id === id; });
   var magnetUri = '';
@@ -1506,8 +1520,7 @@ async function copyMagnet(event, id) {
 async function downloadTorrent(event, id) {
   event.preventDefault();
   event.stopPropagation();
-  openMoreMenuId = null;
-  document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+  closeAllMenus();
   try {
     var d = lastDownloads.find(function (x) { return x.id === id; });
     var suggestedName = (d && d.filename ? d.filename : 'torrent') + '.torrent';
@@ -1538,11 +1551,7 @@ async function downloadTorrent(event, id) {
 
 function showMirrorForm(event, id) {
   event.stopPropagation();
-  // Close all menus
-  document.querySelectorAll('.more-menu').forEach(function(m) { m.classList.remove('open'); });
-  document.querySelectorAll('.delete-menu').forEach(function(m) { m.classList.remove('open'); });
-  openMenuId = null;
-  openMoreMenuId = null;
+  closeAllMenus();
   var form = document.getElementById('mirror-form-' + CSS.escape(id));
   if (form) {
     form.style.display = form.style.display === 'none' ? 'block' : 'none';
@@ -1583,7 +1592,7 @@ function startMirror(event, id) {
   })
   .then(function() {
     hideMirrorForm(id);
-    refreshDownloads();
+    loadDownloads();
   })
   .catch(function(err) {
     showToast('error', 'Mirror failed', err.message || 'Could not start HTTP mirror');
@@ -1615,41 +1624,21 @@ async function deleteDownload(id, deleteFiles) {
   }
 }
 
-async function pauseDownload(id) {
+async function downloadAction(id, action) {
   try {
-    await apiRequest("/downloads/" + encodeURIComponent(id) + "/pause", {
+    await apiRequest("/downloads/" + encodeURIComponent(id) + "/" + action, {
       method: "POST",
     });
     lastDownloads = [];
     loadDownloads();
   } catch (e) {
-    showToast("error", "Failed to pause", e.message);
+    showToast("error", "Failed to " + action, e.message);
   }
 }
 
-async function cancelDownload(id) {
-  try {
-    await apiRequest("/downloads/" + encodeURIComponent(id) + "/cancel", {
-      method: "POST",
-    });
-    lastDownloads = [];
-    loadDownloads();
-  } catch (e) {
-    showToast("error", "Failed to cancel", e.message);
-  }
-}
-
-async function resumeDownload(id) {
-  try {
-    await apiRequest("/downloads/" + encodeURIComponent(id) + "/resume", {
-      method: "POST",
-    });
-    lastDownloads = [];
-    loadDownloads();
-  } catch (e) {
-    showToast("error", "Failed to resume", e.message);
-  }
-}
+function pauseDownload(id) { downloadAction(id, "pause"); }
+function cancelDownload(id) { downloadAction(id, "cancel"); }
+function resumeDownload(id) { downloadAction(id, "resume"); }
 
 var resumeAllInProgress = false;
 
@@ -1695,6 +1684,9 @@ function showFolderBrowser(path) {
   modal.className = "modal";
   modal.id = "folder-browser-modal";
   modal.style.display = "flex";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.setAttribute("aria-label", "Select folder");
 
   var backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
@@ -1761,10 +1753,18 @@ function closeFolderBrowser() {
   }
 }
 
-function createFolderItem(label, iconSvg, onDblClick) {
+function createFolderItem(label, iconSvg, onActivate) {
   var div = document.createElement("div");
   div.className = "folder-item" + (label === ".." ? " folder-parent" : "");
-  div.ondblclick = onDblClick;
+  div.tabIndex = 0;
+  div.setAttribute("role", "button");
+  div.onclick = onActivate;
+  div.onkeydown = function (e) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onActivate();
+    }
+  };
   var iconSpan = document.createElement("span");
   iconSpan.className = "folder-icon";
   iconSpan.textContent = label === ".." ? "\u2190" : "\uD83D\uDCC1";
@@ -1904,7 +1904,11 @@ function navigate(hash) {
   lastDownloads = [];
   expandedId = null;
   selectedHistoryIds.clear();
-  safeRender(document.getElementById("main-content"), render());
+  var main = document.getElementById("main-content");
+  main.classList.remove("page-enter");
+  void main.offsetHeight;
+  renderHtml(main, render());
+  main.classList.add("page-enter");
 
   // Close mobile sidebar on navigation
   closeSidebar();
@@ -1988,6 +1992,7 @@ function logout() {
   if (subtitle) subtitle.textContent = "Sign in to your download manager";
 
   document.getElementById("login-modal").style.display = "flex";
+  document.getElementById("login-username").focus();
 }
 
 // ─── Init ───────────────────────────────────────────
@@ -2009,6 +2014,9 @@ async function init() {
       var username = document.getElementById("login-username").value;
       var password = document.getElementById("login-password").value;
       var btn = loginForm.querySelector('button[type="submit"]');
+      var btnLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = btn.dataset.mode === "register" ? "Creating\u2026" : "Signing in\u2026";
 
       if (btn.dataset.mode === "register") {
         // First user registration
@@ -2018,6 +2026,8 @@ async function init() {
             "Weak password",
             "Password must be at least 8 characters",
           );
+          btn.disabled = false;
+          btn.textContent = btnLabel;
           return;
         }
         try {
@@ -2032,6 +2042,7 @@ async function init() {
             document.getElementById("login-modal").style.display = "none";
             await updateUserInformation();
             startApp();
+            showToast("success", "Welcome to DLoad", "Paste any URL, magnet link, or .torrent to start downloading");
           } else {
             showToast("error", "Registration failed", result.error);
           }
@@ -2061,11 +2072,14 @@ async function init() {
           showToast("error", "Login failed", e.message);
         }
       }
+      btn.disabled = false;
+      btn.textContent = btnLabel;
     });
   }
 
   if (!token) {
     document.getElementById("login-modal").style.display = "flex";
+    document.getElementById("login-username").focus();
     // Check if this is the first user
     checkFirstUser().then(function (isFirst) {
       if (isFirst) {
@@ -2105,6 +2119,19 @@ async function startApp() {
 
   if (refreshInterval) clearInterval(refreshInterval);
   refreshInterval = setInterval(loadDownloads, 1000);
+
+  // Pause polling when tab is hidden to save battery/bandwidth
+  if (!window._visibilityListenerAdded) {
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
+      } else {
+        loadDownloads();
+        if (!refreshInterval) { refreshInterval = setInterval(loadDownloads, 1000); }
+      }
+    });
+    window._visibilityListenerAdded = true;
+  }
 }
 
 async function updateUserInformation() {
@@ -2132,19 +2159,52 @@ async function updateUserInformation() {
       window.currentUserId = result.user.id;
     }
   } catch (e) {
-    console.error("Failed to update user information:", e);
+    // Silent failure — user info will refresh on next navigation
   }
 }
 
-// Close delete menus when clicking outside
+// Close menus when clicking outside
 document.addEventListener('click', function (e) {
-  if (!e.target.closest('.delete-dropdown')) {
+  if (!e.target.closest('.delete-dropdown') && !e.target.closest('.more-dropdown')) {
+    closeAllMenus();
+  } else if (!e.target.closest('.delete-dropdown')) {
     document.querySelectorAll('.delete-menu.show').forEach(function (m) { m.classList.remove('show'); });
+    document.querySelectorAll('.delete-btn[aria-expanded="true"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
     openMenuId = null;
-  }
-  if (!e.target.closest('.more-dropdown')) {
+  } else if (!e.target.closest('.more-dropdown')) {
     document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
+    document.querySelectorAll('.more-btn[aria-expanded="true"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
     openMoreMenuId = null;
+  }
+});
+
+// Close menus and modals on Escape, trap focus in login modal
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') {
+    if (openMenuId || openMoreMenuId) {
+      var focusBtn = openMenuId
+        ? document.getElementById('delete-btn-' + openMenuId)
+        : document.getElementById('more-btn-' + openMoreMenuId);
+      closeAllMenus();
+      if (focusBtn) focusBtn.focus();
+      return;
+    }
+    if (folderBrowserModal) {
+      closeFolderBrowser();
+    }
+  }
+  // Focus trap for login modal
+  var loginModal = document.getElementById('login-modal');
+  if (loginModal && loginModal.style.display === 'flex' && e.key === 'Tab') {
+    var focusable = loginModal.querySelectorAll('input:not([type="hidden"]), button, [tabindex]:not([tabindex="-1"])');
+    if (focusable.length === 0) return;
+    var first = focusable[0];
+    var last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+    } else {
+      if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
   }
 });
 

@@ -1,0 +1,8 @@
+{
+  "name": "DLoad",
+  "short_name": "DLoad",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c0c0a",
+  "theme_color": "#d4a24e"
+}

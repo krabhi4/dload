@@ -20,6 +20,8 @@ mod worker;
 static INDEX_HTML: &str = include_str!("ui/index.html");
 static STYLE_CSS: &str = include_str!("ui/style.css");
 static APP_JS: &str = include_str!("ui/app.js");
+static FAVICON_SVG: &str = include_str!("ui/favicon.svg");
+static MANIFEST_JSON: &str = include_str!("ui/manifest.json");
 
 #[tokio::main]
 async fn main() {
@@ -96,6 +98,8 @@ async fn main() {
         .route("/", get(index))
         .route("/ui/style.css", get(style_css))
         .route("/ui/app.js", get(app_js))
+        .route("/ui/favicon.svg", get(favicon_svg))
+        .route("/manifest.json", get(manifest_json))
         .merge(api::router(manager.clone()))
         .merge(api::qbit_compat::router(manager, sessions))
         .layer(cors)
@@ -125,6 +129,22 @@ async fn app_js() -> impl IntoResponse {
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/javascript")],
         APP_JS,
+    )
+}
+
+async fn favicon_svg() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        FAVICON_SVG,
+    )
+}
+
+async fn manifest_json() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        MANIFEST_JSON,
     )
 }
 

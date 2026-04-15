@@ -428,39 +428,76 @@ async fn download_range_inner(
 }
 
 fn extract_filename_from_disposition(header: &str) -> Option<String> {
-    for part in header.split(';') {
-        let part = part.trim();
-        if let Some(rest) = part.strip_prefix("filename=") {
-            let name = rest.trim_matches('"').trim_matches('\'');
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
-        } else if let Some(rest) = part.strip_prefix("filename*=") {
-            if let Some(fname) = rest.split("''").nth(1) {
-                let decoded = urlencoding_decode(fname);
-                if !decoded.is_empty() {
-                    return Some(decoded);
+    let parsed = content_disposition::parse_content_disposition(header);
+
+    // The content_disposition crate decodes `filename*` into the "filename" key only
+    // when no plain "filename" key exists. When both are present `filename*` stays
+    // raw — decode it here so RFC 6266 §4.1 precedence is honored.
+    if let Some(raw_star) = parsed.params.get("filename*") {
+        let parts: Vec<&str> = raw_star.splitn(3, '\'').collect();
+        if parts.len() == 3 {
+            let charset = parts[0].to_uppercase();
+            if charset == "UTF-8" || charset.is_empty() {
+                let decoded = rfc5987_percent_decode(parts[2]);
+                let s = String::from_utf8_lossy(&decoded).into_owned();
+                if !s.is_empty() {
+                    return Some(s);
                 }
             }
+            // Non-UTF-8 charsets fall through to the plain filename below.
         }
     }
-    None
+
+    parsed
+        .params
+        .get("filename")
+        .map(|name| unescape_quoted_pairs(name))
+        .filter(|s| !s.is_empty())
 }
 
-fn urlencoding_decode(s: &str) -> String {
-    let mut result = String::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
+fn rfc5987_percent_decode(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = bytes[i + 1];
+            let lo = bytes[i + 2];
+            if hi.is_ascii_hexdigit() && lo.is_ascii_hexdigit() {
+                out.push((hex_nibble(hi) << 4) | hex_nibble(lo));
+                i += 3;
+                continue;
             }
-        } else {
-            result.push(c);
         }
+        out.push(bytes[i]);
+        i += 1;
     }
-    result
+    out
+}
+
+fn hex_nibble(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        b'a'..=b'f' => b - b'a' + 10,
+        b'A'..=b'F' => b - b'A' + 10,
+        _ => 0,
+    }
+}
+
+fn unescape_quoted_pairs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                out.push(next);
+                chars.next();
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 async fn check_torrent_magic(path: &str) -> bool {

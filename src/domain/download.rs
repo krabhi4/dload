@@ -1,13 +1,25 @@
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+
+static RE_CONTROL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[\x00-\x1F\x7F]").expect("control regex"));
+static RE_BIDI: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[\u{202A}-\u{202E}\u{2066}-\u{2069}]").expect("bidi regex"));
+static RE_WIN_ILLEGAL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[<>:"|?*]"#).expect("win-illegal regex"));
+static RE_TRAILING_DOTS_SPACES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[. ]+$").expect("trailing dots/spaces regex"));
+static RE_RESERVED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..+)?$").expect("reserved regex")
+});
 
 /// Strip path traversal, null bytes, and dangerous characters from filenames.
 pub fn sanitize_filename(name: &str) -> String {
-    // URL-decode first (in case of %2F etc.)
     let decoded = urlencoding::decode(name).unwrap_or(std::borrow::Cow::Borrowed(name));
 
-    // Take only the last path component (strips ../ and absolute paths)
-    let base = decoded
+    let base: &str = decoded
         .rsplit('/')
         .next()
         .unwrap_or(&decoded)
@@ -15,20 +27,31 @@ pub fn sanitize_filename(name: &str) -> String {
         .next()
         .unwrap_or(&decoded);
 
-    // Remove null bytes, control characters
-    let cleaned: String = base
-        .chars()
-        .filter(|c| !c.is_control() && *c != '\0')
-        .collect();
+    // Preserve a single leading dot (e.g. `.gitignore`) but treat `..` etc. as
+    // path-traversal residue to be stripped in step 8.
+    let had_single_leading_dot = base.starts_with('.') && !base.starts_with("..");
 
-    // Remove leading dots (hidden files) and any remaining ..
-    let cleaned = cleaned.trim_start_matches('.').replace("..", "");
+    let s = RE_CONTROL.replace_all(base, "");
+    let s = RE_BIDI.replace_all(&s, "");
+    let s = RE_WIN_ILLEGAL.replace_all(&s, "_");
+    let s = s.trim();
+    let s = RE_TRAILING_DOTS_SPACES.replace_all(s, "").to_string();
 
-    if cleaned.is_empty() {
-        format!("download-{}", uuid::Uuid::new_v4())
+    let s = if had_single_leading_dot {
+        s
     } else {
-        cleaned
+        s.trim_start_matches('.').to_string()
+    };
+
+    if s.is_empty() || s == "." || s == ".." {
+        return format!("download-{}", uuid::Uuid::new_v4());
     }
+
+    if RE_RESERVED.is_match(&s) {
+        return format!("_{}", s);
+    }
+
+    s
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

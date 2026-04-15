@@ -706,6 +706,7 @@ dependencies = [
  "futures",
  "jsonwebtoken",
  "librqbit",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

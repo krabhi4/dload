@@ -161,7 +161,7 @@ impl HttpDownloader {
 
         self.active_conns.store(1, Ordering::Relaxed);
         let file = tokio::fs::File::create(&self.download.save_path).await?;
-        let mut writer = BufWriter::with_capacity(1024 * 1024, file);
+        let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
         let mut stream = response.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
@@ -363,7 +363,7 @@ async fn download_range_inner(
     file.seek(std::io::SeekFrom::Start(start))
         .await
         .map_err(|e| (e.into(), 0u64))?;
-    let mut writer = BufWriter::with_capacity(1024 * 1024, file);
+    let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
 
     let expected = end - start + 1;
     let mut bytes_written: u64 = 0;

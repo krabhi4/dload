@@ -2,6 +2,9 @@
 name = "dload"
 version = "0.2.0"
 edition = "2021"
+license = "GPL-3.0-only"
+description = "A self-hosted download manager"
+repository = "https://github.com/krabhi4/dload"
 
 [dependencies]
 axum = "0.7"

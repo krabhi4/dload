@@ -127,7 +127,7 @@ async fn browse_dirs(
         }
     }
 
-    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    dirs.sort_by_key(|d| d.name.to_lowercase());
 
     let parent = if path != "/" {
         std::path::Path::new(&path)

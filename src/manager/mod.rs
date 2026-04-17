@@ -1039,9 +1039,11 @@ impl ManagerState {
                     }
                     if d.total_size > 0 {
                         d.progress = (current_downloaded as f64 / d.total_size as f64) * 100.0;
-                        if speed > 0 {
-                            let remaining = d.total_size.saturating_sub(current_downloaded);
-                            let eta_secs = remaining / speed;
+                        if let Some(eta_secs) = d
+                            .total_size
+                            .saturating_sub(current_downloaded)
+                            .checked_div(speed)
+                        {
                             let hours = eta_secs / 3600;
                             let mins = (eta_secs % 3600) / 60;
                             let secs = eta_secs % 60;
@@ -1468,9 +1470,10 @@ impl ManagerState {
                     if current_total > 0 {
                         d.total_size = current_total;
                         d.progress = (current_downloaded as f64 / current_total as f64) * 100.0;
-                        if speed > 0 {
-                            let remaining = current_total.saturating_sub(current_downloaded);
-                            let eta_secs = remaining / speed;
+                        if let Some(eta_secs) = current_total
+                            .saturating_sub(current_downloaded)
+                            .checked_div(speed)
+                        {
                             let hours = eta_secs / 3600;
                             let mins = (eta_secs % 3600) / 60;
                             let secs = eta_secs % 60;

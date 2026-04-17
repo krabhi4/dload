@@ -544,19 +544,15 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
                     }
                 }
             }
-            "category" => {
-                if !v.is_empty() {
-                    category = Some(v);
-                }
+            "category" if !v.is_empty() => {
+                category = Some(v);
             }
-            "savepath" => {
-                if !v.is_empty() {
-                    let p = v.trim();
-                    if p.starts_with('/') && !p.contains("..") {
-                        savepath = Some(p.to_string());
-                    } else {
-                        tracing::warn!("qbit_compat: rejected invalid savepath: {}", v);
-                    }
+            "savepath" if !v.is_empty() => {
+                let p = v.trim();
+                if p.starts_with('/') && !p.contains("..") {
+                    savepath = Some(p.to_string());
+                } else {
+                    tracing::warn!("qbit_compat: rejected invalid savepath: {}", v);
                 }
             }
             _ => {}

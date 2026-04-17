@@ -33,17 +33,13 @@ pub(crate) fn redirect_decision(url: &url::Url, previous_count: usize) -> Redire
                 return RedirectDecision::Block("redirect to internal host blocked");
             }
         }
-        Some(url::Host::Ipv4(v4)) => {
-            if is_private_ip(&IpAddr::V4(v4)) {
-                return RedirectDecision::Block("redirect to private IP blocked");
-            }
+        Some(url::Host::Ipv4(v4)) if is_private_ip(&IpAddr::V4(v4)) => {
+            return RedirectDecision::Block("redirect to private IP blocked");
         }
-        Some(url::Host::Ipv6(v6)) => {
-            if is_private_ip(&IpAddr::V6(v6)) {
-                return RedirectDecision::Block("redirect to private IP blocked");
-            }
+        Some(url::Host::Ipv6(v6)) if is_private_ip(&IpAddr::V6(v6)) => {
+            return RedirectDecision::Block("redirect to private IP blocked");
         }
-        None => {}
+        _ => {}
     }
     RedirectDecision::Follow
 }

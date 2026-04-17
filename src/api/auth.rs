@@ -86,8 +86,7 @@ async fn register(
     }
 
     let password_owned = payload.password.clone();
-    let password_hash = match tokio::task::spawn_blocking(move || hash(&password_owned, 12)).await
-    {
+    let password_hash = match tokio::task::spawn_blocking(move || hash(&password_owned, 12)).await {
         Ok(Ok(h)) => h,
         _ => {
             return Json(serde_json::json!({
@@ -386,8 +385,7 @@ async fn create_user(
     }
 
     let password_owned = payload.password.clone();
-    let password_hash = match tokio::task::spawn_blocking(move || hash(&password_owned, 12)).await
-    {
+    let password_hash = match tokio::task::spawn_blocking(move || hash(&password_owned, 12)).await {
         Ok(Ok(h)) => h,
         _ => {
             return Json(serde_json::json!({

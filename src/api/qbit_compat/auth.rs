@@ -87,12 +87,7 @@ pub async fn login(
         format!("SID={}; path=/; HttpOnly; SameSite=Lax", sid)
     };
 
-    (
-        StatusCode::OK,
-        [(header::SET_COOKIE, cookie)],
-        "Ok.",
-    )
-        .into_response()
+    (StatusCode::OK, [(header::SET_COOKIE, cookie)], "Ok.").into_response()
 }
 
 pub async fn logout(

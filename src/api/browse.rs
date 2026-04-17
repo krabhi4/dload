@@ -191,3 +191,57 @@ async fn create_dir(
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::validate_browse_path;
+
+    #[test]
+    fn accepts_plain_absolute_path() {
+        assert_eq!(validate_browse_path("/downloads").unwrap(), "/downloads");
+        assert_eq!(validate_browse_path("/home/user").unwrap(), "/home/user");
+        assert_eq!(validate_browse_path("/").unwrap(), "/");
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        assert_eq!(
+            validate_browse_path("  /downloads  ").unwrap(),
+            "/downloads"
+        );
+    }
+
+    #[test]
+    fn rejects_relative_paths() {
+        assert!(validate_browse_path("downloads").is_err());
+        assert!(validate_browse_path("./foo").is_err());
+        assert!(validate_browse_path("").is_err());
+    }
+
+    #[test]
+    fn rejects_parent_dir_traversal() {
+        assert!(validate_browse_path("/downloads/..").is_err());
+        assert!(validate_browse_path("/../etc").is_err());
+        assert!(validate_browse_path("/foo/../bar").is_err());
+    }
+
+    #[test]
+    fn rejects_system_directory_prefixes() {
+        for p in &[
+            "/etc",
+            "/etc/shadow",
+            "/proc/self/environ",
+            "/root",
+            "/sys/class",
+        ] {
+            assert!(validate_browse_path(p).is_err(), "{p} should be blocked");
+        }
+    }
+
+    #[test]
+    fn does_not_block_paths_that_happen_to_contain_system_names() {
+        // `/home/etc-backup` shouldn't match `/etc`
+        assert!(validate_browse_path("/home/etc-backup").is_ok());
+        assert!(validate_browse_path("/data/proc-logs").is_ok());
+    }
+}

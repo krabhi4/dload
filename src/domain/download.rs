@@ -167,3 +167,138 @@ impl Download {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── sanitize_filename ───────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_strips_path_traversal_components() {
+        assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_filename("..\\..\\windows\\cmd.exe"), "cmd.exe");
+        assert_eq!(sanitize_filename("foo/bar/baz.mkv"), "baz.mkv");
+        assert_eq!(sanitize_filename("C:\\Users\\foo.txt"), "foo.txt");
+    }
+
+    #[test]
+    fn sanitize_removes_control_and_bidi_chars() {
+        assert_eq!(sanitize_filename("ev\u{0000}il.exe"), "evil.exe");
+        assert_eq!(sanitize_filename("tab\there.txt"), "tabhere.txt");
+        assert_eq!(sanitize_filename("bell\x07.txt"), "bell.txt");
+        // U+202E right-to-left override
+        assert_eq!(sanitize_filename("exe\u{202E}txt.cod"), "exetxt.cod");
+        // U+2066 left-to-right isolate
+        assert_eq!(sanitize_filename("a\u{2066}b.txt"), "ab.txt");
+    }
+
+    #[test]
+    fn sanitize_replaces_windows_illegal_chars() {
+        assert_eq!(
+            sanitize_filename(r#"foo<bar>:"|?*.txt"#),
+            "foo_bar______.txt"
+        );
+    }
+
+    #[test]
+    fn sanitize_escapes_windows_reserved_names() {
+        assert_eq!(sanitize_filename("CON"), "_CON");
+        assert_eq!(sanitize_filename("nul.txt"), "_nul.txt");
+        assert_eq!(sanitize_filename("COM1"), "_COM1");
+        assert_eq!(sanitize_filename("LPT9.log"), "_LPT9.log");
+        // lower case + case-insensitive match
+        assert_eq!(sanitize_filename("aux"), "_aux");
+        // Not reserved: CON_X or similar
+        assert_eq!(sanitize_filename("CON_X.txt"), "CON_X.txt");
+    }
+
+    #[test]
+    fn sanitize_trims_trailing_dots_and_spaces() {
+        assert_eq!(sanitize_filename("foo.txt..."), "foo.txt");
+        assert_eq!(sanitize_filename("bar   "), "bar");
+        assert_eq!(sanitize_filename("baz. . ."), "baz");
+    }
+
+    #[test]
+    fn sanitize_preserves_single_leading_dot() {
+        assert_eq!(sanitize_filename(".gitignore"), ".gitignore");
+        assert_eq!(sanitize_filename(".env"), ".env");
+    }
+
+    #[test]
+    fn sanitize_strips_double_leading_dots() {
+        // ".." is a path-traversal residue — shouldn't become a filename itself
+        let out = sanitize_filename("..");
+        assert!(out.starts_with("download-"));
+    }
+
+    #[test]
+    fn sanitize_empty_becomes_fallback_uuid() {
+        let a = sanitize_filename("");
+        let b = sanitize_filename(".");
+        assert!(a.starts_with("download-") && a.len() > "download-".len());
+        assert!(b.starts_with("download-"));
+    }
+
+    #[test]
+    fn sanitize_decodes_percent_encoding_then_sanitizes() {
+        // %2E = '.' — %2E%2E%2Fpasswd decodes to "../passwd" which then strips
+        assert_eq!(sanitize_filename("%2E%2E%2Fpasswd"), "passwd");
+    }
+
+    #[test]
+    fn sanitize_keeps_unicode_body() {
+        // Real-world: non-ASCII filenames are fine
+        assert_eq!(sanitize_filename("résumé.pdf"), "résumé.pdf");
+        assert_eq!(sanitize_filename("文件.zip"), "文件.zip");
+    }
+
+    // ─── derive_initial_filename ─────────────────────────────────────────
+
+    #[test]
+    fn derive_http_url_uses_last_segment() {
+        assert_eq!(
+            derive_initial_filename("https://example.com/path/to/foo.iso"),
+            "foo.iso"
+        );
+    }
+
+    #[test]
+    fn derive_http_trailing_slash_falls_back() {
+        // Trailing slash → empty last segment → fall back to "download"
+        assert_eq!(derive_initial_filename("https://example.com/"), "download");
+    }
+
+    #[test]
+    fn derive_magnet_uses_dn_param_not_tracker_path() {
+        // Regression test for bug where magnets with trackers ending in
+        // "/announce" produced a filename literally called "announce".
+        let magnet = "magnet:?xt=urn:btih:07A9DE9750158471C3302E4E95EDB1107F980FA6\
+                     &dn=Pioneer+One+S01E01+720p+x264+VODO\
+                     &tr=http%3a%2f%2ftracker.opentrackr.org%3a1337%2fannounce";
+        assert_eq!(
+            derive_initial_filename(magnet),
+            "Pioneer One S01E01 720p x264 VODO"
+        );
+    }
+
+    #[test]
+    fn derive_magnet_with_percent_encoding_in_dn() {
+        let magnet =
+            "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=foo%20bar.mkv";
+        assert_eq!(derive_initial_filename(magnet), "foo bar.mkv");
+    }
+
+    #[test]
+    fn derive_magnet_without_dn_falls_back_to_stub() {
+        let magnet = "magnet:?xt=urn:btih:0000000000000000000000000000000000000000";
+        assert_eq!(derive_initial_filename(magnet), "torrent-download");
+    }
+
+    #[test]
+    fn derive_magnet_empty_dn_falls_back() {
+        let magnet = "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=";
+        assert_eq!(derive_initial_filename(magnet), "torrent-download");
+    }
+}

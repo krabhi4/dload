@@ -99,10 +99,7 @@ async fn reorder_downloads_handler(
     Json(payload): Json<ReorderRequest>,
 ) -> axum::response::Response {
     if let Err(e) = require_admin(extract_token(&headers)) {
-        return axum::response::IntoResponse::into_response((
-            axum::http::StatusCode::FORBIDDEN,
-            e,
-        ));
+        return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 
     if payload.ids.len() > 1000 {
@@ -416,31 +413,37 @@ fn validate_download_url(url: &str) -> Result<(), String> {
         _ => return Err(format!("Unsupported protocol: {}", parsed.scheme())),
     }
 
-    // Block private/internal IPs (SSRF protection)
-    if let Some(host) = parsed.host_str() {
-        // Block obvious internal hostnames
-        let host_lower = host.to_lowercase();
-        if host_lower == "localhost"
-            || host_lower == "metadata.google.internal"
-            || host_lower.ends_with(".internal")
-            || host_lower.ends_with(".local")
-        {
-            return Err("Internal hosts not allowed".to_string());
-        }
+    // Block URLs with embedded credentials
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err("URLs with credentials not allowed".to_string());
+    }
 
-        // Block private IP ranges
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if is_private_ip(&ip) {
+    // Block private/internal hosts (SSRF protection). Use `Url::host()` (not
+    // `host_str()`) so bracketed IPv6 literals like `[::1]` are parsed directly
+    // rather than string-parsed (which fails due to the brackets and silently
+    // skips the IP check).
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => {
+            let host_lower = host.to_ascii_lowercase();
+            if host_lower == "localhost"
+                || host_lower == "metadata.google.internal"
+                || host_lower.ends_with(".internal")
+                || host_lower.ends_with(".local")
+            {
+                return Err("Internal hosts not allowed".to_string());
+            }
+        }
+        Some(url::Host::Ipv4(v4)) => {
+            if is_private_ip(&IpAddr::V4(v4)) {
                 return Err("Private/internal IP addresses not allowed".to_string());
             }
         }
-
-        // Block URLs with embedded credentials
-        if parsed.username() != "" || parsed.password().is_some() {
-            return Err("URLs with credentials not allowed".to_string());
+        Some(url::Host::Ipv6(v6)) => {
+            if is_private_ip(&IpAddr::V6(v6)) {
+                return Err("Private/internal IP addresses not allowed".to_string());
+            }
         }
-    } else {
-        return Err("URL must have a host".to_string());
+        None => return Err("URL must have a host".to_string()),
     }
 
     Ok(())
@@ -475,28 +478,152 @@ fn validate_mirror_url(url: &str) -> Result<(), String> {
         _ => return Err("Only HTTP/HTTPS URLs are supported for mirrors".to_string()),
     }
 
-    if let Some(host) = parsed.host_str() {
-        let host_lower = host.to_lowercase();
-        if host_lower == "localhost"
-            || host_lower == "metadata.google.internal"
-            || host_lower.ends_with(".internal")
-            || host_lower.ends_with(".local")
-        {
-            return Err("Internal hosts not allowed".to_string());
-        }
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err("URLs with embedded credentials not allowed".to_string());
+    }
 
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if is_private_ip(&ip) {
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => {
+            let host_lower = host.to_ascii_lowercase();
+            if host_lower == "localhost"
+                || host_lower == "metadata.google.internal"
+                || host_lower.ends_with(".internal")
+                || host_lower.ends_with(".local")
+            {
+                return Err("Internal hosts not allowed".to_string());
+            }
+        }
+        Some(url::Host::Ipv4(v4)) => {
+            if is_private_ip(&IpAddr::V4(v4)) {
                 return Err("Private/internal IP addresses not allowed".to_string());
             }
         }
-
-        if parsed.username() != "" || parsed.password().is_some() {
-            return Err("URLs with embedded credentials not allowed".to_string());
+        Some(url::Host::Ipv6(v6)) => {
+            if is_private_ip(&IpAddr::V6(v6)) {
+                return Err("Private/internal IP addresses not allowed".to_string());
+            }
         }
-    } else {
-        return Err("Mirror URL must have a valid host".to_string());
+        None => return Err("Mirror URL must have a valid host".to_string()),
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok(u: &str) {
+        assert!(
+            validate_download_url(u).is_ok(),
+            "expected OK, got {:?} for {u}",
+            validate_download_url(u)
+        );
+    }
+    fn err(u: &str, contains: &str) {
+        match validate_download_url(u) {
+            Err(e) => assert!(
+                e.contains(contains),
+                "err for {u} was {e:?}, expected contains {contains:?}"
+            ),
+            Ok(()) => panic!("expected Err containing {contains:?} for {u}, got Ok"),
+        }
+    }
+
+    // ─── validate_download_url ───────────────────────────────────────────
+
+    #[test]
+    fn accepts_public_http_https_ftp() {
+        ok("https://example.com/file.iso");
+        ok("http://example.com/file.iso");
+        ok("ftp://ftp.example.com/pub/file.iso");
+    }
+
+    #[test]
+    fn accepts_magnet_without_further_validation() {
+        ok("magnet:?xt=urn:btih:0000000000000000000000000000000000000000");
+    }
+
+    #[test]
+    fn rejects_unsupported_schemes() {
+        err("file:///etc/passwd", "Unsupported protocol");
+        err("gopher://example.com/", "Unsupported protocol");
+        err("javascript:alert(1)", "Unsupported protocol");
+    }
+
+    #[test]
+    fn rejects_ipv4_private_ranges() {
+        err("http://127.0.0.1/x", "Private/internal");
+        err("http://10.0.0.5/x", "Private/internal");
+        err("http://172.16.0.1/x", "Private/internal");
+        err("http://192.168.1.1/x", "Private/internal");
+        err("http://169.254.169.254/x", "Private/internal"); // AWS metadata
+        err("http://100.64.0.1/x", "Private/internal"); // CGNAT
+        err("http://0.0.0.0/x", "Private/internal");
+    }
+
+    #[test]
+    fn rejects_ipv6_private_and_mapped() {
+        err("http://[::1]/x", "Private/internal");
+        err("http://[::]/x", "Private/internal");
+        err("http://[::ffff:127.0.0.1]/x", "Private/internal");
+    }
+
+    #[test]
+    fn rejects_internal_hostnames() {
+        err("http://localhost/x", "Internal");
+        err("http://LocalHost/x", "Internal");
+        err("http://metadata.google.internal/x", "Internal");
+        err("http://db.internal/x", "Internal");
+        err("http://printer.local/x", "Internal");
+    }
+
+    #[test]
+    fn rejects_credentialed_urls() {
+        err("https://user:pass@example.com/x", "credentials");
+        err("https://user@example.com/x", "credentials");
+    }
+
+    #[test]
+    fn rejects_overlength_and_empty() {
+        err("", ""); // any error
+        let long = format!("https://example.com/{}", "a".repeat(5000));
+        err(&long, "too long");
+    }
+
+    // ─── is_private_ip ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_private_ip_matrix() {
+        let private = [
+            "127.0.0.1",
+            "127.255.255.255",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "100.127.255.255",
+            "0.0.0.0",
+            "::1",
+            "::",
+        ];
+        let public = [
+            "1.1.1.1",
+            "8.8.8.8",
+            "9.9.9.9",
+            "172.32.0.1",           // outside 172.16/12
+            "100.128.0.1",          // outside 100.64/10
+            "2606:4700:4700::1111", // Cloudflare DNS
+        ];
+        for ip in &private {
+            let parsed: std::net::IpAddr = ip.parse().unwrap();
+            assert!(is_private_ip(&parsed), "{ip} should be private");
+        }
+        for ip in &public {
+            let parsed: std::net::IpAddr = ip.parse().unwrap();
+            assert!(!is_private_ip(&parsed), "{ip} should be public");
+        }
+    }
 }

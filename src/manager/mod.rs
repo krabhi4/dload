@@ -7,8 +7,11 @@ use librqbit::Session;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::RwLock;
+// Use tokio's Instant so tests with `#[tokio::test(start_paused = true)]` can
+// advance time deterministically. In non-paused (production) mode this is a
+// thin wrapper over std::time::Instant with identical semantics.
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 /// Per-IP token-bucket-ish limiter for login endpoints. Rejects after
@@ -37,9 +40,7 @@ impl BasicAuthCache {
     pub async fn is_valid(&self, key: &str) -> bool {
         let now = Instant::now();
         let entries = self.entries.read().await;
-        entries
-            .get(key)
-            .is_some_and(|expires| *expires > now)
+        entries.get(key).is_some_and(|expires| *expires > now)
     }
 
     pub async fn insert(&self, key: &str) {
@@ -223,9 +224,9 @@ impl ManagerState {
                     std::time::Duration::from_secs(60),
                 )),
                 sessions: Arc::new(SessionStore::new()),
-                basic_auth_cache: Arc::new(BasicAuthCache::new(
-                    std::time::Duration::from_secs(300),
-                )),
+                basic_auth_cache: Arc::new(BasicAuthCache::new(std::time::Duration::from_secs(
+                    300,
+                ))),
             },
             auto_resume_ids,
         )
@@ -349,6 +350,31 @@ impl ManagerState {
             .unwrap_or(0)
     }
 
+    /// Slot claim without starting a worker. Only used by concurrency tests
+    /// to exercise the atomic check-and-claim under `slot_lock` without the
+    /// real network / librqbit side effects that make `add_and_maybe_start`
+    /// awkward to test. Kept `pub` so integration tests under `tests/` can
+    /// see it; not part of the public API.
+    #[doc(hidden)]
+    #[allow(dead_code)] // reachable only from integration tests
+    pub async fn claim_or_queue_for_test(
+        self: &Arc<Self>,
+        mut download: Download,
+    ) -> DownloadStatus {
+        download.position = self.assign_new_download_position().await;
+        let _slot_guard = self.slot_lock.lock().await;
+        let max_concurrent = self.settings.read().await.max_concurrent as usize;
+        let active = self.active_download_count().await;
+        let status = if active >= max_concurrent {
+            DownloadStatus::Queued
+        } else {
+            DownloadStatus::Downloading
+        };
+        download.status = status.clone();
+        self.add_download(download).await;
+        status
+    }
+
     /// Add a download and start it if under the concurrent limit, otherwise queue it.
     pub async fn add_and_maybe_start(self: &Arc<Self>, mut download: Download) {
         download.position = self.assign_new_download_position().await;
@@ -397,11 +423,7 @@ impl ManagerState {
                 .collect();
             queued.sort_by_key(|(_, pos)| *pos);
             let to_take = max_concurrent - active;
-            let ids: Vec<String> = queued
-                .into_iter()
-                .take(to_take)
-                .map(|(id, _)| id)
-                .collect();
+            let ids: Vec<String> = queued.into_iter().take(to_take).map(|(id, _)| id).collect();
             for id in &ids {
                 if let Some(d) = downloads.get_mut(id) {
                     d.status = DownloadStatus::Downloading;
@@ -2006,3 +2028,133 @@ async fn session_add_and_wait(
 }
 
 pub type SharedState = Arc<ManagerState>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::time::Duration;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    // ─── extract_client_ip ────────────────────────────────────────────────
+
+    #[test]
+    fn prefers_x_forwarded_for_first_hop() {
+        let h = headers(&[("x-forwarded-for", "203.0.113.5, 10.0.0.1, 10.0.0.2")]);
+        assert_eq!(
+            extract_client_ip(&h, None).unwrap(),
+            "203.0.113.5".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn falls_through_to_x_real_ip_when_xff_missing() {
+        let h = headers(&[("x-real-ip", "198.51.100.42")]);
+        assert_eq!(
+            extract_client_ip(&h, None).unwrap(),
+            "198.51.100.42".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn falls_back_to_socket_peer_when_no_proxy_headers() {
+        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 12345);
+        let h = HeaderMap::new();
+        assert_eq!(
+            extract_client_ip(&h, Some(peer)).unwrap(),
+            "1.2.3.4".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn returns_none_when_nothing_available() {
+        assert_eq!(extract_client_ip(&HeaderMap::new(), None), None);
+    }
+
+    #[test]
+    fn ignores_malformed_xff() {
+        let h = headers(&[("x-forwarded-for", "not-an-ip, 10.0.0.1")]);
+        // First token is malformed → extractor returns None from the XFF branch;
+        // with no X-Real-IP and no peer, we get None overall
+        assert_eq!(extract_client_ip(&h, None), None);
+    }
+
+    // ─── LoginRateLimiter ─────────────────────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_allows_up_to_max_attempts_per_ip() {
+        let limiter = LoginRateLimiter::new(3, Duration::from_secs(60));
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(limiter.try_consume(ip).await);
+        assert!(limiter.try_consume(ip).await);
+        assert!(limiter.try_consume(ip).await);
+        assert!(
+            !limiter.try_consume(ip).await,
+            "4th attempt should be blocked"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_isolates_per_ip() {
+        let limiter = LoginRateLimiter::new(2, Duration::from_secs(60));
+        let a: IpAddr = "1.1.1.1".parse().unwrap();
+        let b: IpAddr = "2.2.2.2".parse().unwrap();
+        assert!(limiter.try_consume(a).await);
+        assert!(limiter.try_consume(a).await);
+        assert!(!limiter.try_consume(a).await); // a is blocked
+        assert!(limiter.try_consume(b).await); // b still has budget
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_resets_after_window() {
+        let limiter = LoginRateLimiter::new(2, Duration::from_secs(60));
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert!(limiter.try_consume(ip).await);
+        assert!(limiter.try_consume(ip).await);
+        assert!(!limiter.try_consume(ip).await);
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(
+            limiter.try_consume(ip).await,
+            "window should reset after window elapses"
+        );
+    }
+
+    // ─── BasicAuthCache ───────────────────────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn basic_auth_cache_hit_then_expire() {
+        let cache = BasicAuthCache::new(Duration::from_secs(60));
+        cache.insert("deadbeef").await;
+        assert!(cache.is_valid("deadbeef").await);
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(!cache.is_valid("deadbeef").await, "entry should be expired");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn basic_auth_cache_unknown_key_miss() {
+        let cache = BasicAuthCache::new(Duration::from_secs(60));
+        assert!(!cache.is_valid("never-inserted").await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn basic_auth_cache_invalidate_all_blows_cache() {
+        let cache = BasicAuthCache::new(Duration::from_secs(60));
+        cache.insert("a").await;
+        cache.insert("b").await;
+        assert!(cache.is_valid("a").await);
+        cache.invalidate_all().await;
+        assert!(!cache.is_valid("a").await);
+        assert!(!cache.is_valid("b").await);
+    }
+}

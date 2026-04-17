@@ -176,9 +176,7 @@ async fn require_session(
                             return next.run(request).await.into_response();
                         }
                         // Bad credentials → consume a rate-limit slot to slow brute force.
-                        if let Some(ip) =
-                            crate::manager::extract_client_ip(&headers, Some(peer))
-                        {
+                        if let Some(ip) = crate::manager::extract_client_ip(&headers, Some(peer)) {
                             if !state.manager.login_limiter.try_consume(ip).await {
                                 return (StatusCode::TOO_MANY_REQUESTS, "Fails.").into_response();
                             }

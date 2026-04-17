@@ -521,3 +521,112 @@ async fn check_torrent_magic(path: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── rfc5987_percent_decode ──────────────────────────────────────────
+
+    #[test]
+    fn percent_decode_basic() {
+        assert_eq!(rfc5987_percent_decode("foo%20bar"), b"foo bar");
+        assert_eq!(rfc5987_percent_decode("f%C3%B6o"), "föo".as_bytes());
+    }
+
+    #[test]
+    fn percent_decode_leaves_plain_chars() {
+        assert_eq!(rfc5987_percent_decode("plain.txt"), b"plain.txt");
+    }
+
+    #[test]
+    fn percent_decode_invalid_sequence_kept_literal() {
+        // %ZZ is not valid hex — should pass through bytes as-is
+        assert_eq!(rfc5987_percent_decode("x%ZZy"), b"x%ZZy");
+    }
+
+    #[test]
+    fn percent_decode_trailing_percent_kept() {
+        assert_eq!(rfc5987_percent_decode("x%"), b"x%");
+        assert_eq!(rfc5987_percent_decode("x%A"), b"x%A");
+    }
+
+    #[test]
+    fn percent_decode_mixed_case_hex() {
+        assert_eq!(rfc5987_percent_decode("%Af"), &[0xaf]);
+        assert_eq!(rfc5987_percent_decode("%aF"), &[0xaf]);
+    }
+
+    // ─── hex_nibble ──────────────────────────────────────────────────────
+
+    #[test]
+    fn hex_nibble_valid_digits() {
+        for (i, c) in b"0123456789abcdef".iter().enumerate() {
+            assert_eq!(hex_nibble(*c), i as u8, "lowercase {}", *c as char);
+        }
+        for (i, c) in b"0123456789ABCDEF".iter().enumerate() {
+            assert_eq!(hex_nibble(*c), i as u8, "uppercase {}", *c as char);
+        }
+    }
+
+    #[test]
+    fn hex_nibble_invalid_is_zero() {
+        // Documented behavior: non-hex falls through to 0, callers use
+        // ascii_hexdigit guard.
+        assert_eq!(hex_nibble(b'G'), 0);
+        assert_eq!(hex_nibble(b' '), 0);
+    }
+
+    // ─── extract_filename_from_disposition ───────────────────────────────
+
+    #[test]
+    fn disposition_plain_filename() {
+        assert_eq!(
+            extract_filename_from_disposition(r#"attachment; filename="simple.zip""#),
+            Some("simple.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn disposition_filename_star_utf8_preferred_over_plain() {
+        // RFC 6266 §4.1: filename* (if charset=UTF-8) takes precedence over filename
+        let h = r#"attachment; filename="fallback.zip"; filename*=UTF-8''caf%C3%A9.zip"#;
+        assert_eq!(
+            extract_filename_from_disposition(h),
+            Some("café.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn disposition_non_utf8_charset_falls_back_to_plain() {
+        let h = r#"attachment; filename="ascii.zip"; filename*=ISO-8859-1''caf%E9.zip"#;
+        assert_eq!(
+            extract_filename_from_disposition(h),
+            Some("ascii.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn disposition_unescapes_quoted_pairs_in_plain_filename() {
+        // \" inside a quoted-string becomes "
+        let h = r#"attachment; filename="one\"two.txt""#;
+        assert_eq!(
+            extract_filename_from_disposition(h),
+            Some(r#"one"two.txt"#.to_string())
+        );
+    }
+
+    #[test]
+    fn disposition_none_when_header_has_no_filename() {
+        assert_eq!(extract_filename_from_disposition("inline"), None);
+        assert_eq!(extract_filename_from_disposition("attachment"), None);
+    }
+
+    #[test]
+    fn disposition_empty_filename_rejected() {
+        assert_eq!(
+            extract_filename_from_disposition(r#"attachment; filename="""#),
+            None
+        );
+    }
+}

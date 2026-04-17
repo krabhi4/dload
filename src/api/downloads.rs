@@ -98,10 +98,10 @@ async fn reorder_downloads_handler(
     headers: axum::http::HeaderMap,
     Json(payload): Json<ReorderRequest>,
 ) -> axum::response::Response {
-    if require_auth(extract_token(&headers)).is_err() {
+    if let Err(e) = require_admin(extract_token(&headers)) {
         return axum::response::IntoResponse::into_response((
-            axum::http::StatusCode::UNAUTHORIZED,
-            "Authentication required",
+            axum::http::StatusCode::FORBIDDEN,
+            e,
         ));
     }
 

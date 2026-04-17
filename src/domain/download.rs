@@ -15,6 +15,32 @@ static RE_RESERVED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..+)?$").expect("reserved regex")
 });
 
+/// Derive a starting filename from a URL. For HTTP-style URLs, use the last
+/// path segment. For magnet URIs, prefer the `dn=` display-name query param so
+/// we don't end up naming files after the last tracker's `/announce` path.
+/// The real name is refreshed later from torrent metadata or Content-Disposition.
+fn derive_initial_filename(url: &str) -> String {
+    if url.starts_with("magnet:") {
+        for pair in url.trim_start_matches("magnet:?").split('&') {
+            if let Some(v) = pair.strip_prefix("dn=") {
+                let decoded = urlencoding::decode(v)
+                    .map(|cow| cow.into_owned())
+                    .unwrap_or_else(|_| v.to_string());
+                let decoded = decoded.replace('+', " ");
+                if !decoded.is_empty() {
+                    return decoded;
+                }
+            }
+        }
+        return "torrent-download".to_string();
+    }
+    url.split('/')
+        .next_back()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("download")
+        .to_string()
+}
+
 /// Strip path traversal, null bytes, and dangerous characters from filenames.
 pub fn sanitize_filename(name: &str) -> String {
     let decoded = urlencoding::decode(name).unwrap_or(std::borrow::Cow::Borrowed(name));
@@ -109,7 +135,7 @@ pub struct Download {
 
 impl Download {
     pub fn new(url: String, save_dir: &str) -> Self {
-        let raw_filename = url.split('/').next_back().unwrap_or("download").to_string();
+        let raw_filename = derive_initial_filename(&url);
         let filename = sanitize_filename(&raw_filename);
 
         Self {

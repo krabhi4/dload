@@ -165,6 +165,22 @@ async fn create_dir(
         }
     };
 
+    // Walk existing ancestors; reject if any is a symlink — create_dir_all would
+    // follow it and land outside the validated prefix.
+    let mut cur = std::path::PathBuf::new();
+    for component in std::path::Path::new(&path).components() {
+        cur.push(component);
+        match tokio::fs::symlink_metadata(&cur).await {
+            Ok(md) if md.file_type().is_symlink() => {
+                return axum::response::IntoResponse::into_response((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "Path traverses a symlink",
+                ));
+            }
+            _ => {}
+        }
+    }
+
     match tokio::fs::create_dir_all(&path).await {
         Ok(_) => axum::response::IntoResponse::into_response(Json(
             serde_json::json!({ "success": true, "path": path }),

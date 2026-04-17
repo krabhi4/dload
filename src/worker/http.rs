@@ -46,6 +46,7 @@ impl HttpDownloader {
             .pool_max_idle_per_host(self.max_connections + 2)
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(30))
+            .redirect(crate::worker::ssrf_safe_redirect_policy())
             .user_agent(format!("DLoad/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
@@ -365,7 +366,15 @@ async fn download_range_inner(
         .map_err(|e| (e.into(), 0u64))?;
     let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
 
-    let expected = end - start + 1;
+    let expected = match (end - start).checked_add(1) {
+        Some(v) => v,
+        None => {
+            return Err((
+                anyhow::anyhow!("Range length overflow: end={}, start={}", end, start),
+                0u64,
+            ));
+        }
+    };
     let mut bytes_written: u64 = 0;
     let mut stream = resp.bytes_stream();
 

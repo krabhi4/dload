@@ -1,12 +1,22 @@
 use axum::{
     extract::State,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
 
 use super::QbitState;
 
-pub async fn login(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+pub async fn login(
+    State(state): State<QbitState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    body: String,
+) -> impl IntoResponse {
+    if let Some(ip) = crate::manager::extract_client_ip(&headers, Some(peer)) {
+        if !state.manager.login_limiter.try_consume(ip).await {
+            return (StatusCode::TOO_MANY_REQUESTS, "Fails.").into_response();
+        }
+    }
     // Parse form-encoded body: username=X&password=Y
     let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
         .into_owned()
@@ -61,12 +71,25 @@ pub async fn login(State(state): State<QbitState>, body: String) -> impl IntoRes
         .create(user.username, user.role.as_str().to_string())
         .await;
 
+    // Only stamp the cookie with `Secure` when we can see the client reached
+    // the server over HTTPS (direct or via a reverse proxy that set
+    // X-Forwarded-Proto). On plain-HTTP LAN deployments clients like
+    // .NET's CookieContainer would otherwise refuse to send the cookie at
+    // all, forcing Sonarr/Radarr back onto Basic Auth for every poll.
+    let is_https = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    let cookie = if is_https {
+        format!("SID={}; path=/; HttpOnly; SameSite=Lax; Secure", sid)
+    } else {
+        format!("SID={}; path=/; HttpOnly; SameSite=Lax", sid)
+    };
+
     (
         StatusCode::OK,
-        [(
-            header::SET_COOKIE,
-            format!("SID={}; path=/; HttpOnly; SameSite=Lax", sid),
-        )],
+        [(header::SET_COOKIE, cookie)],
         "Ok.",
     )
         .into_response()

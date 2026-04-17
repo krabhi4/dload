@@ -135,7 +135,7 @@ impl Repository {
         let conn = self.db.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
         for (id, pos) in positions {
-            conn.execute(
+            tx.execute(
                 "UPDATE downloads SET position = ?1 WHERE id = ?2",
                 params![pos, id],
             )?;
@@ -191,14 +191,16 @@ impl Repository {
             ("port", settings.port.to_string()),
         ];
 
+        let tx = conn.unchecked_transaction()?;
         for (key, value) in pairs {
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
                 params![key, value],
             )?;
         }
         // Clean up legacy key from older versions
-        conn.execute("DELETE FROM settings WHERE key = 'chunk_size'", params![])?;
+        tx.execute("DELETE FROM settings WHERE key = 'chunk_size'", params![])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -354,15 +356,19 @@ impl Repository {
         Ok(())
     }
 
-    pub fn get_all_history(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+    pub fn get_history_page(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         let conn = self.db.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, url, filename, total_size, status, protocol, created_at, completed_at
-             FROM download_history ORDER BY created_at DESC",
+             FROM download_history ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
 
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![limit, offset], |row| {
                 Ok(serde_json::json!({
                     "id": row.get::<_, String>(0)?,
                     "url": row.get::<_, String>(1)?,

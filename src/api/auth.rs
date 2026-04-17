@@ -60,10 +60,8 @@ fn decode_token(token: &str) -> Result<Claims, String> {
 
 async fn auth_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let has_users = state
-        .repo
-        .get_all_users()
-        .map(|u| !u.is_empty())
-        .unwrap_or(false);
+        .repo_blocking(|repo| repo.get_all_users().map(|u| !u.is_empty()).unwrap_or(false))
+        .await;
     Json(serde_json::json!({
         "needs_setup": !has_users
     }))
@@ -79,18 +77,19 @@ async fn register(
             "error": "Password must be at least 8 characters"
         }));
     }
-    if payload.username.trim().is_empty() || payload.username.len() > 64 {
+    let username = payload.username.trim().to_string();
+    if username.is_empty() || username.len() > 64 {
         return Json(serde_json::json!({
             "success": false,
             "error": "Username must be 1-64 characters"
         }));
     }
 
-    let repo = &state.repo;
-
-    let password_hash = match hash(&payload.password, 10) {
-        Ok(h) => h,
-        Err(_) => {
+    let password_owned = payload.password.clone();
+    let password_hash = match tokio::task::spawn_blocking(move || hash(&password_owned, 12)).await
+    {
+        Ok(Ok(h)) => h,
+        _ => {
             return Json(serde_json::json!({
                 "success": false,
                 "error": "Failed to hash password"
@@ -100,14 +99,18 @@ async fn register(
 
     let user = User {
         id: uuid::Uuid::new_v4().to_string(),
-        username: payload.username.clone(),
+        username,
         password_hash,
         role: Role::Admin,
         created_at: chrono::Utc::now(),
     };
 
+    let user_to_insert = user.clone();
     // Atomically insert only if no users exist (prevents race condition)
-    match repo.insert_first_user(&user) {
+    match state
+        .repo_blocking(move |repo| repo.insert_first_user(&user_to_insert))
+        .await
+    {
         Ok(true) => {} // success - first user created
         Ok(false) => {
             return Json(serde_json::json!({
@@ -130,12 +133,20 @@ async fn register(
         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
     };
 
-    let token = jsonwebtoken::encode(
+    let token = match jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &claims,
         &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
-    )
-    .unwrap();
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to encode JWT: {}", e);
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Failed to issue token"
+            }));
+        }
+    };
 
     Json(serde_json::json!({
         "success": true,
@@ -147,32 +158,56 @@ async fn register(
 
 async fn login(
     State(state): State<SharedState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> Json<serde_json::Value> {
-    let repo = &state.repo;
-
-    let user = match repo.get_user_by_username(&payload.username) {
-        Ok(Some(u)) => u,
-        Ok(None) => {
+    if let Some(ip) = crate::manager::extract_client_ip(&headers, Some(peer)) {
+        if !state.login_limiter.try_consume(ip).await {
             return Json(serde_json::json!({
                 "success": false,
-                "error": "Invalid credentials"
+                "error": "Too many attempts. Try again later."
             }));
         }
-        Err(_) => {
-            return Json(serde_json::json!({
-                "success": false,
-                "error": "Database error"
-            }));
-        }
-    };
-
-    if !verify(&payload.password, &user.password_hash).unwrap_or(false) {
+    }
+    let username_trimmed = payload.username.trim().to_string();
+    if username_trimmed.is_empty() || payload.password.is_empty() {
         return Json(serde_json::json!({
             "success": false,
             "error": "Invalid credentials"
         }));
     }
+    // Always run bcrypt even on missing user to equalize timing.
+    const DUMMY_HASH: &str = "$2b$12$000000000000000000000uGKWMKFz95uGKWMKFz95uGKWMKFz9.";
+    let username_owned = username_trimmed;
+    let password_owned = payload.password.clone();
+    let auth_result = state
+        .repo_blocking(move |repo| {
+            let (user, hash_str) = match repo.get_user_by_username(&username_owned) {
+                Ok(Some(u)) => {
+                    let h = u.password_hash.clone();
+                    (Some(u), h)
+                }
+                _ => (None, DUMMY_HASH.to_string()),
+            };
+            let valid = verify(&password_owned, &hash_str).unwrap_or(false) && user.is_some();
+            if valid {
+                user
+            } else {
+                None
+            }
+        })
+        .await;
+
+    let user = match auth_result {
+        Some(u) => u,
+        None => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Invalid credentials"
+            }));
+        }
+    };
 
     let claims = Claims {
         sub: user.username.clone(),
@@ -180,12 +215,20 @@ async fn login(
         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
     };
 
-    let token = jsonwebtoken::encode(
+    let token = match jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &claims,
         &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
-    )
-    .unwrap();
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to encode JWT: {}", e);
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Failed to issue token"
+            }));
+        }
+    };
 
     Json(serde_json::json!({
         "success": true,
@@ -224,7 +267,11 @@ async fn get_profile(
         }
     };
 
-    let user = match state.repo.get_user_by_username(&claims.sub) {
+    let sub = claims.sub.clone();
+    let user = match state
+        .repo_blocking(move |repo| repo.get_user_by_username(&sub))
+        .await
+    {
         Ok(Some(u)) => u,
         _ => {
             return Json(serde_json::json!({
@@ -272,7 +319,9 @@ async fn list_users(
         }));
     }
 
-    let users = state.repo.get_all_users().unwrap_or_default();
+    let users = state
+        .repo_blocking(|repo| repo.get_all_users().unwrap_or_default())
+        .await;
     let users_json: Vec<_> = users
         .into_iter()
         .map(|u| {
@@ -314,16 +363,18 @@ async fn create_user(
             "error": "Password must be at least 8 characters"
         }));
     }
-    if payload.username.trim().is_empty() || payload.username.len() > 64 {
+    let username = payload.username.trim().to_string();
+    if username.is_empty() || username.len() > 64 {
         return Json(serde_json::json!({
             "success": false,
             "error": "Username must be 1-64 characters"
         }));
     }
 
+    let username_lookup = username.clone();
     if state
-        .repo
-        .get_user_by_username(&payload.username)
+        .repo_blocking(move |repo| repo.get_user_by_username(&username_lookup))
+        .await
         .ok()
         .flatten()
         .is_some()
@@ -334,9 +385,11 @@ async fn create_user(
         }));
     }
 
-    let password_hash = match hash(&payload.password, 10) {
-        Ok(h) => h,
-        Err(_) => {
+    let password_owned = payload.password.clone();
+    let password_hash = match tokio::task::spawn_blocking(move || hash(&password_owned, 12)).await
+    {
+        Ok(Ok(h)) => h,
+        _ => {
             return Json(serde_json::json!({
                 "success": false,
                 "error": "Failed to hash password"
@@ -351,13 +404,17 @@ async fn create_user(
 
     let user = User {
         id: uuid::Uuid::new_v4().to_string(),
-        username: payload.username.clone(),
+        username,
         password_hash,
         role,
         created_at: chrono::Utc::now(),
     };
 
-    if let Err(e) = state.repo.insert_user(&user) {
+    let user_to_insert = user.clone();
+    if let Err(e) = state
+        .repo_blocking(move |repo| repo.insert_user(&user_to_insert))
+        .await
+    {
         tracing::error!("Failed to create user: {}", e);
         return Json(serde_json::json!({
             "success": false,
@@ -386,7 +443,11 @@ async fn change_password(
         }
     };
 
-    let user = match state.repo.get_user_by_username(&claims.sub) {
+    let sub_lookup = claims.sub.clone();
+    let user = match state
+        .repo_blocking(move |repo| repo.get_user_by_username(&sub_lookup))
+        .await
+    {
         Ok(Some(u)) => u,
         _ => {
             return Json(serde_json::json!({
@@ -403,16 +464,24 @@ async fn change_password(
         }));
     }
 
-    if !verify(&payload.current_password, &user.password_hash).unwrap_or(false) {
+    let current_password = payload.current_password.clone();
+    let stored_hash = user.password_hash.clone();
+    let verify_ok = tokio::task::spawn_blocking(move || {
+        verify(&current_password, &stored_hash).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+    if !verify_ok {
         return Json(serde_json::json!({
             "success": false,
             "error": "Current password is incorrect"
         }));
     }
 
-    let new_hash = match hash(&payload.new_password, 10) {
-        Ok(h) => h,
-        Err(_) => {
+    let new_password = payload.new_password.clone();
+    let new_hash = match tokio::task::spawn_blocking(move || hash(&new_password, 12)).await {
+        Ok(Ok(h)) => h,
+        _ => {
             return Json(serde_json::json!({
                 "success": false,
                 "error": "Failed to hash password"
@@ -420,13 +489,21 @@ async fn change_password(
         }
     };
 
-    if let Err(e) = state.repo.update_user_password(&claims.sub, &new_hash) {
+    let sub_update = claims.sub.clone();
+    if let Err(e) = state
+        .repo_blocking(move |repo| repo.update_user_password(&sub_update, &new_hash))
+        .await
+    {
         tracing::error!("Failed to update password: {}", e);
         return Json(serde_json::json!({
             "success": false,
             "error": "Failed to update password"
         }));
     }
+    // Invalidate any cookie sessions issued before the password change.
+    state.sessions.remove_by_username(&claims.sub).await;
+    // Blow the Basic Auth cache so cached old creds stop working immediately.
+    state.basic_auth_cache.invalidate_all().await;
 
     Json(serde_json::json!({
         "success": true,
@@ -463,7 +540,13 @@ async fn delete_user(
     }
 
     // Prevent self-deletion and last-admin deletion
-    if let Ok(Some(target_user)) = state.repo.get_user_by_id(&id) {
+    let id_lookup = id.clone();
+    let target_user = state
+        .repo_blocking(move |repo| repo.get_user_by_id(&id_lookup))
+        .await
+        .ok()
+        .flatten();
+    if let Some(target_user) = target_user {
         if target_user.username == claims.sub {
             return Json(serde_json::json!({
                 "success": false,
@@ -472,12 +555,14 @@ async fn delete_user(
         }
         if target_user.role == Role::Admin {
             let admin_count = state
-                .repo
-                .get_all_users()
-                .unwrap_or_default()
-                .iter()
-                .filter(|u| u.role == Role::Admin)
-                .count();
+                .repo_blocking(|repo| {
+                    repo.get_all_users()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|u| u.role == Role::Admin)
+                        .count()
+                })
+                .await;
             if admin_count <= 1 {
                 return Json(serde_json::json!({
                     "success": false,
@@ -487,13 +572,30 @@ async fn delete_user(
         }
     }
 
-    if let Err(e) = state.repo.delete_user(&id) {
-        tracing::error!("Failed to delete user: {}", e);
-        return Json(serde_json::json!({
-            "success": false,
-            "error": "Failed to delete user"
-        }));
+    // Capture the username and delete inside a single blocking closure so a
+    // concurrent re-insert of the same id cannot race between lookup and delete.
+    let id_for_delete = id.clone();
+    let deleted_username = match state
+        .repo_blocking(move |repo| -> anyhow::Result<Option<String>> {
+            let username = repo.get_user_by_id(&id_for_delete)?.map(|u| u.username);
+            repo.delete_user(&id_for_delete)?;
+            Ok(username)
+        })
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!("Failed to delete user: {}", e);
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Failed to delete user"
+            }));
+        }
+    };
+    if let Some(username) = deleted_username {
+        state.sessions.remove_by_username(&username).await;
     }
+    state.basic_auth_cache.invalidate_all().await;
 
     Json(serde_json::json!({
         "success": true,

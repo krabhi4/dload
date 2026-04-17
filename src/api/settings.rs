@@ -59,6 +59,19 @@ async fn update_settings(
         return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 
+    if settings.max_concurrent == 0 {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "max_concurrent must be at least 1",
+        ));
+    }
+    if settings.max_connections_per_file == 0 {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::BAD_REQUEST,
+            "max_connections_per_file must be at least 1",
+        ));
+    }
+
     // Validate download_dir — must be absolute and not a system directory
     let dir = settings.download_dir.trim();
     if !dir.starts_with('/') {
@@ -85,7 +98,11 @@ async fn update_settings(
         ));
     }
 
-    if let Err(e) = state.repo.save_settings(&settings) {
+    let settings_to_save = settings.clone();
+    if let Err(e) = state
+        .repo_blocking(move |repo| repo.save_settings(&settings_to_save))
+        .await
+    {
         tracing::error!("Failed to persist settings to DB: {}", e);
     }
     let mut current = state.settings.write().await;

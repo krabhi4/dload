@@ -1,4 +1,3 @@
-use api::qbit_compat::session::SessionStore;
 use axum::http::{HeaderValue, Method};
 use axum::{
     http::{header, StatusCode},
@@ -48,7 +47,7 @@ async fn main() {
 
     let (manager_state, auto_resume_ids) = manager::ManagerState::new(settings, repo);
     let manager: manager::SharedState = Arc::new(manager_state);
-    let sessions = Arc::new(SessionStore::new());
+    let sessions = manager.sessions.clone();
 
     // Auto-resume torrents that were active before shutdown
     if !auto_resume_ids.is_empty() {
@@ -109,7 +108,12 @@ async fn main() {
     tracing::info!("Server starting on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn index() -> Html<&'static str> {

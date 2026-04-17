@@ -133,6 +133,7 @@ async fn log_requests(
 /// Some HTTP clients don't properly resend Set-Cookie values, so Basic Auth ensures compat.
 async fn require_session(
     axum::extract::State(state): axum::extract::State<QbitState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
     request: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
@@ -146,10 +147,20 @@ async fn require_session(
         }
     }
 
-    // Fallback: Basic Auth header
+    // Fallback: Basic Auth header. Sonarr/Radarr poll with Basic Auth on every
+    // request, so:
+    //   (a) consult a short-TTL cache before bcrypt to avoid burning CPU, and
+    //   (b) only consume a rate-limit slot on FAILURE — otherwise normal polling
+    //       would trip the limiter within seconds.
     if let Some(auth_header) = headers.get(axum::http::header::AUTHORIZATION) {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(encoded) = auth_str.strip_prefix("Basic ") {
+                // Cache key is the raw base64 — it encodes username+password, so
+                // a different password invalidates the entry automatically.
+                if state.manager.basic_auth_cache.is_valid(encoded).await {
+                    return next.run(request).await.into_response();
+                }
+
                 if let Ok(decoded) = base64_decode(encoded) {
                     if let Some((username, password)) = decoded.split_once(':') {
                         let state_clone = state.clone();
@@ -161,7 +172,16 @@ async fn require_session(
                         .await
                         .unwrap_or(false);
                         if ok {
+                            state.manager.basic_auth_cache.insert(encoded).await;
                             return next.run(request).await.into_response();
+                        }
+                        // Bad credentials → consume a rate-limit slot to slow brute force.
+                        if let Some(ip) =
+                            crate::manager::extract_client_ip(&headers, Some(peer))
+                        {
+                            if !state.manager.login_limiter.try_consume(ip).await {
+                                return (StatusCode::TOO_MANY_REQUESTS, "Fails.").into_response();
+                            }
                         }
                     }
                 }

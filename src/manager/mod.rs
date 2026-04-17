@@ -1,12 +1,128 @@
+use crate::api::qbit_compat::session::SessionStore;
 use crate::db::repository::Repository;
 use crate::domain::{Download, DownloadStatus, Protocol, Settings};
 use crate::worker::http::HttpDownloader;
 use librqbit::api::TorrentIdOrHash;
 use librqbit::Session;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+/// Per-IP token-bucket-ish limiter for login endpoints. Rejects after
+/// `max_attempts` in a rolling `window`. Shared across native + qbit login paths.
+struct LimiterInner {
+    entries: HashMap<IpAddr, (u32, Instant)>,
+    last_sweep: Instant,
+}
+
+/// Short-TTL cache of accepted Basic Auth credentials, keyed by the raw base64
+/// "Authorization: Basic …" value so a password change invalidates the entry.
+/// Lets Sonarr-style polling skip bcrypt on every request.
+pub struct BasicAuthCache {
+    entries: tokio::sync::RwLock<HashMap<String, Instant>>,
+    ttl: std::time::Duration,
+}
+
+impl BasicAuthCache {
+    pub fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            entries: tokio::sync::RwLock::new(HashMap::new()),
+            ttl,
+        }
+    }
+
+    pub async fn is_valid(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let entries = self.entries.read().await;
+        entries
+            .get(key)
+            .is_some_and(|expires| *expires > now)
+    }
+
+    pub async fn insert(&self, key: &str) {
+        let now = Instant::now();
+        let mut entries = self.entries.write().await;
+        if entries.len() > 1024 {
+            entries.retain(|_, expires| *expires > now);
+        }
+        entries.insert(key.to_string(), now + self.ttl);
+    }
+
+    pub async fn invalidate_all(&self) {
+        self.entries.write().await.clear();
+    }
+}
+
+pub struct LoginRateLimiter {
+    inner: tokio::sync::Mutex<LimiterInner>,
+    max_attempts: u32,
+    window: std::time::Duration,
+}
+
+impl LoginRateLimiter {
+    pub fn new(max_attempts: u32, window: std::time::Duration) -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(LimiterInner {
+                entries: HashMap::new(),
+                last_sweep: Instant::now(),
+            }),
+            max_attempts,
+            window,
+        }
+    }
+
+    /// Returns `true` if the attempt is allowed and consumes one slot.
+    pub async fn try_consume(&self, ip: IpAddr) -> bool {
+        let now = Instant::now();
+        let mut inner = self.inner.lock().await;
+        // Sweep on size threshold OR when ~window has elapsed since last sweep,
+        // whichever comes first. Pure size-based sweep could grow unboundedly
+        // under a burst of many fresh IPs.
+        let should_sweep =
+            inner.entries.len() > 4096 || now.duration_since(inner.last_sweep) >= self.window;
+        if should_sweep {
+            let window = self.window;
+            inner
+                .entries
+                .retain(|_, (_, ts)| now.duration_since(*ts) < window);
+            inner.last_sweep = now;
+        }
+        let entry = inner.entries.entry(ip).or_insert((0, now));
+        if now.duration_since(entry.1) >= self.window {
+            *entry = (0, now);
+        }
+        if entry.0 >= self.max_attempts {
+            return false;
+        }
+        entry.0 += 1;
+        true
+    }
+}
+
+/// Extracts a client IP from proxy headers first (`X-Forwarded-For`,
+/// `X-Real-IP`), then falls back to the direct socket peer address so
+/// deployments without a reverse proxy still get rate limiting.
+pub fn extract_client_ip(
+    headers: &axum::http::HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+) -> Option<IpAddr> {
+    if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = v.split(',').next() {
+            if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
+        }
+    }
+    if let Some(v) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        if let Ok(ip) = v.trim().parse::<IpAddr>() {
+            return Some(ip);
+        }
+    }
+    peer.map(|p| p.ip())
+}
 
 /// Torrent session + the download_dir it was created with.
 /// Session is recreated when download_dir changes.
@@ -21,6 +137,12 @@ pub struct ManagerState {
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
     /// Maps download ID -> librqbit torrent handle ID for pause/resume
     torrent_handles: Arc<RwLock<HashMap<String, usize>>>,
+    /// Serializes queue-slot check-and-claim so max_concurrent cannot be
+    /// exceeded by concurrent add/promotion paths.
+    slot_lock: Arc<tokio::sync::Mutex<()>>,
+    pub login_limiter: Arc<LoginRateLimiter>,
+    pub sessions: Arc<SessionStore>,
+    pub basic_auth_cache: Arc<BasicAuthCache>,
 }
 
 impl ManagerState {
@@ -95,6 +217,15 @@ impl ManagerState {
                 torrent_session: Arc::new(RwLock::new(None)),
                 cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
                 torrent_handles: Arc::new(RwLock::new(HashMap::new())),
+                slot_lock: Arc::new(tokio::sync::Mutex::new(())),
+                login_limiter: Arc::new(LoginRateLimiter::new(
+                    10,
+                    std::time::Duration::from_secs(60),
+                )),
+                sessions: Arc::new(SessionStore::new()),
+                basic_auth_cache: Arc::new(BasicAuthCache::new(
+                    std::time::Duration::from_secs(300),
+                )),
             },
             auto_resume_ids,
         )
@@ -106,7 +237,7 @@ impl ManagerState {
     }
 
     /// Run a blocking repo operation off the async runtime.
-    async fn repo_blocking<F, R>(&self, f: F) -> R
+    pub async fn repo_blocking<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&crate::db::repository::Repository) -> R + Send + 'static,
         R: Send + 'static,
@@ -221,6 +352,8 @@ impl ManagerState {
     /// Add a download and start it if under the concurrent limit, otherwise queue it.
     pub async fn add_and_maybe_start(self: &Arc<Self>, mut download: Download) {
         download.position = self.assign_new_download_position().await;
+        // Serialize with try_start_queued so check-and-claim is atomic.
+        let _slot_guard = self.slot_lock.lock().await;
         let max_concurrent = self.settings.read().await.max_concurrent as usize;
         let active = self.active_download_count().await;
 
@@ -233,6 +366,9 @@ impl ManagerState {
         } else {
             download.status = DownloadStatus::Downloading;
             self.add_download(download.clone()).await;
+            // Slot now claimed (download is in active_download_count). Drop lock
+            // before spawning the worker so concurrent paths don't wait on I/O.
+            drop(_slot_guard);
             let state = Arc::clone(self);
             state.start_download(download).await;
         }
@@ -241,6 +377,8 @@ impl ManagerState {
     /// Promote the oldest queued download when a slot opens.
     /// Call this after a download completes, fails, pauses, or is deleted.
     pub async fn try_start_queued(self: &Arc<Self>) {
+        // Serialize with add_and_maybe_start so check-and-claim is atomic.
+        let _slot_guard = self.slot_lock.lock().await;
         let max_concurrent = self.settings.read().await.max_concurrent as usize;
         let active = self.active_download_count().await;
 
@@ -248,25 +386,34 @@ impl ManagerState {
             return;
         }
 
-        // Find the highest-priority queued download (by position)
-        let queued = {
-            let downloads = self.downloads.read().await;
+        // Find the highest-priority queued download (by position) and claim
+        // slots by flipping their status to Downloading before releasing the lock.
+        let promote_ids = {
+            let mut downloads = self.downloads.write().await;
             let mut queued: Vec<_> = downloads
                 .values()
                 .filter(|d| d.status == DownloadStatus::Queued)
-                .cloned()
+                .map(|d| (d.id.clone(), d.position))
                 .collect();
-            queued.sort_by_key(|d| d.position);
-            queued
+            queued.sort_by_key(|(_, pos)| *pos);
+            let to_take = max_concurrent - active;
+            let ids: Vec<String> = queued
                 .into_iter()
-                .take(max_concurrent - active)
-                .collect::<Vec<_>>()
+                .take(to_take)
+                .map(|(id, _)| id)
+                .collect();
+            for id in &ids {
+                if let Some(d) = downloads.get_mut(id) {
+                    d.status = DownloadStatus::Downloading;
+                }
+            }
+            ids
         };
+        drop(_slot_guard);
 
-        for dl in queued {
-            tracing::info!("Promoting queued download: {} ({})", dl.filename, dl.id);
+        for id in promote_ids {
+            tracing::info!("Promoting queued download: {}", id);
             let state = Arc::clone(self);
-            let id = dl.id.clone();
             // Use resume_download (not start_download) so displaced torrents
             // with live paused handles get properly unpaused via the fast path.
             tokio::spawn(async move {
@@ -450,6 +597,9 @@ impl ManagerState {
             }
         }
 
+        // Clean up a persisted .torrent file (qbit-compat adds write it here).
+        self.cleanup_persisted_torrent(id).await;
+
         let id_owned = id.to_string();
         if let Err(e) = self
             .repo_blocking(move |repo| repo.delete_download(&id_owned))
@@ -459,6 +609,19 @@ impl ManagerState {
         }
         let mut downloads = self.downloads.write().await;
         downloads.remove(id);
+    }
+
+    /// Delete the `.torrents/<id>.torrent` sidecar if it exists; best-effort.
+    async fn cleanup_persisted_torrent(&self, id: &str) {
+        let download_dir = self.download_dir().await;
+        let path = std::path::Path::new(&download_dir)
+            .join(".torrents")
+            .join(format!("{}.torrent", id));
+        if path.exists() {
+            if let Err(e) = tokio::fs::remove_file(&path).await {
+                tracing::warn!("Failed to delete persisted .torrent {:?}: {}", path, e);
+            }
+        }
     }
 
     pub async fn remove_with_files(&self, id: &str) {
@@ -487,6 +650,9 @@ impl ManagerState {
         // Now cancel the monitor loop (it will see the token and exit;
         // the torrent is already deleted from the session so its delete call is a no-op).
         self.cancel_download(id).await;
+
+        // Clean up the persisted .torrent sidecar too.
+        self.cleanup_persisted_torrent(id).await;
 
         // Always do manual cleanup: librqbit only deletes individual tracked files,
         // leaving behind the torrent folder and any untracked content (partial files,
@@ -604,45 +770,57 @@ impl ManagerState {
             return;
         }
 
-        // If at capacity, queue the lowest-priority active download to make room
-        let max_concurrent = self.settings.read().await.max_concurrent as usize;
-        let active = self.active_download_count().await;
-        if active >= max_concurrent {
-            let lowest_priority_id = {
-                let downloads = self.downloads.read().await;
-                let mut active_list: Vec<_> = downloads
-                    .values()
-                    .filter(|d| {
-                        d.id != id && d.status == DownloadStatus::Downloading
-                        // Skip Seeding — arr stack needs pausedUP to import/delete
-                    })
-                    .collect();
-                active_list.sort_by_key(|d| d.position);
-                active_list.last().map(|d| d.id.clone())
-            };
-            if let Some(oldest_id) = lowest_priority_id {
-                tracing::info!(
-                    "Queue full: displacing lowest-priority active download {} to make room for {}",
-                    oldest_id,
-                    id
-                );
-                // Pause the download but set to Queued (not Paused) so it can be
-                // re-promoted by try_start_queued when a slot opens. Keep restart_resume
-                // true so it survives restarts.
-                self.pause_download(&oldest_id).await;
-                let snap = {
+        // Serialize capacity check + displacement + slot claim with the rest of
+        // the queue-management paths so max_concurrent cannot be exceeded.
+        let displaced_id = {
+            let _slot = self.slot_lock.lock().await;
+            let max_concurrent = self.settings.read().await.max_concurrent as usize;
+            let active = self.active_download_count().await;
+            let displaced = if active >= max_concurrent {
+                let lowest_priority_id = {
+                    let downloads = self.downloads.read().await;
+                    let mut active_list: Vec<_> = downloads
+                        .values()
+                        .filter(|d| {
+                            d.id != id && d.status == DownloadStatus::Downloading
+                            // Skip Seeding — arr stack needs pausedUP to import/delete
+                        })
+                        .collect();
+                    active_list.sort_by_key(|d| d.position);
+                    active_list.last().map(|d| d.id.clone())
+                };
+                if let Some(ref oldest_id) = lowest_priority_id {
+                    // Flip the victim's status under the slot lock; the slower
+                    // librqbit pause + DB persist runs after the lock is released.
                     let mut downloads = self.downloads.write().await;
-                    if let Some(d) = downloads.get_mut(&oldest_id) {
+                    if let Some(d) = downloads.get_mut(oldest_id) {
                         d.status = DownloadStatus::Queued;
                         d.restart_resume = true;
-                        Some(d.clone())
-                    } else {
-                        None
                     }
-                };
-                if let Some(d) = snap {
-                    self.update_download(&d).await;
                 }
+                lowest_priority_id
+            } else {
+                None
+            };
+            displaced
+        };
+        if let Some(oldest_id) = displaced_id {
+            tracing::info!(
+                "Queue full: displacing lowest-priority active download {} to make room for {}",
+                oldest_id,
+                id
+            );
+            self.pause_download(&oldest_id).await;
+            let snap = {
+                let downloads = self.downloads.read().await;
+                downloads.get(&oldest_id).cloned()
+            };
+            if let Some(mut d) = snap {
+                // pause_download may have flipped the status back to Paused;
+                // restore the Queued intent so try_start_queued can promote it.
+                d.status = DownloadStatus::Queued;
+                d.restart_resume = true;
+                self.update_download(&d).await;
             }
         }
 
@@ -1501,8 +1679,8 @@ impl ManagerState {
 
     // ─── History ────────────────────────────────────────
 
-    pub async fn get_all_history(&self) -> Vec<serde_json::Value> {
-        self.repo_blocking(|repo| repo.get_all_history().unwrap_or_default())
+    pub async fn get_history_page(&self, limit: i64, offset: i64) -> Vec<serde_json::Value> {
+        self.repo_blocking(move |repo| repo.get_history_page(limit, offset).unwrap_or_default())
             .await
     }
 

@@ -241,7 +241,11 @@ pub async fn info(
         });
     }
 
-    let result: Vec<serde_json::Value> = torrents.iter().map(|d| to_qbit_torrent(d)).collect();
+    // Apply pagination (InfoQuery exposes limit/offset; cap to avoid huge responses).
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(500).min(1000);
+    let page: Vec<&Download> = torrents.iter().copied().skip(offset).take(limit).collect();
+    let result: Vec<serde_json::Value> = page.iter().map(|d| to_qbit_torrent(d)).collect();
     Json(result)
 }
 
@@ -499,7 +503,8 @@ pub async fn add(
             Err(e) => Err(e),
         }
     } else if content_type.starts_with("application/x-www-form-urlencoded") {
-        let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+        const MAX_URLENCODED_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+        let bytes = axum::body::to_bytes(request.into_body(), MAX_URLENCODED_BYTES)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to read body: {}", e));
         match bytes {
@@ -598,6 +603,7 @@ async fn handle_add_multipart(
     let mut torrent_bytes: Vec<Vec<u8>> = Vec::new();
     let mut category: Option<String> = None;
     let mut savepath: Option<String> = None;
+    let mut total_torrent_bytes: usize = 0;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -613,9 +619,14 @@ async fn handle_add_multipart(
             }
             "torrents" => {
                 const MAX_TORRENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+                const MAX_TOTAL_TORRENT_BYTES: usize = 100 * 1024 * 1024; // 100 MB aggregate
                 let bytes = field.bytes().await?;
                 if bytes.len() > MAX_TORRENT_BYTES {
                     anyhow::bail!("Torrent file too large");
+                }
+                total_torrent_bytes = total_torrent_bytes.saturating_add(bytes.len());
+                if total_torrent_bytes > MAX_TOTAL_TORRENT_BYTES {
+                    anyhow::bail!("Aggregate torrent payload too large");
                 }
                 if !bytes.is_empty() {
                     torrent_bytes.push(bytes.to_vec());

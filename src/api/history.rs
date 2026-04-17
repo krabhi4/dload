@@ -1,11 +1,17 @@
 use crate::domain::{jwt_secret, Claims};
 use crate::manager::SharedState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::Json,
     routing::{delete, get},
     Router,
 };
+
+#[derive(serde::Deserialize, Default)]
+struct HistoryQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
 
 fn extract_token(headers: &axum::http::HeaderMap) -> &str {
     headers
@@ -34,6 +40,7 @@ pub fn router(state: SharedState) -> Router {
 
 async fn list_history(
     State(state): State<SharedState>,
+    Query(q): Query<HistoryQuery>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     if require_auth(extract_token(&headers)).is_err() {
@@ -42,7 +49,9 @@ async fn list_history(
             "Authentication required",
         ));
     }
-    axum::response::IntoResponse::into_response(Json(state.get_all_history().await))
+    let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = q.offset.unwrap_or(0).max(0);
+    axum::response::IntoResponse::into_response(Json(state.get_history_page(limit, offset).await))
 }
 
 async fn delete_history_item(

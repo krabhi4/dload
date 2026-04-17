@@ -10,6 +10,7 @@ pub struct Database {
 impl Database {
     pub fn new(path: &str) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS downloads (
@@ -111,7 +112,8 @@ impl Database {
         }
 
         conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);",
+            "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);
+             CREATE INDEX IF NOT EXISTS idx_history_created_at ON download_history(created_at);",
         )?;
 
         Ok(Self {

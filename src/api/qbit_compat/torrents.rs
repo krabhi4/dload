@@ -14,6 +14,46 @@ pub async fn noop(_body: String) -> impl IntoResponse {
     (StatusCode::OK, "Ok.")
 }
 
+/// Resolve download directory for a qBit add request.
+/// Priority: category→folder mapping > savepath matching a folder > default folder.
+async fn resolve_qbit_download_dir(
+    state: &QbitState,
+    category: Option<&str>,
+    savepath: Option<&str>,
+) -> String {
+    let settings = state.manager.settings.read().await;
+    let default_path = settings.default_folder_path().to_string();
+
+    // 1. Check if category maps to a folder
+    if let Some(cat) = category {
+        let cats = state.categories.read().await;
+        if let Some(Some(folder_id)) = cats.get(cat) {
+            if let Some(path) = settings.folder_path_by_id(folder_id) {
+                return path.to_string();
+            }
+        }
+    }
+
+    // 2. Check if savepath matches a configured folder
+    if let Some(sp) = savepath {
+        let sp = sp.trim_end_matches('/');
+        if !sp.is_empty() {
+            for f in &settings.download_folders {
+                let fp = f.path.trim_end_matches('/');
+                if sp == fp || sp.starts_with(&format!("{}/", fp)) {
+                    return sp.to_string();
+                }
+            }
+            tracing::warn!(
+                "qbit_compat: savepath '{}' doesn't match any configured folder, using default",
+                sp
+            );
+        }
+    }
+
+    default_path
+}
+
 /// Case-insensitive hash match (Sonarr sends lowercase, some clients may differ)
 fn hash_matches(download: &Download, hash: &str) -> bool {
     download
@@ -436,14 +476,21 @@ pub async fn trackers(Query(_query): Query<HashQuery>) -> impl IntoResponse {
 
 pub async fn categories(State(state): State<QbitState>) -> impl IntoResponse {
     let all = state.manager.get_all().await;
+    let settings = state.manager.settings.read().await;
+    let registered = state.categories.read().await;
     let mut cats = std::collections::HashMap::new();
 
     // Include categories registered via createCategory
-    for cat in state.categories.read().await.iter() {
+    for (cat, folder_id) in registered.iter() {
+        let save_path = folder_id
+            .as_ref()
+            .and_then(|id| settings.folder_path_by_id(id))
+            .map(|p| format!("{}/", p.trim_end_matches('/')))
+            .unwrap_or_default();
         cats.entry(cat.clone()).or_insert_with(|| {
             serde_json::json!({
                 "name": cat,
-                "savePath": "",
+                "savePath": save_path,
             })
         });
     }
@@ -470,13 +517,33 @@ pub async fn create_category(State(state): State<QbitState>, body: String) -> im
     let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
         .into_owned()
         .collect();
-    if let Some(cat) = params
+    let cat = params
         .iter()
         .find(|(k, _)| k == "category")
-        .map(|(_, v)| v.clone())
-    {
+        .map(|(_, v)| v.clone());
+    let save_path = params
+        .iter()
+        .find(|(k, _)| k == "savePath")
+        .map(|(_, v)| v.clone());
+
+    if let Some(cat) = cat {
         if !cat.is_empty() {
-            state.categories.write().await.insert(cat);
+            let folder_id = if let Some(ref sp) = save_path {
+                let sp = sp.trim_end_matches('/');
+                if !sp.is_empty() {
+                    let settings = state.manager.settings.read().await;
+                    settings
+                        .download_folders
+                        .iter()
+                        .find(|f| f.path.trim_end_matches('/') == sp)
+                        .map(|f| f.id.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            state.categories.write().await.insert(cat, folder_id);
         }
     }
     (StatusCode::OK, "Ok.")
@@ -558,25 +625,8 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
         }
     }
 
-    let settings = state.manager.settings.read().await;
-    let default_dir = settings.download_dir.clone();
-    let download_dir = match savepath {
-        Some(ref p) => {
-            let p = p.trim_end_matches('/');
-            let default_trimmed = default_dir.trim_end_matches('/');
-            if p == default_trimmed || p.starts_with(&format!("{}/", default_trimmed)) {
-                p.to_string()
-            } else {
-                tracing::warn!(
-                    "qbit_compat: savepath '{}' outside download_dir, ignoring",
-                    p
-                );
-                default_dir.clone()
-            }
-        }
-        None => default_dir.clone(),
-    };
-    drop(settings);
+    let download_dir =
+        resolve_qbit_download_dir(&state, category.as_deref(), savepath.as_deref()).await;
 
     for url in urls {
         let mut download = Download::new(url.clone(), &download_dir);
@@ -653,25 +703,8 @@ async fn handle_add_multipart(
         }
     }
 
-    let settings = state.manager.settings.read().await;
-    let default_dir = settings.download_dir.clone();
-    let download_dir = match savepath {
-        Some(ref p) => {
-            let p = p.trim_end_matches('/');
-            let default_trimmed = default_dir.trim_end_matches('/');
-            if p == default_trimmed || p.starts_with(&format!("{}/", default_trimmed)) {
-                p.to_string()
-            } else {
-                tracing::warn!(
-                    "qbit_compat: savepath '{}' outside download_dir, ignoring",
-                    p
-                );
-                default_dir.clone()
-            }
-        }
-        None => default_dir.clone(),
-    };
-    drop(settings);
+    let download_dir =
+        resolve_qbit_download_dir(&state, category.as_deref(), savepath.as_deref()).await;
 
     // Process magnet links / URLs
     for url in urls {
@@ -887,6 +920,36 @@ mod tests {
     #[test]
     fn qbit_state_seeding_enables_can_move_files() {
         assert_eq!(to_qbit_state(&DownloadStatus::Seeding), "pausedUP");
+    }
+
+    #[test]
+    fn parse_eta_known_units() {
+        assert_eq!(parse_eta_to_secs("1h30m15s"), 5415);
+        assert_eq!(parse_eta_to_secs("2h"), 7200);
+        assert_eq!(parse_eta_to_secs("45m"), 2700);
+        assert_eq!(parse_eta_to_secs("90"), 90);
+    }
+
+    #[test]
+    fn to_qbit_torrent_save_path_ends_with_slash() {
+        let d = Download::new("magnet:?xt=urn:btih:ABC".into(), "/media/tv");
+        let json = to_qbit_torrent(&d);
+        let sp = json["save_path"].as_str().unwrap();
+        assert!(sp.ends_with('/'), "save_path should end with /: {sp}");
+        assert!(
+            sp.starts_with("/media/tv"),
+            "save_path should be parent dir"
+        );
+    }
+
+    #[test]
+    fn to_qbit_torrent_preserves_category() {
+        let mut d = Download::new("magnet:?xt=urn:btih:ABC".into(), "/media/tv");
+        d.category = Some("tv-sonarr".into());
+        d.info_hash = Some("abc123".into());
+        d.protocol = crate::domain::Protocol::Torrent;
+        let json = to_qbit_torrent(&d);
+        assert_eq!(json["category"].as_str().unwrap(), "tv-sonarr");
     }
 
     #[test]

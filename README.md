@@ -18,8 +18,10 @@ A fast, lightweight download manager built in Rust that streams directly to disk
 - **Low Memory Usage**: Streams chunks directly to disk (~20-50MB vs aria2's 100-500MB+)
 - **HTTP/HTTPS Support**: Fast async downloading with progress tracking
 - **BitTorrent / Magnet Links**: Torrent support via `librqbit`
+- **Multiple Download Folders**: Configure multiple folders with labels, set a default, and map qBittorrent categories to specific folders for Sonarr/Radarr integration
 - **Web UI**: Modern browser-based interface
 - **REST API**: Programmatic access
+- **qBittorrent API Compatible**: Works as a drop-in replacement for qBittorrent in Sonarr, Radarr, and other arr apps
 - **SQLite Database**: Persistent download history
 - **Docker Ready**: Multi-platform builds (amd64, arm64)
 
@@ -55,10 +57,16 @@ cargo build --release
 
 Default settings:
 - **Port**: 8080
-- **Download Directory**: `/data`
+- **Download Directory**: `/downloads` (configurable, supports multiple folders)
 - **Max Concurrent**: 3 downloads
 - **Username**: admin
 - **Password**: admin
+
+### Multiple Download Folders
+
+Configure multiple download folders in Settings, each with a label and path. One folder is the default for manual downloads. When adding a download via the UI, a folder dropdown appears (hidden if only one folder is configured).
+
+For Sonarr/Radarr integration, map qBittorrent categories to specific folders via the `createCategory` API with `savePath`. Downloads with that category are automatically routed to the mapped folder.
 
 ## API Endpoints
 

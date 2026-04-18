@@ -2196,4 +2196,85 @@ select:focus {
   .empty-state {
     padding: 24px 20px;
   }
+
+  .folder-row {
+    flex-wrap: wrap;
+  }
+
+  .folder-label-input,
+  .folder-path-input {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+}
+
+/* ─── Folder Management ────────────────────────── */
+
+.folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.folder-default-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2em;
+  color: var(--text-secondary);
+  padding: 2px 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.folder-default-btn.active {
+  color: var(--accent);
+}
+
+.folder-label-input {
+  width: 120px;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.folder-path-input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.folder-remove-btn {
+  color: var(--text-secondary);
+  font-size: 1.2em;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+
+.folder-remove-btn:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.folder-remove-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.folder-select {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 0.9em;
+  max-width: 160px;
 }

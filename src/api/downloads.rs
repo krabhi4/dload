@@ -153,12 +153,22 @@ async fn add_download(
             }
         };
         let url = payload["url"].as_str().unwrap_or("").trim().to_string();
+        let folder_id = payload["folder_id"].as_str();
 
         if let Err(e) = validate_download_url(&url) {
             return (StatusCode::BAD_REQUEST, e).into_response();
         }
 
-        let download_dir = state.settings.read().await.download_dir.clone();
+        let download_dir = {
+            let settings = state.settings.read().await;
+            match folder_id {
+                Some(id) => settings
+                    .folder_path_by_id(id)
+                    .unwrap_or(settings.default_folder_path())
+                    .to_string(),
+                None => settings.default_folder_path().to_string(),
+            }
+        };
 
         let download = Download::new(url, &download_dir);
 
@@ -188,6 +198,7 @@ async fn handle_add_download_multipart(
 
     let mut torrent_blobs: Vec<Vec<u8>> = Vec::new();
     let mut urls: Vec<String> = Vec::new();
+    let mut folder_id: Option<String> = None;
     let mut total: usize = 0;
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -241,6 +252,14 @@ async fn handle_add_download_multipart(
                     }
                 }
             }
+            "folder_id" => {
+                if let Ok(text) = field.text().await {
+                    let text = text.trim().to_string();
+                    if !text.is_empty() {
+                        folder_id = Some(text);
+                    }
+                }
+            }
             _ => {
                 // Drain unknown fields so the multipart reader advances.
                 if let Err(e) = field.bytes().await {
@@ -266,7 +285,16 @@ async fn handle_add_download_multipart(
         }
     }
 
-    let download_dir = state.settings.read().await.download_dir.clone();
+    let download_dir = {
+        let settings = state.settings.read().await;
+        match folder_id.as_deref() {
+            Some(id) => settings
+                .folder_path_by_id(id)
+                .unwrap_or(settings.default_folder_path())
+                .to_string(),
+            None => settings.default_folder_path().to_string(),
+        }
+    };
 
     let mut created: Vec<Download> = Vec::new();
 

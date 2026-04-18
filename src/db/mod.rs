@@ -111,6 +111,51 @@ impl Database {
             }
         }
 
+        // One-time migration: create initial download_folders entry from download_dir
+        {
+            let already_done: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key = 'migration_download_folders'",
+                    [],
+                    |row| row.get::<_, i32>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if !already_done {
+                let has_folders: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM settings WHERE key = 'download_folders'",
+                        [],
+                        |row| row.get::<_, i32>(0),
+                    )
+                    .unwrap_or(0)
+                    > 0;
+                if !has_folders {
+                    let dir: String = conn
+                        .query_row(
+                            "SELECT value FROM settings WHERE key = 'download_dir'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or_else(|_| "/downloads".to_string());
+                    let folder = serde_json::json!([{
+                        "id": uuid::Uuid::new_v4().to_string(),
+                        "label": "Default",
+                        "path": dir,
+                        "is_default": true,
+                    }]);
+                    let _ = conn.execute(
+                        "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+                        rusqlite::params![&"download_folders", &folder.to_string()],
+                    );
+                }
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![&"migration_download_folders", &"1"],
+                );
+            }
+        }
+
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);
              CREATE INDEX IF NOT EXISTS idx_history_created_at ON download_history(created_at);",

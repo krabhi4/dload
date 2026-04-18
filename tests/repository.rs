@@ -3,7 +3,7 @@
 //! behaviour matches production.
 
 use dload::db::{repository::Repository, Database};
-use dload::domain::{Download, DownloadStatus, Protocol, Role, Settings, User};
+use dload::domain::{Download, DownloadFolder, DownloadStatus, Protocol, Role, Settings, User};
 use std::sync::Arc;
 
 fn repo() -> Repository {
@@ -218,6 +218,116 @@ fn get_history_page_empty_when_offset_past_end() {
     let r = repo();
     r.insert_history(&sample_download("only", 0)).unwrap();
     assert!(r.get_history_page(10, 100).unwrap().is_empty());
+}
+
+// ─── download_folders persistence ────────────────────────────────────────
+
+#[test]
+fn save_settings_persists_download_folders() {
+    let r = repo();
+    let folders = vec![
+        DownloadFolder {
+            id: "f1".into(),
+            label: "Default".into(),
+            path: "/downloads".into(),
+            is_default: true,
+        },
+        DownloadFolder {
+            id: "f2".into(),
+            label: "TV Shows".into(),
+            path: "/media/tv".into(),
+            is_default: false,
+        },
+        DownloadFolder {
+            id: "f3".into(),
+            label: "Movies".into(),
+            path: "/media/movies".into(),
+            is_default: false,
+        },
+    ];
+    let s = Settings {
+        download_folders: folders,
+        ..Settings::default()
+    };
+    r.save_settings(&s).unwrap();
+
+    let got = r.get_settings().unwrap();
+    assert_eq!(got.download_folders.len(), 3);
+    assert_eq!(got.download_folders[0].label, "Default");
+    assert_eq!(got.download_folders[1].path, "/media/tv");
+    assert!(got.download_folders[0].is_default);
+    assert!(!got.download_folders[1].is_default);
+}
+
+#[test]
+fn save_settings_overwrites_download_folders() {
+    let r = repo();
+    let s1 = Settings {
+        download_folders: vec![DownloadFolder {
+            id: "f1".into(),
+            label: "Default".into(),
+            path: "/downloads".into(),
+            is_default: true,
+        }],
+        ..Settings::default()
+    };
+    r.save_settings(&s1).unwrap();
+
+    let s2 = Settings {
+        download_folders: vec![
+            DownloadFolder {
+                id: "f1".into(),
+                label: "Default".into(),
+                path: "/downloads".into(),
+                is_default: true,
+            },
+            DownloadFolder {
+                id: "f2".into(),
+                label: "TV".into(),
+                path: "/tv".into(),
+                is_default: false,
+            },
+        ],
+        ..Settings::default()
+    };
+    r.save_settings(&s2).unwrap();
+
+    let got = r.get_settings().unwrap();
+    assert_eq!(
+        got.download_folders.len(),
+        2,
+        "folders should be overwritten"
+    );
+}
+
+#[test]
+fn empty_download_folders_falls_back_to_default() {
+    let r = repo();
+    // Save settings without download_folders (simulating old client)
+    let s = Settings {
+        download_folders: vec![],
+        ..Settings::default()
+    };
+    r.save_settings(&s).unwrap();
+
+    let got = r.get_settings().unwrap();
+    // Empty vec persisted — caller handles fallback
+    assert!(got.download_folders.is_empty());
+}
+
+#[test]
+fn migration_creates_default_folder_from_download_dir() {
+    // Database::new runs migrations including download_folders migration.
+    // On a fresh DB, it reads download_dir (defaults to "/downloads") and
+    // creates a single default folder.
+    let r = repo();
+    let got = r.get_settings().unwrap();
+    assert!(
+        !got.download_folders.is_empty(),
+        "migration should create at least one folder"
+    );
+    assert!(got.download_folders[0].is_default);
+    assert_eq!(got.download_folders[0].path, got.download_dir);
 }
 
 #[test]

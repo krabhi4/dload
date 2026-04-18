@@ -174,6 +174,7 @@ function showDownloads() {
     '<form id="add-download-form" class="input-group">' +
     '<label for="download-url" class="sr-only">Download URL</label>' +
     '<input type="text" id="download-url" placeholder="Paste URL — http, ftp, sftp, magnet — or attach a .torrent file">' +
+    '<select id="download-folder" class="folder-select" title="Download folder" style="display:none"></select>' +
     '<input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" multiple hidden>' +
     '<button type="button" id="attach-torrent-btn" class="btn-icon" title="Attach .torrent file" aria-label="Attach .torrent file">' +
     '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -249,12 +250,10 @@ function showSettings() {
     "</div>" +
     '<form id="settings-form" class="settings-grid">' +
     '<div class="form-field">' +
-    '<label for="settings-dir">Download Directory</label>' +
-    '<div class="input-group">' +
-    '<input type="text" id="settings-dir" value="/downloads">' +
-    '<button type="button" class="btn-ghost" onclick="openFolderBrowser()">Browse</button>' +
-    "</div>" +
-    '<span class="hint">Path inside the container where files are saved</span>' +
+    '<label>Download Folders</label>' +
+    '<div id="folder-list" class="folder-list"></div>' +
+    '<button type="button" class="btn-ghost btn-small" id="add-folder-btn" onclick="addFolderRow()">+ Add Folder</button>' +
+    '<span class="hint">Configure where files are saved. One folder must be the default.</span>' +
     "</div>" +
     '<div class="form-field">' +
     '<label for="settings-max-concurrent">Max Concurrent Downloads</label>' +
@@ -267,7 +266,7 @@ function showSettings() {
     '<span class="hint">More connections can improve speed for HTTP downloads</span>' +
     "</div>" +
     '<div class="settings-actions">' +
-    '<button type="submit" class="btn-primary">Save Settings</button>' +
+    '<button type="button" class="btn-primary" id="save-settings-btn">Save Settings</button>' +
     "</div>" +
     "</form>" +
     '<div id="user-management-section"></div>'
@@ -1172,12 +1171,102 @@ async function changePassword() {
   }
 }
 
+var settingsFolders = [];
+
+function renderFolderList() {
+  var container = document.getElementById("folder-list");
+  if (!container) return;
+  container.textContent = "";
+  settingsFolders.forEach(function (f, idx) {
+    var row = document.createElement("div");
+    row.className = "folder-row";
+
+    var radio = document.createElement("button");
+    radio.type = "button";
+    radio.className = "folder-default-btn" + (f.is_default ? " active" : "");
+    radio.title = f.is_default ? "Default folder" : "Set as default";
+    radio.textContent = f.is_default ? "\u2605" : "\u2606";
+    radio.onclick = function () {
+      settingsFolders.forEach(function (ff) { ff.is_default = false; });
+      f.is_default = true;
+      renderFolderList();
+    };
+
+    var label = document.createElement("input");
+    label.type = "text";
+    label.className = "folder-label-input";
+    label.value = f.label;
+    label.placeholder = "Label";
+    label.oninput = function () { f.label = this.value; };
+
+    var path = document.createElement("input");
+    path.type = "text";
+    path.className = "folder-path-input";
+    path.value = f.path;
+    path.placeholder = "/path/to/folder";
+    path.oninput = function () { f.path = this.value; };
+
+    var browseBtn = document.createElement("button");
+    browseBtn.type = "button";
+    browseBtn.className = "btn-ghost btn-small";
+    browseBtn.textContent = "Browse";
+    browseBtn.onclick = (function (folder, pathInput) {
+      return function () {
+        openFolderBrowser(folder.path || "/", function (sel) {
+          folder.path = sel;
+          pathInput.value = sel;
+        });
+      };
+    })(f, path);
+
+    var removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn-ghost btn-small folder-remove-btn";
+    removeBtn.textContent = "\u00D7";
+    removeBtn.title = "Remove folder";
+    removeBtn.disabled = settingsFolders.length <= 1;
+    removeBtn.onclick = (function (index) {
+      return function () {
+        var removed = settingsFolders.splice(index, 1)[0];
+        if (removed.is_default && settingsFolders.length > 0) {
+          settingsFolders[0].is_default = true;
+        }
+        renderFolderList();
+      };
+    })(idx);
+
+    row.appendChild(radio);
+    row.appendChild(label);
+    row.appendChild(path);
+    row.appendChild(browseBtn);
+    row.appendChild(removeBtn);
+    container.appendChild(row);
+  });
+}
+
+function addFolderRow() {
+  settingsFolders.push({
+    id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2),
+    label: "",
+    path: "",
+    is_default: false,
+  });
+  renderFolderList();
+  var container = document.getElementById("folder-list");
+  if (container) {
+    var inputs = container.querySelectorAll(".folder-label-input");
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  }
+}
+
 async function loadSettings() {
   try {
     var settings = await apiRequest("/settings");
     var el;
-    el = document.getElementById("settings-dir");
-    if (el) el.value = settings.download_dir;
+    settingsFolders = settings.download_folders && settings.download_folders.length
+      ? settings.download_folders
+      : [{ id: "default", label: "Default", path: settings.download_dir, is_default: true }];
+    renderFolderList();
     el = document.getElementById("settings-max-concurrent");
     if (el) el.value = settings.max_concurrent;
     el = document.getElementById("settings-connections");
@@ -1566,13 +1655,45 @@ function renderTorrentChips() {
   });
 }
 
+async function loadFolderDropdown() {
+  try {
+    var settings = await apiRequest("/settings");
+    var select = document.getElementById("download-folder");
+    if (!select) return;
+    var folders = settings.download_folders || [];
+    if (folders.length <= 1) {
+      select.style.display = "none";
+      return;
+    }
+    select.textContent = "";
+    folders.forEach(function (f) {
+      var opt = document.createElement("option");
+      opt.value = f.id;
+      opt.textContent = f.label || f.path;
+      if (f.is_default) opt.selected = true;
+      select.appendChild(opt);
+    });
+    select.style.display = "";
+  } catch (e) {
+    // silent
+  }
+}
+
+function getSelectedFolderId() {
+  var select = document.getElementById("download-folder");
+  return select && select.style.display !== "none" ? select.value : null;
+}
+
 async function addDownload(url) {
   var btn = document.querySelector('#add-download-form .btn-primary');
   if (btn) { btn.disabled = true; btn.textContent = "Adding\u2026"; }
   try {
+    var body = { url: url };
+    var folderId = getSelectedFolderId();
+    if (folderId) body.folder_id = folderId;
     await apiRequest("/downloads", {
       method: "POST",
-      body: JSON.stringify({ url: url }),
+      body: JSON.stringify(body),
     });
     lastDownloads = [];
     loadDownloads();
@@ -1594,6 +1715,8 @@ async function addTorrentFiles(files, optionalUrl) {
     if (optionalUrl) {
       form.append("urls", optionalUrl);
     }
+    var folderId = getSelectedFolderId();
+    if (folderId) form.append("folder_id", folderId);
     await apiRequest("/downloads", { method: "POST", body: form });
     attachedTorrents = [];
     renderTorrentChips();
@@ -1869,10 +1992,11 @@ async function resumeAllDownloads() {
 // ─── Folder Browser ─────────────────────────────────
 
 var folderBrowserModal = null;
+var folderBrowserCallback = null;
 
-function openFolderBrowser() {
-  var startPath = document.getElementById("settings-dir").value || "/";
-  showFolderBrowser(startPath);
+function openFolderBrowser(startPath, onSelect) {
+  folderBrowserCallback = onSelect || null;
+  showFolderBrowser(startPath || "/");
 }
 
 function showFolderBrowser(path) {
@@ -1928,7 +2052,7 @@ function showFolderBrowser(path) {
   selectBtn.id = "browser-select-btn";
   selectBtn.onclick = function () {
     var sel = pathDiv.getAttribute("data-path");
-    if (sel) document.getElementById("settings-dir").value = sel;
+    if (sel && folderBrowserCallback) folderBrowserCallback(sel);
     closeFolderBrowser();
   };
   actions.appendChild(newBtn);
@@ -2056,10 +2180,28 @@ async function browserCreateFolder() {
 
 async function saveSettings() {
   try {
+    // Validate folders before saving
+    var hasDefault = settingsFolders.some(function (f) { return f.is_default; });
+    if (!hasDefault) {
+      showToast("error", "One folder must be set as default");
+      return;
+    }
+    for (var i = 0; i < settingsFolders.length; i++) {
+      if (!settingsFolders[i].label.trim()) {
+        showToast("error", "All folders must have a label");
+        return;
+      }
+      if (!settingsFolders[i].path.trim()) {
+        showToast("error", "All folders must have a path");
+        return;
+      }
+    }
+
     // Fetch current settings to preserve non-UI fields
     var current = await apiRequest("/settings");
+    var defaultFolder = settingsFolders.find(function (f) { return f.is_default; });
     var settings = {
-      download_dir: document.getElementById("settings-dir").value,
+      download_dir: defaultFolder ? defaultFolder.path : current.download_dir,
       max_concurrent: parseInt(
         document.getElementById("settings-max-concurrent").value,
       ),
@@ -2069,6 +2211,7 @@ async function saveSettings() {
       min_split_size: current.min_split_size || 20971520,
       username: current.username || "",
       port: current.port || 8080,
+      download_folders: settingsFolders,
     };
 
     await apiRequest("/settings", {
@@ -2129,6 +2272,7 @@ function navigate(hash) {
     loadHistory();
   } else {
     loadDownloads();
+    loadFolderDropdown();
   }
 }
 
@@ -2167,9 +2311,9 @@ function bindForms() {
     });
   }
 
-  var settingsForm = document.getElementById("settings-form");
-  if (settingsForm) {
-    settingsForm.addEventListener("submit", function (e) {
+  var saveSettingsBtn = document.getElementById("save-settings-btn");
+  if (saveSettingsBtn) {
+    saveSettingsBtn.addEventListener("click", function (e) {
       e.preventDefault();
       saveSettings();
     });

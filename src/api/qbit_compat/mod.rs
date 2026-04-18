@@ -12,7 +12,7 @@ use axum::{
     Router,
 };
 use session::SessionStore;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -20,14 +20,14 @@ use tokio::sync::RwLock;
 pub struct QbitState {
     pub manager: SharedState,
     pub sessions: Arc<SessionStore>,
-    pub categories: Arc<RwLock<HashSet<String>>>,
+    pub categories: Arc<RwLock<HashMap<String, Option<String>>>>,
 }
 
 pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
     let state = QbitState {
         manager,
         sessions,
-        categories: Arc::new(RwLock::new(HashSet::new())),
+        categories: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // Auth routes (no session required)

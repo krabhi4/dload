@@ -753,10 +753,21 @@ impl ManagerState {
         if let Some(ref d) = download {
             let path = std::path::Path::new(&d.save_path);
 
-            let download_dir = self.download_dir().await;
-            let safe = match path.canonicalize() {
-                Ok(canonical) => canonical.starts_with(&download_dir),
-                Err(_) => d.save_path.starts_with(&download_dir) && !d.save_path.contains(".."),
+            let safe = {
+                let settings = self.settings.read().await;
+                let folders = &settings.download_folders;
+                let download_dir = &settings.download_dir;
+                match path.canonicalize() {
+                    Ok(canonical) => {
+                        canonical.starts_with(download_dir)
+                            || folders.iter().any(|f| canonical.starts_with(&f.path))
+                    }
+                    Err(_) => {
+                        (d.save_path.starts_with(download_dir)
+                            || folders.iter().any(|f| d.save_path.starts_with(&f.path)))
+                            && !d.save_path.contains("..")
+                    }
+                }
             };
 
             if safe && path.exists() {
@@ -2022,9 +2033,15 @@ async fn session_add_and_wait(
 ) -> anyhow::Result<()> {
     let session = state.get_torrent_session().await?;
 
-    let download_dir = state.download_dir().await;
+    let fallback_dir = state.download_dir().await;
+    let output_dir = std::path::Path::new(&download.save_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(fallback_dir);
     let opts = librqbit::AddTorrentOptions {
         overwrite: true,
+        output_folder: Some(output_dir.clone()),
         force_tracker_interval: Some(std::time::Duration::from_secs(60)),
         ..Default::default()
     };
@@ -2048,7 +2065,7 @@ async fn session_add_and_wait(
     if let Some(raw_name) = handle.name() {
         let name = crate::domain::sanitize_filename(&raw_name);
         download.filename = name.clone();
-        let new_path = format!("{}/{}", download_dir.trim_end_matches('/'), name);
+        let new_path = format!("{}/{}", output_dir.trim_end_matches('/'), name);
         download.save_path = new_path.clone();
         download.content_path = Some(new_path);
     }

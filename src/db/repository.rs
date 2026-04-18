@@ -1,4 +1,4 @@
-use crate::domain::{Download, DownloadStatus, Protocol, Role, Settings, User};
+use crate::domain::{Download, DownloadFolder, DownloadStatus, Protocol, Role, Settings, User};
 use rusqlite::params;
 use std::sync::Arc;
 
@@ -171,6 +171,11 @@ impl Repository {
                 }
                 "username" => settings.username = value,
                 "port" => settings.port = value.parse().unwrap_or(8080),
+                "download_folders" => {
+                    if let Ok(folders) = serde_json::from_str::<Vec<DownloadFolder>>(&value) {
+                        settings.download_folders = folders;
+                    }
+                }
                 _ => {}
             }
         }
@@ -179,6 +184,8 @@ impl Repository {
 
     pub fn save_settings(&self, settings: &Settings) -> anyhow::Result<()> {
         let conn = self.db.conn.lock().unwrap();
+        let folders_json =
+            serde_json::to_string(&settings.download_folders).unwrap_or_else(|_| "[]".to_string());
         let pairs = [
             ("download_dir", settings.download_dir.clone()),
             ("max_concurrent", settings.max_concurrent.to_string()),
@@ -189,6 +196,7 @@ impl Repository {
             ("min_split_size", settings.min_split_size.to_string()),
             ("username", settings.username.clone()),
             ("port", settings.port.to_string()),
+            ("download_folders", folders_json),
         ];
 
         let tx = conn.unchecked_transaction()?;

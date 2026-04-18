@@ -2,7 +2,8 @@ use crate::domain::{jwt_secret, Claims, Download, DownloadStatus};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, Query, State},
-    response::Json,
+    http::StatusCode,
+    response::{IntoResponse, Json},
     routing::{delete, get, post},
     Router,
 };
@@ -116,37 +117,192 @@ async fn reorder_downloads_handler(
 async fn add_download(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
-    Json(payload): Json<serde_json::Value>,
+    request: axum::extract::Request,
 ) -> axum::response::Response {
     if require_auth(extract_token(&headers)).is_err() {
-        return axum::response::IntoResponse::into_response((
-            axum::http::StatusCode::UNAUTHORIZED,
-            "Authentication required",
-        ));
-    }
-    let url = payload["url"].as_str().unwrap_or("").trim().to_string();
-
-    if let Err(e) = validate_download_url(&url) {
-        return axum::response::IntoResponse::into_response((
-            axum::http::StatusCode::BAD_REQUEST,
-            e,
-        ));
+        return (StatusCode::UNAUTHORIZED, "Authentication required").into_response();
     }
 
-    let settings = state.settings.read().await;
-    let download_dir = settings.download_dir.clone();
-    drop(settings);
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json");
 
-    let download = Download::new(url, &download_dir);
+    if content_type.starts_with("multipart/form-data") {
+        use axum::extract::FromRequest;
+        match axum_extra::extract::Multipart::from_request(request, &state).await {
+            Ok(mp) => handle_add_download_multipart(state, mp).await,
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid multipart body: {}", e),
+            )
+                .into_response(),
+        }
+    } else if content_type.starts_with("application/json") {
+        const MAX_JSON_BYTES: usize = 1024 * 1024; // 1 MiB
+        let body_bytes = match axum::body::to_bytes(request.into_body(), MAX_JSON_BYTES).await {
+            Ok(b) => b,
+            Err(_) => {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "Request body too large").into_response()
+            }
+        };
+        let payload: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response()
+            }
+        };
+        let url = payload["url"].as_str().unwrap_or("").trim().to_string();
 
-    state.add_and_maybe_start(download.clone()).await;
+        if let Err(e) = validate_download_url(&url) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
 
-    // Re-read to get the actual status (Downloading or Queued)
-    let actual = {
-        let downloads = state.downloads.read().await;
-        downloads.get(&download.id).cloned().unwrap_or(download)
-    };
-    axum::response::IntoResponse::into_response(Json(actual))
+        let download_dir = state.settings.read().await.download_dir.clone();
+
+        let download = Download::new(url, &download_dir);
+
+        state.add_and_maybe_start(download.clone()).await;
+
+        // Re-read to get the actual status (Downloading or Queued).
+        let actual = {
+            let downloads = state.downloads.read().await;
+            downloads.get(&download.id).cloned().unwrap_or(download)
+        };
+        Json(actual).into_response()
+    } else {
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!("Unsupported content type: {}", content_type),
+        )
+            .into_response()
+    }
+}
+
+async fn handle_add_download_multipart(
+    state: SharedState,
+    mut multipart: axum_extra::extract::Multipart,
+) -> axum::response::Response {
+    const MAX_TORRENT_BYTES: usize = 10 * 1024 * 1024; // 10 MiB per file
+    const MAX_TOTAL_TORRENT_BYTES: usize = 100 * 1024 * 1024; // 100 MiB aggregate
+
+    let mut torrent_blobs: Vec<Vec<u8>> = Vec::new();
+    let mut urls: Vec<String> = Vec::new();
+    let mut total: usize = 0;
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "torrents" => {
+                let bytes = match field.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            format!("Failed to read torrent field: {}", e),
+                        )
+                            .into_response()
+                    }
+                };
+                if bytes.len() > MAX_TORRENT_BYTES {
+                    return (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Torrent file too large (max 10 MiB)",
+                    )
+                        .into_response();
+                }
+                total = total.saturating_add(bytes.len());
+                if total > MAX_TOTAL_TORRENT_BYTES {
+                    return (
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "Aggregate torrent payload too large (max 100 MiB)",
+                    )
+                        .into_response();
+                }
+                if !bytes.is_empty() {
+                    torrent_blobs.push(bytes.to_vec());
+                }
+            }
+            "urls" => {
+                let text = match field.text().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            format!("Failed to read urls field: {}", e),
+                        )
+                            .into_response()
+                    }
+                };
+                for line in text.lines() {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        urls.push(line.to_string());
+                    }
+                }
+            }
+            _ => {
+                // Drain unknown fields so the multipart reader advances.
+                if let Err(e) = field.bytes().await {
+                    tracing::warn!("failed to consume multipart field '{}': {}", name, e);
+                }
+            }
+        }
+    }
+
+    if torrent_blobs.is_empty() && urls.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "No torrent files or urls provided",
+        )
+            .into_response();
+    }
+
+    // Validate every url up-front — reject the whole submission if any is bad,
+    // so the client gets a single clear error rather than partial success.
+    for url in &urls {
+        if let Err(e) = validate_download_url(url) {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid url '{}': {}", url, e),
+            )
+                .into_response();
+        }
+    }
+
+    let download_dir = state.settings.read().await.download_dir.clone();
+
+    let mut created: Vec<Download> = Vec::new();
+
+    for url in urls {
+        let download = Download::new(url, &download_dir);
+        state.add_and_maybe_start(download.clone()).await;
+        let actual = {
+            let downloads = state.downloads.read().await;
+            downloads.get(&download.id).cloned().unwrap_or(download)
+        };
+        created.push(actual);
+    }
+
+    let mut skipped_torrents = 0usize;
+    for bytes in torrent_blobs {
+        // Category is not exposed on the native API; the qBit-compat layer
+        // carries it through a separate endpoint. Pass None here.
+        match state.add_torrent_from_bytes(bytes, &download_dir, None).await {
+            Some(dl) => created.push(dl),
+            None => skipped_torrents += 1,
+        }
+    }
+
+    if created.is_empty() && skipped_torrents > 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "All uploaded torrent files were invalid",
+        )
+            .into_response();
+    }
+
+    Json(created).into_response()
 }
 
 async fn remove_download(

@@ -97,9 +97,13 @@ function dismissToast(id) {
 
 async function apiRequest(endpoint, options) {
   options = options || {};
-  var headers = {
-    "Content-Type": "application/json",
-  };
+  var headers = {};
+  // Only force a JSON content type for string bodies. FormData bodies must
+  // let the browser set the multipart boundary automatically.
+  var isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (!isFormData) {
+    headers["Content-Type"] = "application/json";
+  }
   if (token) {
     headers["Authorization"] = "Bearer " + token;
   }
@@ -169,9 +173,17 @@ function showDownloads() {
     '<div class="add-section">' +
     '<form id="add-download-form" class="input-group">' +
     '<label for="download-url" class="sr-only">Download URL</label>' +
-    '<input type="text" id="download-url" placeholder="Paste URL — http, ftp, sftp, magnet, or .torrent" required>' +
+    '<input type="text" id="download-url" placeholder="Paste URL — http, ftp, sftp, magnet — or attach a .torrent file">' +
+    '<input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" multiple hidden>' +
+    '<button type="button" id="attach-torrent-btn" class="btn-icon" title="Attach .torrent file" aria-label="Attach .torrent file">' +
+    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>' +
+    '</svg>' +
+    '<span class="btn-icon-label">Attach .torrent file</span>' +
+    '</button>' +
     '<button type="submit" class="btn-primary">Download</button>' +
     "</form>" +
+    '<div id="torrent-file-chips" class="file-chips" hidden></div>' +
     "</div>" +
     '<div class="stats-bar">' +
     '<span class="stat-val" id="active-count">0</span> Active' +
@@ -1521,6 +1533,39 @@ async function clearAllHistory() {
 
 // ─── Actions ────────────────────────────────────────
 
+var attachedTorrents = [];
+
+function renderTorrentChips() {
+  var container = document.getElementById("torrent-file-chips");
+  if (!container) return;
+  while (container.firstChild) container.removeChild(container.firstChild);
+  if (attachedTorrents.length === 0) {
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
+  attachedTorrents.forEach(function (f, idx) {
+    var chip = document.createElement("span");
+    chip.className = "file-chip";
+    var label = document.createElement("span");
+    label.className = "file-chip-name";
+    label.title = f.name;
+    label.textContent = f.name;
+    chip.appendChild(label);
+    var remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "file-chip-remove";
+    remove.setAttribute("aria-label", "Remove " + f.name);
+    remove.textContent = "\u00d7";
+    remove.addEventListener("click", function () {
+      attachedTorrents.splice(idx, 1);
+      renderTorrentChips();
+    });
+    chip.appendChild(remove);
+    container.appendChild(chip);
+  });
+}
+
 async function addDownload(url) {
   var btn = document.querySelector('#add-download-form .btn-primary');
   if (btn) { btn.disabled = true; btn.textContent = "Adding\u2026"; }
@@ -1533,6 +1578,32 @@ async function addDownload(url) {
     loadDownloads();
   } catch (e) {
     showToast("error", "Failed to add download", e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Download"; }
+  }
+}
+
+async function addTorrentFiles(files, optionalUrl) {
+  var btn = document.querySelector('#add-download-form .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = "Uploading\u2026"; }
+  try {
+    var form = new FormData();
+    for (var i = 0; i < files.length; i++) {
+      form.append("torrents", files[i], files[i].name);
+    }
+    if (optionalUrl) {
+      form.append("urls", optionalUrl);
+    }
+    await apiRequest("/downloads", { method: "POST", body: form });
+    attachedTorrents = [];
+    renderTorrentChips();
+    // Re-picking the same file after a submit needs the input's value reset.
+    var fi = document.getElementById("torrent-file-input");
+    if (fi) fi.value = "";
+    lastDownloads = [];
+    loadDownloads();
+  } catch (e) {
+    showToast("error", "Failed to upload torrent", e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "Download"; }
   }
@@ -2064,12 +2135,34 @@ function navigate(hash) {
 function bindForms() {
   var addForm = document.getElementById("add-download-form");
   if (addForm) {
+    var attachBtn = document.getElementById("attach-torrent-btn");
+    var fileInput = document.getElementById("torrent-file-input");
+    if (attachBtn && fileInput) {
+      attachBtn.addEventListener("click", function () {
+        fileInput.click();
+      });
+      fileInput.addEventListener("change", function () {
+        if (!fileInput.files) return;
+        for (var i = 0; i < fileInput.files.length; i++) {
+          attachedTorrents.push(fileInput.files[i]);
+        }
+        fileInput.value = "";
+        renderTorrentChips();
+      });
+    }
+
     addForm.addEventListener("submit", function (e) {
       e.preventDefault();
       var input = document.getElementById("download-url");
-      if (input.value.trim()) {
-        addDownload(input.value.trim());
+      var url = input ? input.value.trim() : "";
+      if (attachedTorrents.length > 0) {
+        addTorrentFiles(attachedTorrents.slice(), url || null);
+        if (input) input.value = "";
+      } else if (url) {
+        addDownload(url);
         input.value = "";
+      } else {
+        showToast("error", "Nothing to add", "Paste a URL or attach a .torrent file");
       }
     });
   }

@@ -400,6 +400,77 @@ impl ManagerState {
         }
     }
 
+    /// Materialize a `Download` from raw `.torrent` bytes and either start it
+    /// immediately or queue it, persisting the bytes under `<download_dir>/.torrents`
+    /// so queued downloads can be resumed after restart. Used by both the native
+    /// and qBittorrent-compat multipart endpoints. Returns `None` if the bytes
+    /// are not a valid `.torrent` file.
+    pub async fn add_torrent_from_bytes(
+        self: &Arc<Self>,
+        bytes: Vec<u8>,
+        download_dir: &str,
+        category: Option<String>,
+    ) -> Option<Download> {
+        let meta = match librqbit::torrent_from_bytes::<librqbit::ByteBufOwned>(&bytes) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("rejecting invalid .torrent upload: {}", e);
+                return None;
+            }
+        };
+        let raw_name = meta
+            .info
+            .name
+            .as_ref()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "torrent-download".to_string());
+        let name = crate::domain::sanitize_filename(&raw_name);
+
+        let mut download = Download::new(format!("torrent://{}", name), download_dir);
+        download.filename = name.clone();
+        download.save_path = format!("{}/{}", download_dir.trim_end_matches('/'), name);
+        download.category = category;
+        download.content_path = Some(download.save_path.clone());
+        download.protocol = Protocol::Torrent;
+        download.position = self.assign_new_download_position().await;
+
+        // Atomic check-and-claim: only the count-check + status flip + DB insert
+        // must run under slot_lock. Filesystem persistence happens after we drop
+        // the lock so concurrent submissions aren't serialized on disk I/O.
+        let queued = {
+            let _slot_guard = self.slot_lock.lock().await;
+            let max_concurrent = self.settings.read().await.max_concurrent as usize;
+            let active = self.active_download_count().await;
+            if active >= max_concurrent {
+                download.status = DownloadStatus::Queued;
+                download.restart_resume = true;
+                self.add_download(download.clone()).await;
+                true
+            } else {
+                download.status = DownloadStatus::Downloading;
+                self.add_download(download.clone()).await;
+                false
+            }
+        };
+
+        if queued {
+            let torrents_dir = std::path::Path::new(download_dir).join(".torrents");
+            if let Err(e) = tokio::fs::create_dir_all(&torrents_dir).await {
+                tracing::warn!("Failed to create .torrents dir: {}", e);
+            }
+            let torrent_file = torrents_dir.join(format!("{}.torrent", download.id));
+            if let Err(e) = tokio::fs::write(&torrent_file, &bytes).await {
+                tracing::warn!("Failed to persist .torrent file: {}", e);
+            }
+        } else {
+            Arc::clone(self)
+                .start_torrent_from_bytes(download.clone(), bytes)
+                .await;
+        }
+
+        Some(download)
+    }
+
     /// Promote the oldest queued download when a slot opens.
     /// Call this after a download completes, fails, pauses, or is deleted.
     pub async fn try_start_queued(self: &Arc<Self>) {

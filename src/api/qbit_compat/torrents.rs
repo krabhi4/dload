@@ -5,7 +5,6 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use std::sync::Arc;
 
 use super::QbitState;
 use crate::domain::{Download, DownloadStatus, Protocol};
@@ -684,46 +683,15 @@ async fn handle_add_multipart(
         state.manager.add_and_maybe_start(download).await;
     }
 
-    // Process uploaded .torrent files
+    // Process uploaded .torrent files via the shared manager helper so we get
+    // atomic queue/start semantics and consistent persistence behavior. The
+    // helper logs and returns None for any blob it can't parse; we continue so
+    // Sonarr/Radarr don't see a batch failure if one of several torrents is bad.
     for bytes in torrent_bytes {
-        let raw_name = librqbit::torrent_from_bytes::<librqbit::ByteBufOwned>(&bytes)
-            .ok()
-            .and_then(|meta| meta.info.name.as_ref().map(|n| n.to_string()))
-            .unwrap_or_else(|| "torrent-download".to_string());
-        let name = crate::domain::sanitize_filename(&raw_name);
-
-        let mut download = Download::new(format!("torrent://{}", name), &download_dir);
-        download.filename = name.clone();
-        download.save_path = format!("{}/{}", download_dir.trim_end_matches('/'), name);
-        download.category = category.clone();
-        download.content_path = Some(download.save_path.clone());
-        download.protocol = Protocol::Torrent;
-        // info_hash will be set by session_add_and_wait after librqbit parses the torrent
-
-        // For .torrent files, we need to use start_torrent_from_bytes directly
-        // Queue check: if at capacity, queue it instead of starting
-        let max_concurrent = state.manager.settings.read().await.max_concurrent as usize;
-        let active = state.manager.active_download_count().await;
-        if active >= max_concurrent {
-            download.status = DownloadStatus::Queued;
-            download.restart_resume = true;
-
-            // Persist .torrent bytes so queued downloads can start later
-            let torrents_dir = std::path::Path::new(&download_dir).join(".torrents");
-            if let Err(e) = tokio::fs::create_dir_all(&torrents_dir).await {
-                tracing::warn!("Failed to create .torrents dir: {}", e);
-            }
-            let torrent_file = torrents_dir.join(format!("{}.torrent", download.id));
-            if let Err(e) = tokio::fs::write(&torrent_file, &bytes).await {
-                tracing::warn!("Failed to persist .torrent file: {}", e);
-            }
-
-            state.manager.add_download(download).await;
-        } else {
-            state.manager.add_download(download.clone()).await;
-            let mgr = Arc::clone(&state.manager);
-            mgr.start_torrent_from_bytes(download, bytes).await;
-        }
+        let _ = state
+            .manager
+            .add_torrent_from_bytes(bytes, &download_dir, category.clone())
+            .await;
     }
 
     Ok(())

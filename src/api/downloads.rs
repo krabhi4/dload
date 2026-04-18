@@ -251,11 +251,7 @@ async fn handle_add_download_multipart(
     }
 
     if torrent_blobs.is_empty() && urls.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "No torrent files or urls provided",
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, "No torrent files or urls provided").into_response();
     }
 
     // Validate every url up-front — reject the whole submission if any is bad,
@@ -288,7 +284,10 @@ async fn handle_add_download_multipart(
     for bytes in torrent_blobs {
         // Category is not exposed on the native API; the qBit-compat layer
         // carries it through a separate endpoint. Pass None here.
-        match state.add_torrent_from_bytes(bytes, &download_dir, None).await {
+        match state
+            .add_torrent_from_bytes(bytes, &download_dir, None)
+            .await
+        {
             Some(dl) => created.push(dl),
             None => skipped_torrents += 1,
         }

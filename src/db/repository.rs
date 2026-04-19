@@ -1,5 +1,6 @@
 use crate::domain::{Download, DownloadFolder, DownloadStatus, Protocol, Role, Settings, User};
 use rusqlite::params;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct Repository {
@@ -209,6 +210,33 @@ impl Repository {
         // Clean up legacy key from older versions
         tx.execute("DELETE FROM settings WHERE key = 'chunk_size'", params![])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_qbit_categories(&self) -> anyhow::Result<HashMap<String, Option<String>>> {
+        let conn = self.db.conn.lock().unwrap();
+        let value: rusqlite::Result<String> = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'qbit_categories'",
+            [],
+            |row| row.get(0),
+        );
+        match value {
+            Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(HashMap::new()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn save_qbit_categories(
+        &self,
+        cats: &HashMap<String, Option<String>>,
+    ) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        let json = serde_json::to_string(cats)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('qbit_categories', ?1)",
+            params![json],
+        )?;
         Ok(())
     }
 

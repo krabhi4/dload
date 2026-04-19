@@ -763,8 +763,9 @@ impl ManagerState {
                             || folders.iter().any(|f| canonical.starts_with(&f.path))
                     }
                     Err(_) => {
-                        (d.save_path.starts_with(download_dir)
-                            || folders.iter().any(|f| d.save_path.starts_with(&f.path)))
+                        let save = std::path::Path::new(&d.save_path);
+                        (save.starts_with(download_dir)
+                            || folders.iter().any(|f| save.starts_with(&f.path)))
                             && !d.save_path.contains("..")
                     }
                 }

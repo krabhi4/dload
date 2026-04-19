@@ -21,13 +21,21 @@ pub struct QbitState {
     pub manager: SharedState,
     pub sessions: Arc<SessionStore>,
     pub categories: Arc<RwLock<HashMap<String, Option<String>>>>,
+    /// Serializes category mutation + persist so concurrent writes can't
+    /// race an older snapshot on top of a newer one.
+    pub categories_persist_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
+    let initial_cats = manager.repo.get_qbit_categories().unwrap_or_else(|e| {
+        tracing::error!("Failed to load qbit categories: {}", e);
+        HashMap::new()
+    });
     let state = QbitState {
         manager,
         sessions,
-        categories: Arc::new(RwLock::new(HashMap::new())),
+        categories: Arc::new(RwLock::new(initial_cats)),
+        categories_persist_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     // Auth routes (no session required)

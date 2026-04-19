@@ -37,7 +37,12 @@ async fn resolve_qbit_download_dir(
     // 2. Check if savepath matches a configured folder
     if let Some(sp) = savepath {
         let sp = sp.trim_end_matches('/');
-        if !sp.is_empty() {
+        if sp.contains("..") {
+            tracing::warn!(
+                "qbit_compat: savepath '{}' contains traversal, using default",
+                sp
+            );
+        } else if !sp.is_empty() {
             for f in &settings.download_folders {
                 let fp = f.path.trim_end_matches('/');
                 if sp == fp || sp.starts_with(&format!("{}/", fp)) {
@@ -543,7 +548,33 @@ pub async fn create_category(State(state): State<QbitState>, body: String) -> im
             } else {
                 None
             };
-            state.categories.write().await.insert(cat, folder_id);
+            let _persist = state.categories_persist_lock.lock().await;
+            // Build the proposed next state from the current map, then persist
+            // first. Only commit to memory after the DB write succeeds so an
+            // I/O failure can't leave the in-memory map ahead of disk.
+            let next_state = {
+                let cats = state.categories.read().await;
+                let mut next = cats.clone();
+                next.insert(cat, folder_id);
+                next
+            };
+            let repo = state.manager.repo.clone();
+            let to_save = next_state.clone();
+            let join =
+                tokio::task::spawn_blocking(move || repo.save_qbit_categories(&to_save)).await;
+            match join {
+                Ok(Ok(())) => {
+                    *state.categories.write().await = next_state;
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("qbit_compat: persist categories failed: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Fails.");
+                }
+                Err(e) => {
+                    tracing::error!("qbit_compat: persist join failed: {}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Fails.");
+                }
+            }
         }
     }
     (StatusCode::OK, "Ok.")

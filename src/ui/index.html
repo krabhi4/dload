@@ -9,21 +9,32 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
       media="print"
       onload="this.media='all'"
     />
-    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" /></noscript>
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..900,0..100,0..1;1,9..144,300..900,0..100,0..1&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" /></noscript>
     <link rel="stylesheet" href="/ui/style.css" />
+    <script>
+      (function () {
+        var hash = window.location.hash || "#downloads";
+        if (hash === "#completed" || hash === "#history") hash = "#archive";
+        var page = hash === "#archive" ? "archive"
+          : hash === "#settings" ? "settings"
+          : hash === "#profile" ? "profile"
+          : "downloads";
+        document.documentElement.setAttribute("data-page", page);
+      })();
+    </script>
   </head>
   <body>
     <a href="#main-content" class="skip-link">Skip to content</a>
-    <div id="app-loading" class="app-loading">
-      <svg width="48" height="48" viewBox="0 0 28 28" fill="none">
-        <rect width="28" height="28" rx="5" fill="var(--accent)" />
-        <path d="M14 7v10m0 0l-4-4m4 4l4-4M8 21h12" stroke="var(--bg-base)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+    <div id="app-loading" class="app-loading" role="status" aria-label="Loading DLoad">
+      <div class="app-loading-mark">
+        <span class="app-loading-eyebrow">DLOAD &mdash;</span>
+        <span class="app-loading-word">DLoad</span>
+      </div>
     </div>
     <div id="app">
       <header class="app-header">
@@ -42,8 +53,7 @@
         </div>
         <nav class="nav-tabs" aria-label="Main navigation">
           <a href="#downloads" class="nav-tab active" data-page="downloads">Downloads</a>
-          <a href="#completed" class="nav-tab" data-page="completed">Completed</a>
-          <a href="#history" class="nav-tab" data-page="history">History</a>
+          <a href="#archive" class="nav-tab" data-page="archive">Archive</a>
           <a href="#settings" class="nav-tab" data-page="settings">Settings</a>
         </nav>
         <div class="header-right">
@@ -59,8 +69,41 @@
               <line x1="21" y1="12" x2="9" y2="12" />
             </svg>
           </button>
+          <button class="hamburger-btn" id="hamburger-btn" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-drawer" onclick="toggleDrawer()">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <line x1="4" y1="7" x2="20" y2="7" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="17" x2="20" y2="17" />
+            </svg>
+          </button>
         </div>
       </header>
+
+      <div id="mobile-drawer" class="mobile-drawer" role="dialog" aria-label="Navigation menu" aria-hidden="true">
+        <button class="mobile-drawer-close" aria-label="Close menu" onclick="closeDrawer()">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="6" y1="6" x2="18" y2="18" />
+            <line x1="6" y1="18" x2="18" y2="6" />
+          </svg>
+        </button>
+        <div class="mobile-drawer-inner">
+          <div class="mobile-drawer-account">
+            <div class="mobile-drawer-avatar" id="mobile-drawer-avatar">A</div>
+            <div class="mobile-drawer-account-meta">
+              <span id="mobile-drawer-username" class="mobile-drawer-username">admin</span>
+              <span id="mobile-drawer-role" class="mobile-drawer-role">ADMIN</span>
+            </div>
+          </div>
+          <nav class="mobile-drawer-nav" aria-label="Main navigation">
+            <a href="#downloads" class="mobile-drawer-link" data-page="downloads" onclick="closeDrawer()">Downloads</a>
+            <a href="#archive" class="mobile-drawer-link" data-page="archive" onclick="closeDrawer()">Archive</a>
+            <a href="#settings" class="mobile-drawer-link" data-page="settings" onclick="closeDrawer()">Settings</a>
+            <a href="#profile" class="mobile-drawer-link" data-page="profile" onclick="closeDrawer()">Profile</a>
+          </nav>
+          <button class="mobile-drawer-logout" onclick="closeDrawer(); logout()">Sign out</button>
+        </div>
+      </div>
+      <div class="mobile-drawer-scrim" id="mobile-drawer-scrim" onclick="closeDrawer()" aria-hidden="true"></div>
 
       <main id="main-content"></main>
     </div>
@@ -69,17 +112,8 @@
       <div class="modal-backdrop"></div>
       <div class="modal-content">
         <div class="login-logo">
-          <svg width="48" height="48" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="5" fill="var(--accent)" />
-            <path
-              d="M14 7v10m0 0l-4-4m4 4l4-4M8 21h12"
-              stroke="var(--bg-base)"
-              stroke-width="2.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          <h2 id="login-heading">DLoad</h2>
+          <span class="login-eyebrow">DLOAD &mdash;</span>
+          <h2 id="login-heading">Sign in<span class="login-heading-dot">.</span></h2>
           <p class="login-subtitle"></p>
         </div>
         <form id="login-form">

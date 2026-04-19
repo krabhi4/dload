@@ -170,10 +170,13 @@ var currentPage = "downloads";
 
 function showDownloads() {
   return (
+    '<div class="page-header downloads-header">' +
+    "<h1>Downloads</h1>" +
+    "</div>" +
     '<div class="add-section">' +
     '<form id="add-download-form" class="input-group">' +
     '<label for="download-url" class="sr-only">Download URL</label>' +
-    '<input type="text" id="download-url" placeholder="Paste URL — http, ftp, sftp, magnet — or attach a .torrent file">' +
+    '<input type="text" id="download-url" placeholder="Paste URL or magnet link">' +
     '<select id="download-folder" class="folder-select" title="Download folder" style="display:none"></select>' +
     '<input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" multiple hidden>' +
     '<button type="button" id="attach-torrent-btn" class="btn-icon" title="Attach .torrent file" aria-label="Attach .torrent file">' +
@@ -186,15 +189,16 @@ function showDownloads() {
     "</form>" +
     '<div id="torrent-file-chips" class="file-chips" hidden></div>' +
     "</div>" +
-    '<div class="stats-bar">' +
-    '<span class="stat-val" id="active-count">0</span> Active' +
+    '<div class="stats-bar" style="display:none">' +
+    '<span class="stat-val" id="active-count">0</span> active' +
+    '<span id="queue-stat" style="display:none"> (<span class="stat-val" id="queued-count">0</span> queued)</span>' +
     '<span class="stat-sep">&middot;</span>' +
     '&darr; <span class="stat-val speed-val" id="total-speed">0 B/s</span>' +
-    '<span class="stat-sep" id="upload-sep" style="display:none">&middot;</span>' +
-    '<span id="upload-stat" style="display:none">&uarr; <span class="stat-val" id="total-upload">0 B/s</span></span>' +
-    '<span class="stat-sep" id="queue-sep" style="display:none">&middot;</span>' +
-    '<span id="queue-stat" style="display:none"><span class="stat-val" id="queued-count">0</span> Queued</span>' +
-    '<button id="resume-all-btn" class="btn-ghost" style="display:none;margin-left:auto;font-size:0.8em;padding:4px 10px" onclick="resumeAllDownloads()">Resume All</button>' +
+    '<span id="upload-stat" style="display:none"> &uarr; <span class="stat-val" id="total-upload">0 B/s</span></span>' +
+    '<div class="stats-bar-actions">' +
+    '<button id="resume-all-btn" class="btn-bar-action" style="display:none" onclick="resumeAllDownloads()">Resume all</button>' +
+    '<button id="clear-completed-btn" class="btn-bar-action" style="display:none" onclick="clearCompletedDownloads()">Clear completed</button>' +
+    "</div>" +
     "</div>" +
     '<div id="downloads-list">' + renderSkeletons() + '</div>'
   );
@@ -217,29 +221,22 @@ function renderSkeletons() {
   return html;
 }
 
-function showCompleted() {
-  return (
-    '<div class="page-header">' +
-    "<h1>Completed</h1>" +
-    "</div>" +
-    '<div id="downloads-list"></div>'
-  );
-}
-
 var selectedHistoryIds = new Set();
 
-function showHistory() {
+function showArchive() {
   return (
-    '<div class="page-header history-header">' +
+    '<div class="page-header archive-header history-header">' +
     "<div>" +
-    "<h1>History</h1>" +
+    "<h1>Archive</h1>" +
+    '<p class="page-standfirst">Every completed and removed download, grouped by day.</p>' +
+    '<p class="archive-hint">Entries stay here even after you clear them from Downloads.</p>' +
     "</div>" +
     '<div class="history-actions" id="history-actions">' +
     '<button class="btn-danger-outline btn-small" id="delete-selected-btn" style="display:none" onclick="deleteSelectedHistory()">Delete Selected</button>' +
     '<button class="btn-ghost btn-small" onclick="clearAllHistory()">Clear All</button>' +
     "</div>" +
     "</div>" +
-    '<div id="history-list"></div>'
+    '<div id="history-list" class="archive-list"></div>'
   );
 }
 
@@ -255,15 +252,17 @@ function showSettings() {
     '<button type="button" class="btn-ghost btn-small" id="add-folder-btn" onclick="addFolderRow()">+ Add Folder</button>' +
     '<span class="hint">Configure where files are saved. One folder must be the default.</span>' +
     "</div>" +
-    '<div class="form-field">' +
+    '<div class="form-row">' +
+    '<div class="form-field-half">' +
     '<label for="settings-max-concurrent">Max Concurrent Downloads</label>' +
     '<input type="number" id="settings-max-concurrent" value="3" min="1" max="10">' +
     '<span class="hint">Additional downloads are queued and start automatically</span>' +
     "</div>" +
-    '<div class="form-field">' +
+    '<div class="form-field-half">' +
     '<label for="settings-connections">Max Connections Per File</label>' +
     '<input type="number" id="settings-connections" value="4" min="1" max="16">' +
     '<span class="hint">More connections can improve speed for HTTP downloads</span>' +
+    "</div>" +
     "</div>" +
     '<div class="settings-actions">' +
     '<button type="button" class="btn-primary" id="save-settings-btn">Save Settings</button>' +
@@ -279,13 +278,15 @@ function showProfile() {
     "<h1>Profile</h1>" +
     "</div>" +
     '<div class="profile-section">' +
-    '<div class="form-field">' +
+    '<div class="form-row">' +
+    '<div class="form-field-half">' +
     "<label>Username</label>" +
     '<input type="text" id="profile-username" readonly>' +
     "</div>" +
-    '<div class="form-field">' +
+    '<div class="form-field-half">' +
     "<label>Role</label>" +
     '<input type="text" id="profile-role" readonly>' +
+    "</div>" +
     "</div>" +
     '<div class="form-field">' +
     "<label>Member Since</label>" +
@@ -316,25 +317,14 @@ function showProfile() {
 
 function sortDownloads(downloads) {
   return downloads.slice().sort(function (a, b) {
-    // Completed page: sort by completed_at (newest first), not position
-    if (currentPage === 'completed') {
-      return new Date(b.completed_at || b.created_at) - new Date(a.completed_at || a.created_at);
-    }
     return (a.position || 0) - (b.position || 0);
   });
 }
 
 function getPageDownloads(downloads) {
-  var sorted = sortDownloads(downloads);
-  if (currentPage === "completed") {
-    return sorted.filter(function (d) {
-      return d.status === "Completed";
-    });
-  }
-  // Downloads page: everything except completed
-  return sorted.filter(function (d) {
-    return d.status !== "Completed";
-  });
+  // Downloads page now shows everything — active, queued, and recently-completed.
+  // Completed items remain until user removes them; they are also mirrored in Archive.
+  return sortDownloads(downloads);
 }
 
 function toggleDetail(id, event) {
@@ -357,7 +347,8 @@ function toggleDetail(id, event) {
 
 // ─── Rendering ──────────────────────────────────────
 
-function buildDownloadItem(d) {
+function buildDownloadItem(d, index) {
+  var stagger = Math.min(index || 0, 9);
   var statusClass = escapeHtml(d.status.toLowerCase());
   var progressClass =
     statusClass === "completed"
@@ -368,7 +359,6 @@ function buildDownloadItem(d) {
   var safeId = escapeHtml(d.id);
   var safeName = escapeHtml(d.filename);
   var safeUrl = escapeHtml(d.url);
-  var safeProtocol = escapeHtml(d.protocol);
   var safeStatus = escapeHtml(d.status);
   var progress = Math.min(d.progress, 100);
   var isActive = d.status === "Downloading";
@@ -479,17 +469,9 @@ function buildDownloadItem(d) {
 
   // Detail panel
   var detailRows =
-    '<span class="detail-label">URL</span>' +
-    '<span class="detail-value">' +
-    safeUrl +
-    "</span>" +
     '<span class="detail-label">Save Path</span>' +
     '<span class="detail-value">' +
     escapeHtml(d.save_path || "") +
-    "</span>" +
-    '<span class="detail-label">Protocol</span>' +
-    '<span class="detail-value">' +
-    safeProtocol +
     "</span>" +
     '<span class="detail-label">Created</span>' +
     '<span class="detail-value">' +
@@ -531,7 +513,8 @@ function buildDownloadItem(d) {
   var isExpanded = expandedId === d.id;
 
   var isCompleted = d.status === 'Completed';
-  return '<div class="download-item ' + statusClass + '" data-id="' + safeId + '"'
+  return '<div class="download-item ' + statusClass + ' proto-' + (isTorrent ? 'torrent' : 'http') + '" data-id="' + safeId + '"'
+    + ' style="--i:' + stagger + '"'
     + (isCompleted ? '' : ' draggable="true"')
     + ' tabindex="0" role="button" aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
     + ' aria-label="' + safeName + ' \u2014 ' + safeStatus + '"'
@@ -546,6 +529,7 @@ function buildDownloadItem(d) {
     + '<div class="protocol-icon ' + (isTorrent ? 'torrent' : 'http') + '">' + protocolIcon + '</div>'
     + '<div class="download-info">'
     + '<div class="download-name">' + safeName + '</div>'
+    + '<div class="just-completed-stamp" aria-hidden="true">Received</div>'
     + '<div class="download-url" title="' + safeUrl + '">' + safeUrl + '</div>'
     + '</div>'
     + '<div class="download-metrics">'
@@ -877,23 +861,10 @@ function renderDownloads(downloads) {
   var filtered = getPageDownloads(downloads);
 
   if (filtered.length === 0) {
-    if (currentPage === 'completed') {
-      renderHtml(container, '<div class="empty-state">'
-        + '<p>No completed downloads</p>'
-        + '<span>Active downloads will appear here once they finish</span>'
-        + '</div>');
-    } else {
-      renderHtml(container, '<div class="empty-state">'
-        + '<p>Ready when you are</p>'
-        + '<span>Paste a URL, magnet link, or .torrent path into the input above</span>'
-        + '<div class="empty-protocols">'
-        + '<span class="empty-proto">HTTP / HTTPS</span>'
-        + '<span class="empty-proto">FTP / SFTP</span>'
-        + '<span class="empty-proto">Magnet</span>'
-        + '<span class="empty-proto">.torrent</span>'
-        + '</div>'
-        + '</div>');
-    }
+    renderHtml(container, '<div class="empty-state">'
+      + '<p>Ready when you are.</p>'
+      + '<span>Paste an HTTP, FTP, SFTP, or magnet link above &mdash; or attach a .torrent file.</span>'
+      + '</div>');
     lastDownloads = filtered;
     return;
   }
@@ -1038,6 +1009,8 @@ function updateStats(downloads) {
   }).length;
 
   var el;
+  var bar = document.querySelector(".stats-bar");
+  if (bar) bar.style.display = downloads.length === 0 ? "none" : "";
   el = document.getElementById("active-count");
   if (el) el.textContent = active;
   el = document.getElementById("total-speed");
@@ -1045,8 +1018,6 @@ function updateStats(downloads) {
 
   // Upload stats
   var showUpload = totalUpload > 0;
-  el = document.getElementById("upload-sep");
-  if (el) el.style.display = showUpload ? "" : "none";
   el = document.getElementById("upload-stat");
   if (el) el.style.display = showUpload ? "" : "none";
   el = document.getElementById("total-upload");
@@ -1054,8 +1025,6 @@ function updateStats(downloads) {
 
   // Queue stats
   var showQueue = queued > 0;
-  el = document.getElementById("queue-sep");
-  if (el) el.style.display = showQueue ? "" : "none";
   el = document.getElementById("queue-stat");
   if (el) el.style.display = showQueue ? "" : "none";
   el = document.getElementById("queued-count");
@@ -1074,6 +1043,35 @@ function updateStats(downloads) {
       void resumeBtn.offsetHeight;
       resumeBtn.classList.add("resume-all-enter");
     }
+  }
+
+  // Show/hide Clear completed button
+  var completedCount = downloads.filter(function (d) {
+    return d.status === "Completed";
+  }).length;
+  var clearBtn = document.getElementById("clear-completed-btn");
+  if (clearBtn) {
+    clearBtn.style.display = completedCount > 0 ? "" : "none";
+  }
+}
+
+async function clearCompletedDownloads() {
+  if (window.currentUserRole !== "ADMIN") {
+    showToast("error", "Permission denied", "Only administrators can clear completed downloads");
+    return;
+  }
+  var completed = lastDownloads.filter(function (d) { return d.status === "Completed"; });
+  if (completed.length === 0) return;
+  try {
+    await Promise.all(
+      completed.map(function (d) {
+        return apiRequest("/downloads/" + encodeURIComponent(d.id), { method: "DELETE" });
+      }),
+    );
+    lastDownloads = [];
+    loadDownloads();
+  } catch (e) {
+    showToast("error", "Failed to clear completed", e.message);
   }
 }
 
@@ -1461,8 +1459,8 @@ function renderHistory(items) {
     renderHtml(
       container,
       '<div class="empty-state">' +
-      "<p>No history yet</p>" +
-      "<span>Completed and removed downloads are logged here for reference</span>" +
+      "<p>Nothing archived yet.</p>" +
+      "<span>Completed and removed downloads appear here, grouped by day.</span>" +
       "</div>",
     );
     var actionsDiv = document.getElementById("history-actions");
@@ -1473,72 +1471,104 @@ function renderHistory(items) {
   var actionsDiv = document.getElementById("history-actions");
   if (actionsDiv) actionsDiv.style.display = "flex";
 
-  var html = items
-    .map(function (h) {
-      var isSelected = selectedHistoryIds.has(h.id);
-      var sizeDisplay = formatSize(h.total_size || 0);
-      var createdDate = new Date(h.created_at).toLocaleDateString(undefined, {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      var completedDate = h.completed_at
-        ? new Date(h.completed_at).toLocaleDateString(undefined, {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-        : null;
-      var statusClass = h.status.toLowerCase();
+  // Sort newest-first by completion (fallback: created) date
+  var sorted = items.slice().sort(function (a, b) {
+    var da = new Date(a.completed_at || a.created_at).getTime();
+    var db = new Date(b.completed_at || b.created_at).getTime();
+    return db - da;
+  });
 
+  // Group by calendar day
+  var groups = [];
+  var currentKey = null;
+  var currentBucket = null;
+  sorted.forEach(function (h) {
+    var d = new Date(h.completed_at || h.created_at);
+    var key = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+    if (key !== currentKey) {
+      currentKey = key;
+      currentBucket = { date: d, items: [] };
+      groups.push(currentBucket);
+    }
+    currentBucket.items.push(h);
+  });
+
+  var todayKey = (function () {
+    var t = new Date();
+    return t.getFullYear() + "-" + t.getMonth() + "-" + t.getDate();
+  })();
+  var yesterdayKey = (function () {
+    var y = new Date();
+    y.setDate(y.getDate() - 1);
+    return y.getFullYear() + "-" + y.getMonth() + "-" + y.getDate();
+  })();
+
+  function labelForDate(d) {
+    var key = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+    if (key === todayKey) return "Today";
+    if (key === yesterdayKey) return "Yesterday";
+    return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  }
+
+  var globalIdx = 0;
+  var html = groups
+    .map(function (g) {
+      var headLabel = escapeHtml(labelForDate(g.date));
+      var headMeta = g.items.length + " item" + (g.items.length !== 1 ? "s" : "");
+      var rows = g.items
+        .map(function (h) {
+          var stagger = Math.min(globalIdx++, 9);
+          var isSelected = selectedHistoryIds.has(h.id);
+          var sizeDisplay = formatSize(h.total_size || 0);
+          var timeStamp = new Date(h.completed_at || h.created_at).toLocaleTimeString(undefined, {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          var statusClass = h.status.toLowerCase();
+          return (
+            '<div class="history-item' +
+            (isSelected ? " selected" : "") +
+            '" data-id="' +
+            escapeHtml(h.id) +
+            '" style="--i:' + stagger + '">' +
+            '<label class="history-checkbox">' +
+            '<input type="checkbox" ' +
+            'aria-label="Select ' + escapeHtml(h.filename) + '" ' +
+            (isSelected ? "checked" : "") +
+            " onchange=\"toggleHistorySelect('" +
+            escapeHtml(h.id) +
+            "', this.checked)\" />" +
+            '<span class="checkmark"></span>' +
+            "</label>" +
+            '<span class="history-time">' + escapeHtml(timeStamp) + "</span>" +
+            '<div class="history-info">' +
+            '<div class="history-name">' +
+            escapeHtml(h.filename) +
+            "</div>" +
+            '<div class="history-url" title="' +
+            escapeHtml(h.url) +
+            '">' +
+            escapeHtml(h.url) +
+            "</div>" +
+            "</div>" +
+            '<span class="history-size">' + sizeDisplay + "</span>" +
+            '<span class="status-badge ' + statusClass + '">' +
+            escapeHtml(h.status) +
+            "</span>" +
+            '<button class="delete-btn" onclick="deleteHistoryItem(\'' +
+            escapeHtml(h.id) +
+            '\')" title="Remove from history" aria-label="Remove from history">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+            "</button>" +
+            "</div>"
+          );
+        })
+        .join("");
       return (
-        '<div class="history-item' +
-        (isSelected ? " selected" : "") +
-        '" data-id="' +
-        escapeHtml(h.id) +
-        '">' +
-        '<label class="history-checkbox">' +
-        '<input type="checkbox" ' +
-        'aria-label="Select ' + escapeHtml(h.filename) + '" ' +
-        (isSelected ? "checked" : "") +
-        " onchange=\"toggleHistorySelect('" +
-        escapeHtml(h.id) +
-        "', this.checked)\" />" +
-        '<span class="checkmark"></span>' +
-        "</label>" +
-        '<div class="history-info">' +
-        '<div class="history-name">' +
-        escapeHtml(h.filename) +
-        "</div>" +
-        '<div class="history-url" title="' +
-        escapeHtml(h.url) +
-        '">' +
-        escapeHtml(h.url) +
-        "</div>" +
-        '<div class="history-meta">' +
-        '<span class="status-badge ' +
-        statusClass +
-        '">' +
-        escapeHtml(h.status) +
-        "</span>" +
-        "<span>" +
-        sizeDisplay +
-        "</span>" +
-        "<span>" +
-        createdDate +
-        "</span>" +
-        (completedDate ? "<span>Completed " + completedDate + "</span>" : "") +
-        "</div>" +
-        "</div>" +
-        '<button class="delete-btn" onclick="deleteHistoryItem(\'' +
-        escapeHtml(h.id) +
-        '\')" title="Remove from history" aria-label="Remove from history">' +
-        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
-        "</button>" +
+        '<div class="archive-group">' +
+        '<h3 class="archive-date-head"><span class="archive-date-label">' + headLabel + "</span>" +
+        '<span class="archive-date-meta">' + headMeta + "</span></h3>" +
+        rows +
         "</div>"
       );
     })
@@ -2224,28 +2254,67 @@ async function saveSettings() {
   }
 }
 
+// ─── Mobile drawer ─────────────────────────────────
+
+function toggleDrawer() {
+  var drawer = document.getElementById("mobile-drawer");
+  var scrim = document.getElementById("mobile-drawer-scrim");
+  var btn = document.getElementById("hamburger-btn");
+  if (!drawer || !scrim) return;
+  var isOpen = drawer.classList.contains("open");
+  if (isOpen) {
+    closeDrawer();
+  } else {
+    drawer.classList.add("open");
+    scrim.classList.add("open");
+    drawer.setAttribute("aria-hidden", "false");
+    if (btn) btn.setAttribute("aria-expanded", "true");
+  }
+}
+
+function closeDrawer() {
+  var drawer = document.getElementById("mobile-drawer");
+  var scrim = document.getElementById("mobile-drawer-scrim");
+  var btn = document.getElementById("hamburger-btn");
+  if (!drawer || !scrim) return;
+  drawer.classList.remove("open");
+  scrim.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape") {
+    var drawer = document.getElementById("mobile-drawer");
+    if (drawer && drawer.classList.contains("open")) closeDrawer();
+  }
+});
+
 // ─── Navigation ─────────────────────────────────────
 
 function navigate(hash) {
+  // Alias legacy routes to new Archive page
+  if (hash === "#completed" || hash === "#history") {
+    hash = "#archive";
+  }
+
   var routes = {
     "#downloads": showDownloads,
-    "#completed": showCompleted,
-    "#history": showHistory,
+    "#archive": showArchive,
     "#settings": showSettings,
     "#profile": showProfile,
   };
 
   var render = routes[hash] || showDownloads;
   currentPage =
-    hash === "#completed"
-      ? "completed"
-      : hash === "#history"
-        ? "history"
-        : hash === "#settings"
-          ? "settings"
-          : hash === "#profile"
-            ? "profile"
-            : "downloads";
+    hash === "#archive"
+      ? "archive"
+      : hash === "#settings"
+        ? "settings"
+        : hash === "#profile"
+          ? "profile"
+          : "downloads";
+  document.documentElement.setAttribute("data-page", currentPage);
   lastDownloads = [];
   expandedId = null;
   selectedHistoryIds.clear();
@@ -2255,9 +2324,10 @@ function navigate(hash) {
   renderHtml(main, render());
   main.classList.add("page-enter");
 
-  // Update active nav
-  document.querySelectorAll(".nav-tab").forEach(function (item) {
-    item.classList.toggle("active", item.getAttribute("href") === hash);
+  // Update active nav — Archive tab matches both the new hash and legacy aliases
+  document.querySelectorAll(".nav-tab, .mobile-drawer-link").forEach(function (item) {
+    var href = item.getAttribute("href");
+    item.classList.toggle("active", href === hash);
   });
 
   // Bind forms after render
@@ -2268,7 +2338,7 @@ function navigate(hash) {
     loadSettings();
   } else if (hash === "#profile") {
     loadProfile();
-  } else if (hash === "#history") {
+  } else if (hash === "#archive") {
     loadHistory();
   } else {
     loadDownloads();
@@ -2526,6 +2596,14 @@ async function updateUserInformation() {
       document.getElementById("user-role").textContent = result.user.role;
       document.getElementById("user-role").className =
         "user-role " + result.user.role.toLowerCase();
+
+      // Mirror into mobile drawer
+      var mobileName = document.getElementById("mobile-drawer-username");
+      if (mobileName) mobileName.textContent = result.user.username;
+      var mobileAvatar = document.getElementById("mobile-drawer-avatar");
+      if (mobileAvatar) mobileAvatar.textContent = firstLetter;
+      var mobileRole = document.getElementById("mobile-drawer-role");
+      if (mobileRole) mobileRole.textContent = result.user.role;
 
       // Store user role and ID for permission checks
       window.currentUserRole = result.user.role;

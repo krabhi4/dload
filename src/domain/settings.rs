@@ -42,6 +42,25 @@ impl Settings {
     }
 }
 
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            download_dir: "/downloads".to_string(),
+            max_concurrent: 3,
+            max_connections_per_file: 8,
+            min_split_size: 20 * 1024 * 1024,
+            username: "admin".to_string(),
+            port: 8080,
+            download_folders: vec![DownloadFolder {
+                id: uuid::Uuid::new_v4().to_string(),
+                label: "Default".to_string(),
+                path: "/downloads".to_string(),
+                is_default: true,
+            }],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,24 +132,5 @@ mod tests {
         assert!(s.download_folders[0].is_default);
         assert_eq!(s.download_folders[0].path, "/downloads");
         assert_eq!(s.download_folders[0].label, "Default");
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            download_dir: "/downloads".to_string(),
-            max_concurrent: 3,
-            max_connections_per_file: 8,
-            min_split_size: 20 * 1024 * 1024,
-            username: "admin".to_string(),
-            port: 8080,
-            download_folders: vec![DownloadFolder {
-                id: uuid::Uuid::new_v4().to_string(),
-                label: "Default".to_string(),
-                path: "/downloads".to_string(),
-                is_default: true,
-            }],
-        }
     }
 }

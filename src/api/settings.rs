@@ -132,6 +132,23 @@ pub fn validate_download_path(dir: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn validate_folders(folders: &[DownloadFolder]) -> Result<(), &'static str> {
+    if folders.is_empty() {
+        return Err("At least one download folder is required");
+    }
+    let default_count = folders.iter().filter(|f| f.is_default).count();
+    if default_count != 1 {
+        return Err("Exactly one folder must be set as default");
+    }
+    for f in folders {
+        if f.label.trim().is_empty() {
+            return Err("Folder label must not be empty");
+        }
+        validate_download_path(f.path.trim())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,21 +245,4 @@ mod tests {
         let folders = vec![folder("a", "Bad", "/etc", true)];
         assert!(validate_folders(&folders).is_err());
     }
-}
-
-fn validate_folders(folders: &[DownloadFolder]) -> Result<(), &'static str> {
-    if folders.is_empty() {
-        return Err("At least one download folder is required");
-    }
-    let default_count = folders.iter().filter(|f| f.is_default).count();
-    if default_count != 1 {
-        return Err("Exactly one folder must be set as default");
-    }
-    for f in folders {
-        if f.label.trim().is_empty() {
-            return Err("Folder label must not be empty");
-        }
-        validate_download_path(f.path.trim())?;
-    }
-    Ok(())
 }

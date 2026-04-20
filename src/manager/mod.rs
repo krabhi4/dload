@@ -2080,24 +2080,42 @@ async fn session_add_and_wait(
         let name = crate::domain::sanitize_filename(&raw_name);
         download.filename = name.clone();
 
-        let single_file_name = handle
+        let content_suffix = handle
             .with_metadata(|m| {
-                if m.file_infos.len() == 1 {
-                    let rel = &m.file_infos[0].relative_filename;
-                    let has_subdir = rel.parent().is_some_and(|p| p != std::path::Path::new(""));
-                    if !has_subdir {
-                        return Some(rel.to_string_lossy().to_string());
-                    }
+                let files: Vec<_> = m.file_infos.iter().filter(|f| !f.attrs.padding).collect();
+
+                if files.len() == 1 {
+                    return Some(files[0].relative_filename.to_string_lossy().to_string());
                 }
-                None
+
+                let first_dirs: Vec<_> = files
+                    .iter()
+                    .filter_map(|f| {
+                        let mut comps = f.relative_filename.components();
+                        let first = comps.next()?;
+                        if comps.next().is_some() {
+                            Some(first.as_os_str().to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if !first_dirs.is_empty()
+                    && first_dirs.len() == files.len()
+                    && first_dirs.iter().all(|d| d == &first_dirs[0])
+                {
+                    Some(first_dirs[0].clone())
+                } else {
+                    None
+                }
             })
             .ok()
             .flatten();
 
-        let new_path = if let Some(ref actual_file) = single_file_name {
-            format!("{}/{}", output_dir.trim_end_matches('/'), actual_file)
-        } else {
-            format!("{}/{}", output_dir.trim_end_matches('/'), name)
+        let new_path = match content_suffix {
+            Some(suffix) => format!("{}/{}", output_dir.trim_end_matches('/'), suffix),
+            None => output_dir.trim_end_matches('/').to_string(),
         };
         download.save_path = new_path.clone();
         download.content_path = Some(new_path);

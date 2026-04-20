@@ -77,6 +77,7 @@ fn hash_matches(download: &Download, hash: &str) -> bool {
 fn to_qbit_state(status: &DownloadStatus) -> &'static str {
     match status {
         DownloadStatus::Queued => "queuedDL",
+        DownloadStatus::Fetching => "metaDL",
         DownloadStatus::Downloading => "downloading",
         DownloadStatus::Paused => "pausedDL",
         DownloadStatus::Completed => "pausedUP",
@@ -271,13 +272,17 @@ pub async fn info(
     // Filter by state
     if let Some(ref filter) = query.filter {
         torrents.retain(|d| match filter.as_str() {
-            "downloading" => d.status == DownloadStatus::Downloading,
+            "downloading" => {
+                d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Fetching
+            }
             "completed" => {
                 d.status == DownloadStatus::Completed || d.status == DownloadStatus::Seeding
             }
             "paused" => d.status == DownloadStatus::Paused,
             "active" => {
-                d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Seeding
+                d.status == DownloadStatus::Downloading
+                    || d.status == DownloadStatus::Fetching
+                    || d.status == DownloadStatus::Seeding
             }
             "stalled" => d.status == DownloadStatus::Queued,
             "errored" => d.status == DownloadStatus::Failed,

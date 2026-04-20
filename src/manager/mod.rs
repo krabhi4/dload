@@ -163,7 +163,9 @@ impl ManagerState {
                     }
 
                     // Downloads that were in-progress when the app stopped are now paused
-                    if dl.status == DownloadStatus::Downloading {
+                    if dl.status == DownloadStatus::Downloading
+                        || dl.status == DownloadStatus::Fetching
+                    {
                         dl.status = DownloadStatus::Paused;
                         dl.speed = 0;
                         dl.upload_speed = 0;
@@ -333,7 +335,9 @@ impl ManagerState {
         downloads
             .values()
             .filter(|d| {
-                d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Seeding
+                d.status == DownloadStatus::Downloading
+                    || d.status == DownloadStatus::Fetching
+                    || d.status == DownloadStatus::Seeding
             })
             .count()
     }
@@ -590,7 +594,7 @@ impl ManagerState {
                     let in_top_n = i < max_concurrent;
 
                     match d.status {
-                        DownloadStatus::Downloading => {
+                        DownloadStatus::Downloading | DownloadStatus::Fetching => {
                             if !in_top_n {
                                 queue_ids.push(id.clone());
                             }
@@ -1720,7 +1724,12 @@ impl ManagerState {
         cancel_token: CancellationToken,
     ) {
         let url = download.url.clone();
-        let add = if url.starts_with("magnet:") {
+        let is_magnet = url.starts_with("magnet:");
+        if is_magnet {
+            download.status = DownloadStatus::Fetching;
+            self.update_download(&download).await;
+        }
+        let add = if is_magnet {
             librqbit::AddTorrent::from_url(&url)
         } else if url.starts_with("torrent://") {
             let download_dir = self.download_dir().await;
@@ -1932,6 +1941,10 @@ impl ManagerState {
                         download.eta = live.time_remaining.as_ref().map(|t| format!("{}", t));
                     }
 
+                    if download.status == DownloadStatus::Fetching && stats.total_bytes > 0 {
+                        download.status = DownloadStatus::Downloading;
+                    }
+
                     if stats.finished && download.status != DownloadStatus::Seeding {
                         download.status = DownloadStatus::Seeding;
                         download.speed = 0;
@@ -2066,7 +2079,26 @@ async fn session_add_and_wait(
     if let Some(raw_name) = handle.name() {
         let name = crate::domain::sanitize_filename(&raw_name);
         download.filename = name.clone();
-        let new_path = format!("{}/{}", output_dir.trim_end_matches('/'), name);
+
+        let single_file_name = handle
+            .with_metadata(|m| {
+                if m.file_infos.len() == 1 {
+                    let rel = &m.file_infos[0].relative_filename;
+                    let has_subdir = rel.parent().is_some_and(|p| p != std::path::Path::new(""));
+                    if !has_subdir {
+                        return Some(rel.to_string_lossy().to_string());
+                    }
+                }
+                None
+            })
+            .ok()
+            .flatten();
+
+        let new_path = if let Some(ref actual_file) = single_file_name {
+            format!("{}/{}", output_dir.trim_end_matches('/'), actual_file)
+        } else {
+            format!("{}/{}", output_dir.trim_end_matches('/'), name)
+        };
         download.save_path = new_path.clone();
         download.content_path = Some(new_path);
     }

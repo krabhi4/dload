@@ -1009,6 +1009,7 @@ input:focus {
 }
 
 .status-badge.downloading,
+.status-badge.fetching,
 .status-badge.seeding {
   color: var(--accent-ink);
 }
@@ -1139,6 +1140,17 @@ input:focus {
 .delete-menu.show,
 .more-menu.show {
   display: block;
+}
+
+.download-item.menu-open {
+  z-index: 101;
+  position: relative;
+}
+
+.delete-menu.drop-up,
+.more-menu.drop-up {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 .delete-menu button,

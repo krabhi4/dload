@@ -83,6 +83,7 @@ pub fn sanitize_filename(name: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DownloadStatus {
     Queued,
+    Fetching,
     Downloading,
     Paused,
     Completed,

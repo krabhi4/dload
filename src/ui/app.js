@@ -315,8 +315,21 @@ function showProfile() {
 
 // ─── Filter & Detail ────────────────────────────────
 
+function statusPriority(status) {
+  var s = (status || "").toLowerCase();
+  if (s === "fetching" || s === "downloading") return 0;
+  if (s === "queued") return 1;
+  if (s === "paused") return 2;
+  if (s === "seeding") return 3;
+  if (s === "completed") return 4;
+  return 5;
+}
+
 function sortDownloads(downloads) {
   return downloads.slice().sort(function (a, b) {
+    var pa = statusPriority(a.status);
+    var pb = statusPriority(b.status);
+    if (pa !== pb) return pa - pb;
     return (a.position || 0) - (b.position || 0);
   });
 }
@@ -361,7 +374,7 @@ function buildDownloadItem(d, index) {
   var safeUrl = escapeHtml(d.url);
   var safeStatus = escapeHtml(d.status);
   var progress = Math.min(d.progress, 100);
-  var isActive = d.status === "Downloading";
+  var isActive = d.status === "Downloading" || d.status === "Fetching";
   var isTorrent = d.protocol === "Torrent";
   var canMirror = isTorrent && !d.http_mirror_status
       && (safeStatus === 'Downloading' || safeStatus === 'Paused' || safeStatus === 'Seeding');
@@ -919,7 +932,7 @@ function renderDownloads(downloads) {
       if (d.status === 'Completed' && d.total_size === 0 && d.downloaded_size > 0) {
         progress = 100;
       }
-      var isActive = d.status === 'Downloading';
+      var isActive = d.status === 'Downloading' || d.status === 'Fetching';
 
       // Update filename and URL (e.g. magnet resolved to real name)
       var nameEl = el.querySelector('.download-name');
@@ -996,10 +1009,10 @@ function renderDownloads(downloads) {
 
 function updateStats(downloads) {
   var active = downloads.filter(function (d) {
-    return d.status === "Downloading" || d.status === "Seeding";
+    return d.status === "Downloading" || d.status === "Fetching" || d.status === "Seeding";
   }).length;
   var totalSpeed = downloads.reduce(function (sum, d) {
-    return sum + (d.status === "Downloading" ? d.speed || 0 : 0);
+    return sum + (d.status === "Downloading" || d.status === "Fetching" ? d.speed || 0 : 0);
   }, 0);
   var totalUpload = downloads.reduce(function (sum, d) {
     return sum + ((d.status === "Seeding" || d.status === "Downloading") ? d.upload_speed || 0 : 0);
@@ -1767,6 +1780,7 @@ function closeAllMenus() {
   document.querySelectorAll('.delete-btn[aria-expanded="true"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
   document.querySelectorAll('.more-menu.show').forEach(function (m) { m.classList.remove('show'); });
   document.querySelectorAll('.more-btn[aria-expanded="true"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
+  document.querySelectorAll('.download-item.menu-open').forEach(function (el) { el.classList.remove('menu-open'); });
   openMenuId = null;
   openMoreMenuId = null;
 }
@@ -1808,8 +1822,17 @@ function toggleDeleteMenu(event, id) {
   var menu = document.getElementById("delete-menu-" + id);
   var btn = document.getElementById("delete-btn-" + id);
   if (menu) {
+    menu.classList.remove("drop-up");
     menu.classList.add("show");
-    if (btn) btn.setAttribute('aria-expanded', 'true');
+    var item = menu.closest('.download-item');
+    if (item) item.classList.add('menu-open');
+    if (btn) {
+      btn.setAttribute('aria-expanded', 'true');
+      var rect = btn.getBoundingClientRect();
+      if (rect.bottom + 120 > window.innerHeight) {
+        menu.classList.add("drop-up");
+      }
+    }
     openMenuId = id;
     menu.onkeydown = function (e) { handleMenuKeydown(e, 'delete-btn-' + id); };
     focusFirstMenuItem(menu);
@@ -1827,8 +1850,17 @@ function toggleMoreMenu(event, id) {
   var menu = document.getElementById('more-menu-' + id);
   var btn = document.getElementById('more-btn-' + id);
   if (menu) {
+    menu.classList.remove('drop-up');
     menu.classList.add('show');
-    if (btn) btn.setAttribute('aria-expanded', 'true');
+    var item = menu.closest('.download-item');
+    if (item) item.classList.add('menu-open');
+    if (btn) {
+      btn.setAttribute('aria-expanded', 'true');
+      var rect = btn.getBoundingClientRect();
+      if (rect.bottom + 120 > window.innerHeight) {
+        menu.classList.add('drop-up');
+      }
+    }
     openMoreMenuId = id;
     menu.onkeydown = function (e) { handleMenuKeydown(e, 'more-btn-' + id); };
     focusFirstMenuItem(menu);

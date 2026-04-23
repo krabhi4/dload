@@ -432,9 +432,12 @@ impl ManagerState {
 
         let mut download = Download::new(format!("torrent://{}", name), download_dir);
         download.filename = name.clone();
-        download.save_path = format!("{}/{}", download_dir.trim_end_matches('/'), name);
+        download.save_path = format!("{}/{}", download.download_folder, name);
         download.category = category;
-        download.content_path = Some(download.save_path.clone());
+        // Don't pre-set content_path — session_add_and_wait writes the authoritative value
+        // once librqbit has the metadata. Pre-metadata status is Queued/Fetching → *arr
+        // treats it as non-completed and won't try to import.
+        download.content_path = None;
         download.protocol = Protocol::Torrent;
         download.position = self.assign_new_download_position().await;
 
@@ -2045,87 +2048,116 @@ async fn session_add_and_wait(
     download: &mut Download,
     cancel_token: &CancellationToken,
 ) -> anyhow::Result<()> {
+    use crate::domain::{classify_layout, compute_torrent_paths};
+
     let session = state.get_torrent_session().await?;
 
-    let fallback_dir = state.download_dir().await;
-    let output_dir = std::path::Path::new(&download.save_path)
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or(fallback_dir);
-    let opts = librqbit::AddTorrentOptions {
+    // Ensure download_folder is set. Migrations backfill it for existing rows; this branch
+    // covers any row that slipped through (empty string) so we never accidentally write to
+    // the process default.
+    if download.download_folder.is_empty() {
+        let fallback = state.download_dir().await;
+        let derived = std::path::Path::new(&download.save_path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().to_string());
+        download.download_folder = derived.unwrap_or(fallback);
+    }
+    let download_folder = download.download_folder.clone();
+
+    // Phase 1: add paused so librqbit resolves metadata (magnet) or parses it (.torrent bytes)
+    // without writing any content yet. This gives us the layout before we commit to a final
+    // output_folder — necessary for the flat-multi-file case where we wrap into a subfolder.
+    let initial_opts = librqbit::AddTorrentOptions {
+        paused: true,
         overwrite: true,
-        output_folder: Some(output_dir.clone()),
+        output_folder: Some(download_folder.clone()),
         force_tracker_interval: Some(std::time::Duration::from_secs(60)),
         ..Default::default()
     };
 
-    let handle = session
-        .add_torrent(add, Some(opts))
+    let mut handle = session
+        .add_torrent(add, Some(initial_opts))
         .await
         .map_err(|e| anyhow::anyhow!("Failed to add torrent: {}", e))?
         .into_handle()
         .ok_or_else(|| anyhow::anyhow!("Torrent was a duplicate or couldn't get handle"))?;
 
+    // Extract the torrent's display name (sanitized) and its file layout from metadata.
+    let torrent_name = handle
+        .name()
+        .map(|n| crate::domain::sanitize_filename(&n))
+        .unwrap_or_else(|| download.filename.clone());
+    download.filename = torrent_name.clone();
+
+    let (layout, torrent_bytes_for_readd) = handle
+        .with_metadata(|m| {
+            let rel_paths: Vec<std::path::PathBuf> = m
+                .file_infos
+                .iter()
+                .filter(|f| !f.attrs.padding)
+                .map(|f| f.relative_filename.clone())
+                .collect();
+            (classify_layout(rel_paths), m.torrent_bytes.clone())
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to read torrent metadata: {}", e))?;
+
+    let paths = compute_torrent_paths(&download_folder, &torrent_name, &layout);
+
+    // Flat multi-file torrents need a wrapper folder so librqbit's flat write doesn't spray
+    // files into the shared download folder. Tear down the paused handle and re-add with the
+    // corrected output_folder — no content has been written yet.
+    let needs_wrapper = paths.output_folder != download_folder;
+    if needs_wrapper {
+        // delete_files: true removes the 0-byte placeholder files librqbit created in the
+        // unwrapped output_folder. Safe because the handle was paused — no real content has
+        // been downloaded yet. Leaving them behind would clutter the shared download folder.
+        if let Err(e) = session
+            .delete(handle.id().into(), /*delete_files*/ true)
+            .await
+        {
+            tracing::warn!(
+                "Failed to remove initial paused handle before wrapper re-add: {}",
+                e
+            );
+        }
+        let wrapped_opts = librqbit::AddTorrentOptions {
+            paused: true,
+            overwrite: true,
+            output_folder: Some(paths.output_folder.clone()),
+            force_tracker_interval: Some(std::time::Duration::from_secs(60)),
+            ..Default::default()
+        };
+        handle = session
+            .add_torrent(
+                librqbit::AddTorrent::TorrentFileBytes(torrent_bytes_for_readd),
+                Some(wrapped_opts),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to re-add torrent into wrapper: {}", e))?
+            .into_handle()
+            .ok_or_else(|| anyhow::anyhow!("Wrapper re-add returned no handle"))?;
+    }
+
     let torrent_id = handle.id();
 
-    // Store the handle mapping for pause/resume
     {
         let mut handles = state.torrent_handles.write().await;
         handles.insert(download.id.clone(), torrent_id);
     }
 
-    // Update name, save_path, content_path, and info_hash from torrent metadata
-    if let Some(raw_name) = handle.name() {
-        let name = crate::domain::sanitize_filename(&raw_name);
-        download.filename = name.clone();
+    // Lock in the invariant: content_path is a strict child of download_folder. save_path
+    // mirrors content_path for internal callers that still read it expecting the on-disk
+    // location; the qbit-compat API layer derives its own save_path from download_folder.
+    download.save_path = paths.content_path.clone();
+    download.content_path = Some(paths.content_path.clone());
 
-        let content_suffix = handle
-            .with_metadata(|m| {
-                let files: Vec<_> = m.file_infos.iter().filter(|f| !f.attrs.padding).collect();
-
-                if files.len() == 1 {
-                    return Some(files[0].relative_filename.to_string_lossy().to_string());
-                }
-
-                let first_dirs: Vec<_> = files
-                    .iter()
-                    .filter_map(|f| {
-                        let mut comps = f.relative_filename.components();
-                        let first = comps.next()?;
-                        if comps.next().is_some() {
-                            Some(first.as_os_str().to_string_lossy().to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                if !first_dirs.is_empty()
-                    && first_dirs.len() == files.len()
-                    && first_dirs.iter().all(|d| d == &first_dirs[0])
-                {
-                    Some(first_dirs[0].clone())
-                } else {
-                    None
-                }
-            })
-            .ok()
-            .flatten();
-
-        let new_path = match content_suffix {
-            Some(suffix) => format!("{}/{}", output_dir.trim_end_matches('/'), suffix),
-            None => output_dir.trim_end_matches('/').to_string(),
-        };
-        download.save_path = new_path.clone();
-        download.content_path = Some(new_path);
-    }
     let hash_str = handle.info_hash().as_string();
     if download.info_hash.is_none() {
         download.info_hash = Some(hash_str);
     }
 
-    // RACE CONDITION FIX: check if the user paused/cancelled while librqbit was adding the torrent.
+    // Race-condition check: the user may have paused or cancelled while metadata was resolving.
     let current_status = {
         let downloads = state.downloads.read().await;
         downloads
@@ -2134,30 +2166,27 @@ async fn session_add_and_wait(
             .unwrap_or(DownloadStatus::Downloading)
     };
 
-    if cancel_token.is_cancelled() || current_status == DownloadStatus::Paused {
-        if current_status == DownloadStatus::Paused {
-            if let Err(e) = session.pause(&handle).await {
-                tracing::error!("Failed to pause torrent immediately after adding: {}", e);
-            }
-            download.status = DownloadStatus::Paused;
-        } else {
-            let _ = session.delete(handle.id().into(), false).await;
-            let mut handles = state.torrent_handles.write().await;
-            handles.remove(&download.id);
-            return Ok(());
-        }
+    if cancel_token.is_cancelled() {
+        let _ = session.delete(handle.id().into(), false).await;
+        let mut handles = state.torrent_handles.write().await;
+        handles.remove(&download.id);
+        return Ok(());
     }
 
-    // Only update DB if we aren't already stopped/deleted
+    if current_status == DownloadStatus::Paused {
+        // Already paused from the initial add; nothing to do.
+        download.status = DownloadStatus::Paused;
+    } else if let Err(e) = session.unpause(&handle).await {
+        tracing::error!("Failed to unpause torrent after metadata resolve: {}", e);
+    }
+
     state.update_download(download).await;
 
-    // Use the shared monitor
     let state_clone = Arc::clone(state);
     let dl_id = download.id.clone();
     let ct = cancel_token.clone();
     state_clone.monitor_torrent(dl_id, torrent_id, ct).await;
 
-    // After monitoring ends, read back the latest status
     let latest = {
         let downloads = state.downloads.read().await;
         downloads.get(&download.id).cloned()

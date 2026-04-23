@@ -99,15 +99,45 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         .map(|e| parse_eta_to_secs(e))
         .unwrap_or(8640000);
 
-    let content_path = d.content_path.as_deref().unwrap_or(&d.save_path);
-    let save_path = format!(
-        "{}/",
+    // save_path is the immutable download folder; content_path is a strict child of it.
+    // Sonarr/Radarr require content_path != save_path or they surface
+    // `DownloadClientQbittorrentTorrentStatePathError` and refuse to import. Both paths are
+    // normalized to forward slashes — *arr splits on '/' regardless of host OS.
+    let download_folder = if d.download_folder.is_empty() {
+        // Row pre-dates the download_folder column (defensive; migrations backfill this).
         std::path::Path::new(&d.save_path)
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.to_string_lossy())
-            .unwrap_or(std::borrow::Cow::Borrowed(&d.save_path))
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| d.save_path.clone())
+    } else {
+        d.download_folder.clone()
+    };
+    let save_path = format!("{}/", download_folder.trim_end_matches('/')).replace('\\', "/");
+    let content_path_owned = d
+        .content_path
+        .clone()
+        .unwrap_or_else(|| download_folder.clone())
+        .replace('\\', "/");
+
+    // Defensive: if a completed torrent's content_path somehow equals the download folder,
+    // Sonarr will refuse to import and silently flag the state error. Log loudly so the bug
+    // shows up in tracing — it should never happen post-migration.
+    let completion_state = matches!(
+        d.status,
+        DownloadStatus::Completed | DownloadStatus::Seeding
     );
+    if completion_state
+        && content_path_owned.trim_end_matches('/') == download_folder.trim_end_matches('/')
+    {
+        tracing::warn!(
+            download_id = %d.id,
+            info_hash = d.info_hash.as_deref().unwrap_or(""),
+            folder = %download_folder,
+            "content_path equals download_folder on completed torrent — *arr import will be blocked"
+        );
+    }
+    let content_path = content_path_owned.as_str();
 
     let now = chrono::Utc::now();
     let time_active = (now - d.created_at).num_seconds();
@@ -669,7 +699,10 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
         download.protocol = Protocol::Torrent;
         download.info_hash = crate::worker::extract_info_hash(&url);
         download.category = category.clone();
-        download.content_path = Some(download.save_path.clone());
+        // Leave content_path unset — session_add_and_wait writes the authoritative value
+        // after librqbit delivers the metadata. Pre-metadata status is Queued/Fetching,
+        // which *arr treats as non-completed, so no import will fire against a stale path.
+        download.content_path = None;
         state.manager.add_and_maybe_start(download).await;
     }
 
@@ -748,7 +781,9 @@ async fn handle_add_multipart(
         download.protocol = Protocol::Torrent;
         download.info_hash = crate::worker::extract_info_hash(&url);
         download.category = category.clone();
-        download.content_path = Some(download.save_path.clone());
+        // See handle_add_urlencoded for the rationale — content_path is written once
+        // metadata is in hand, not at submission time.
+        download.content_path = None;
         state.manager.add_and_maybe_start(download).await;
     }
 
@@ -986,6 +1021,84 @@ mod tests {
         d.protocol = crate::domain::Protocol::Torrent;
         let json = to_qbit_torrent(&d);
         assert_eq!(json["category"].as_str().unwrap(), "tv-sonarr");
+    }
+
+    #[test]
+    fn to_qbit_torrent_save_path_uses_download_folder_with_trailing_slash() {
+        // Simulates a completed single-file torrent: download_folder is /media/tv,
+        // content_path points to the file inside it.
+        let mut d = Download::new("magnet:?xt=urn:btih:ABC".into(), "/media/tv");
+        d.download_folder = "/media/tv".into();
+        d.content_path = Some("/media/tv/Movie.2024.mkv".into());
+        d.status = DownloadStatus::Seeding;
+        let json = to_qbit_torrent(&d);
+        let save_path = json["save_path"].as_str().unwrap();
+        let content_path = json["content_path"].as_str().unwrap();
+        assert_eq!(save_path, "/media/tv/");
+        assert_eq!(content_path, "/media/tv/Movie.2024.mkv");
+        // The Sonarr-blocking invariant.
+        assert_ne!(save_path.trim_end_matches('/'), content_path);
+    }
+
+    #[test]
+    fn to_qbit_torrent_multi_file_with_root() {
+        let mut d = Download::new("magnet:?xt=urn:btih:ABC".into(), "/media/tv");
+        d.download_folder = "/media/tv".into();
+        d.content_path = Some("/media/tv/Show.S01E01".into());
+        d.status = DownloadStatus::Completed;
+        let json = to_qbit_torrent(&d);
+        assert_eq!(json["save_path"].as_str().unwrap(), "/media/tv/");
+        assert_eq!(
+            json["content_path"].as_str().unwrap(),
+            "/media/tv/Show.S01E01"
+        );
+    }
+
+    #[test]
+    fn to_qbit_torrent_multi_file_flat_is_wrapped() {
+        // After the wrapper-folder fix, flat multi-file torrents have a content_path that
+        // is a strict child of download_folder.
+        let mut d = Download::new("magnet:?xt=urn:btih:ABC".into(), "/media/tv");
+        d.download_folder = "/media/tv".into();
+        d.content_path = Some("/media/tv/My.Release.2024".into());
+        d.status = DownloadStatus::Seeding;
+        let json = to_qbit_torrent(&d);
+        assert_eq!(json["save_path"].as_str().unwrap(), "/media/tv/");
+        assert_eq!(
+            json["content_path"].as_str().unwrap(),
+            "/media/tv/My.Release.2024"
+        );
+        assert_ne!(
+            json["save_path"].as_str().unwrap().trim_end_matches('/'),
+            json["content_path"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn to_qbit_torrent_pre_metadata_state_still_serializes() {
+        // Before metadata is resolved, content_path is None. *arr state is metaDL →
+        // non-completed, so import won't fire against this response.
+        let mut d = Download::new("magnet:?xt=urn:btih:ABC".into(), "/media/tv");
+        d.download_folder = "/media/tv".into();
+        d.content_path = None;
+        d.status = DownloadStatus::Fetching;
+        let json = to_qbit_torrent(&d);
+        assert_eq!(json["save_path"].as_str().unwrap(), "/media/tv/");
+        // Falls back to download_folder — only safe because state is metaDL here.
+        assert_eq!(json["content_path"].as_str().unwrap(), "/media/tv");
+        assert_eq!(json["state"].as_str().unwrap(), "metaDL");
+    }
+
+    #[test]
+    fn to_qbit_torrent_normalizes_backslashes() {
+        // Windows-authored torrent on Linux host could produce backslashes in stored paths.
+        let mut d = Download::new("magnet:?xt=urn:btih:ABC".into(), "C:\\downloads");
+        d.download_folder = "C:\\downloads".into();
+        d.content_path = Some("C:\\downloads\\file.mkv".into());
+        d.status = DownloadStatus::Seeding;
+        let json = to_qbit_torrent(&d);
+        assert!(!json["save_path"].as_str().unwrap().contains('\\'));
+        assert!(!json["content_path"].as_str().unwrap().contains('\\'));
     }
 
     #[test]

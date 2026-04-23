@@ -1,9 +1,11 @@
 pub mod download;
 pub mod settings;
+pub mod torrent_layout;
 pub mod user;
 
 pub use download::*;
 pub use settings::*;
+pub use torrent_layout::*;
 pub use user::*;
 
 use std::sync::LazyLock;

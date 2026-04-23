@@ -89,6 +89,74 @@ impl Database {
                 );
             }
         }
+        let _ = conn.execute_batch(
+            "ALTER TABLE downloads ADD COLUMN download_folder TEXT NOT NULL DEFAULT '';",
+        );
+        // One-time migration: backfill download_folder from existing content_path/save_path.
+        // Priority per row: parent(content_path) if set → parent(save_path) if non-empty →
+        // configured default folder. Rows where pre-fix content_path == save_path end up at the
+        // default folder; those self-heal when the torrent next re-enters the session.
+        {
+            let already_done: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key = 'migration_download_folder_backfill'",
+                    [],
+                    |row| row.get::<_, i32>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if !already_done {
+                let default_dir: String = conn
+                    .query_row(
+                        "SELECT value FROM settings WHERE key = 'download_dir'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or_else(|_| "/downloads".to_string());
+
+                let rows: Vec<(String, Option<String>, String)> = {
+                    let mut stmt = conn.prepare(
+                        "SELECT id, content_path, save_path FROM downloads
+                         WHERE download_folder = '' OR download_folder IS NULL",
+                    )?;
+                    let iter = stmt.query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?;
+                    iter.collect::<Result<Vec<_>, _>>()?
+                };
+
+                let parent_of = |p: &str| -> Option<String> {
+                    let trimmed = p.trim_end_matches('/');
+                    std::path::Path::new(trimmed)
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .map(|p| p.to_string_lossy().to_string())
+                };
+
+                for (id, content_path, save_path) in rows {
+                    let folder = content_path
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .and_then(parent_of)
+                        .or_else(|| parent_of(&save_path))
+                        .unwrap_or_else(|| default_dir.clone());
+                    let _ = conn.execute(
+                        "UPDATE downloads SET download_folder = ?1 WHERE id = ?2",
+                        rusqlite::params![&folder, &id],
+                    );
+                }
+
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![&"migration_download_folder_backfill", &"1"],
+                );
+            }
+        }
+
         let _ = conn.execute_batch("ALTER TABLE downloads ADD COLUMN position INTEGER DEFAULT 0;");
         // One-time migration: backfill positions from created_at order so existing
         // downloads get a sensible initial ordering.

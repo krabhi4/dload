@@ -106,6 +106,11 @@ pub struct Download {
     pub url: String,
     pub filename: String,
     pub save_path: String,
+    /// The immutable download folder for this torrent/download. Always the directory that
+    /// librqbit (or the HTTP downloader) was told to write into. Used as `save_path` in the
+    /// qBittorrent-compat API so *arr clients can trust `content_path` is a strict child.
+    #[serde(default)]
+    pub download_folder: String,
     pub total_size: u64,
     pub downloaded_size: u64,
     pub speed: u64,
@@ -138,12 +143,14 @@ impl Download {
     pub fn new(url: String, save_dir: &str) -> Self {
         let raw_filename = derive_initial_filename(&url);
         let filename = sanitize_filename(&raw_filename);
+        let download_folder = save_dir.trim_end_matches('/').to_string();
 
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             url,
             filename: filename.clone(),
-            save_path: format!("{}/{}", save_dir.trim_end_matches('/'), filename),
+            save_path: format!("{}/{}", download_folder, filename),
+            download_folder,
             total_size: 0,
             downloaded_size: 0,
             speed: 0,

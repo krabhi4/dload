@@ -93,6 +93,230 @@ function dismissToast(id) {
   }, 250);
 }
 
+// ─── Dialogs (confirm / prompt) ─────────────────────
+//
+// Editorial replacement for window.confirm / window.prompt. Matches the
+// broadsheet aesthetic — Fraunces title, accent top-rule, warm paper card.
+// Returns a Promise; null-ish result = user cancelled.
+
+var activeDialog = null;
+var dialogCounter = 0;
+
+function showDialog(opts) {
+  // Refuse to displace an in-flight dialog. Silently resolving the previous
+  // promise to its cancel value would look like a user cancellation to the
+  // awaiting caller, aborting a real action. Callers that genuinely want to
+  // replace the current dialog must call closeActiveDialog() first.
+  if (activeDialog) {
+    return Promise.reject(new Error("showDialog: another dialog is already open"));
+  }
+  return new Promise(function (resolve) {
+    var id = "dialog-" + ++dialogCounter;
+    var titleId = id + "-title";
+    var messageId = id + "-message";
+
+    var modal = document.createElement("div");
+    modal.className = "modal dialog-modal";
+    modal.id = id;
+    modal.style.display = "flex";
+    // Destructive confirms get role="alertdialog" (with a description) so
+    // assistive tech announces them with urgency. Without a message we cannot
+    // meet the alertdialog description requirement, so fall back to dialog.
+    var useAlert = !!(opts.danger && opts.message);
+    modal.setAttribute("role", useAlert ? "alertdialog" : "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", titleId);
+    if (opts.message) modal.setAttribute("aria-describedby", messageId);
+
+    var backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.addEventListener("click", function () {
+      finalize(opts.cancelValue);
+    });
+    modal.appendChild(backdrop);
+
+    var card = document.createElement("div");
+    card.className = "dialog-card" + (opts.danger ? " is-danger" : "");
+
+    if (opts.eyebrow) {
+      var eyebrow = document.createElement("span");
+      eyebrow.className = "dialog-eyebrow";
+      eyebrow.textContent = opts.eyebrow;
+      card.appendChild(eyebrow);
+    }
+
+    var title = document.createElement("h2");
+    title.className = "dialog-title";
+    title.id = titleId;
+    title.textContent = opts.title || "";
+    card.appendChild(title);
+
+    if (opts.message) {
+      var msg = document.createElement("p");
+      msg.className = "dialog-message";
+      msg.id = messageId;
+      msg.textContent = opts.message;
+      card.appendChild(msg);
+    }
+
+    var fieldInput = null;
+    if (opts.input) {
+      var field = document.createElement("div");
+      field.className = "dialog-field";
+
+      var inputId = id + "-input";
+      if (opts.input.label) {
+        var label = document.createElement("label");
+        label.className = "dialog-label";
+        label.htmlFor = inputId;
+        label.textContent = opts.input.label;
+        field.appendChild(label);
+      }
+
+      fieldInput = document.createElement("input");
+      fieldInput.type = "text";
+      fieldInput.id = inputId;
+      fieldInput.placeholder = opts.input.placeholder || "";
+      // Preserve falsy-but-valid values (0, false) from the caller.
+      fieldInput.value =
+        opts.input.defaultValue != null ? String(opts.input.defaultValue) : "";
+      fieldInput.autocomplete = "off";
+      fieldInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finalize({ confirmed: true, value: fieldInput.value });
+        }
+      });
+      field.appendChild(fieldInput);
+      card.appendChild(field);
+
+      if (opts.input.bind) opts.input.bind.input = fieldInput;
+    }
+
+    var actionsRow = document.createElement("div");
+    actionsRow.className = "dialog-actions";
+    var actions = opts.actions || [];
+    var primaryBtn = null;
+    var ghostBtn = null;
+    actions.forEach(function (a) {
+      var btn = document.createElement("button");
+      var cls;
+      if (a.variant === "primary") {
+        cls = "btn-primary";
+      } else if (a.variant === "danger") {
+        cls = "btn-primary is-danger";
+      } else {
+        cls = "btn-ghost";
+      }
+      btn.className = cls;
+      btn.type = "button";
+      btn.textContent = a.label;
+      btn.addEventListener("click", function () {
+        var v = a.value;
+        if (typeof v === "function") v = v();
+        finalize(v);
+      });
+      if (a.variant === "primary" || a.variant === "danger") primaryBtn = btn;
+      if (a.variant === "ghost" || !a.variant) ghostBtn = btn;
+      actionsRow.appendChild(btn);
+    });
+    card.appendChild(actionsRow);
+
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+
+    var prevFocus = document.activeElement;
+    var state = {
+      modal: modal,
+      cancelValue: opts.cancelValue,
+      finalize: finalize,
+    };
+    activeDialog = state;
+
+    // Defer focus so it survives the render tick. Prompt → input. Destructive
+    // confirms default focus to Cancel so a stray Enter is safe. Everything
+    // else → primary.
+    setTimeout(function () {
+      if (activeDialog !== state) return;
+      if (fieldInput) {
+        fieldInput.focus();
+        fieldInput.select();
+      } else if (opts.danger && ghostBtn) {
+        ghostBtn.focus();
+      } else if (primaryBtn) {
+        primaryBtn.focus();
+      }
+    }, 0);
+
+    function finalize(value) {
+      if (activeDialog !== state) return;
+      activeDialog = null;
+      modal.remove();
+      if (prevFocus && typeof prevFocus.focus === "function") {
+        try { prevFocus.focus(); } catch (e) { /* ignore */ }
+      }
+      resolve(value);
+    }
+  });
+}
+
+function showConfirm(opts) {
+  return showDialog({
+    title: opts.title,
+    message: opts.message,
+    eyebrow: opts.eyebrow,
+    danger: !!opts.danger,
+    cancelValue: false,
+    actions: [
+      { label: opts.cancelLabel || "Cancel", variant: "ghost", value: false },
+      {
+        label: opts.confirmLabel || (opts.danger ? "Delete" : "Confirm"),
+        variant: opts.danger ? "danger" : "primary",
+        value: true,
+      },
+    ],
+  }).then(function (v) { return v === true; });
+}
+
+function showPrompt(opts) {
+  // Exposed via opts so showDialog can bind the live input reference after
+  // creating the field. Lets the OK button read input.value through a closure
+  // instead of the module-level activeDialog (which could be wrong if another
+  // dialog displaces this one mid-flight).
+  var bind = { input: null };
+  return showDialog({
+    title: opts.title,
+    message: opts.message,
+    eyebrow: opts.eyebrow,
+    input: {
+      label: opts.label,
+      placeholder: opts.placeholder,
+      defaultValue: opts.defaultValue,
+      bind: bind,
+    },
+    cancelValue: null,
+    actions: [
+      { label: opts.cancelLabel || "Cancel", variant: "ghost", value: null },
+      {
+        label: opts.confirmLabel || "OK",
+        variant: "primary",
+        value: function () {
+          return { confirmed: true, value: bind.input ? bind.input.value : "" };
+        },
+      },
+    ],
+  }).then(function (v) {
+    if (!v || v.confirmed !== true) return null;
+    return v.value;
+  });
+}
+
+function closeActiveDialog() {
+  if (!activeDialog) return false;
+  activeDialog.finalize(activeDialog.cancelValue);
+  return true;
+}
+
 // ─── API ────────────────────────────────────────────
 
 async function apiRequest(endpoint, options) {
@@ -1437,7 +1661,14 @@ async function createUser() {
 }
 
 async function deleteUser(id) {
-  if (!confirm("Are you sure you want to delete this user?")) return;
+  var ok = await showConfirm({
+    eyebrow: "User management",
+    title: "Delete this user?",
+    message: "Their account will be removed immediately. Any active sessions for them will keep working until their token expires.",
+    danger: true,
+    confirmLabel: "Delete user",
+  });
+  if (!ok) return;
   try {
     var result = await apiRequest("/auth/users/" + encodeURIComponent(id), {
       method: "DELETE",
@@ -1652,7 +1883,14 @@ async function deleteSelectedHistory() {
 }
 
 async function clearAllHistory() {
-  if (!confirm("Clear all download history?")) return;
+  var ok = await showConfirm({
+    eyebrow: "Archive",
+    title: "Clear all history?",
+    message: "Every entry in the completed archive will be removed. Files on disk are not touched — only the record of what was downloaded.",
+    danger: true,
+    confirmLabel: "Clear history",
+  });
+  if (!ok) return;
   try {
     await apiRequest("/history", { method: "DELETE" });
     selectedHistoryIds.clear();
@@ -2219,9 +2457,17 @@ async function browserCreateFolder() {
   var pathEl = document.getElementById("browser-path");
   var currentPath = pathEl ? pathEl.getAttribute("data-path") : "/";
 
-  var name = prompt("New folder name:");
-  if (!name || !name.trim()) return;
+  var name = await showPrompt({
+    eyebrow: "New folder",
+    title: "Name this folder",
+    message: "It will be created inside " + currentPath,
+    label: "Folder name",
+    placeholder: "e.g. Movies",
+    confirmLabel: "Create",
+  });
+  if (name === null) return;
   name = name.trim();
+  if (!name) return;
 
   if (name.indexOf("/") !== -1 || name.indexOf("..") !== -1) {
     showToast("error", "Invalid folder name");
@@ -2672,6 +2918,10 @@ document.addEventListener('keydown', function (e) {
       if (focusBtn) focusBtn.focus();
       return;
     }
+    if (activeDialog) {
+      closeActiveDialog();
+      return;
+    }
     if (folderBrowserModal) {
       closeFolderBrowser();
     }
@@ -2687,6 +2937,18 @@ document.addEventListener('keydown', function (e) {
       if (document.activeElement === first) { e.preventDefault(); last.focus(); }
     } else {
       if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  }
+  // Focus trap for confirm / prompt dialog
+  if (activeDialog && e.key === 'Tab') {
+    var dlgFocusable = activeDialog.modal.querySelectorAll('input:not([type="hidden"]), button, [tabindex]:not([tabindex="-1"])');
+    if (dlgFocusable.length === 0) return;
+    var dlgFirst = dlgFocusable[0];
+    var dlgLast = dlgFocusable[dlgFocusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === dlgFirst) { e.preventDefault(); dlgLast.focus(); }
+    } else {
+      if (document.activeElement === dlgLast) { e.preventDefault(); dlgFirst.focus(); }
     }
   }
 });

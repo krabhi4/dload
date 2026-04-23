@@ -231,7 +231,10 @@ mod tests {
         // returns download_folder as save_path, content_path must not equal download_folder.
         for (name, layout) in [
             ("single", ContentLayout::SingleFile(pb("a.mkv"))),
-            ("multi-root", ContentLayout::MultiFileWithRoot("root".into())),
+            (
+                "multi-root",
+                ContentLayout::MultiFileWithRoot("root".into()),
+            ),
             ("multi-flat", ContentLayout::MultiFileFlat),
         ] {
             let p = compute_torrent_paths("/downloads", "torrent-name", &layout);

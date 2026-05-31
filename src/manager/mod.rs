@@ -273,9 +273,19 @@ impl ManagerState {
             tracing::warn!("Failed to create download directory {}: {}", dir, e);
         }
 
+        // BitTorrent listen port for INCOMING peer connections. Fixed to a single port (not a
+        // range) and configurable via DLOAD_BT_PORT so it can be matched to a published/
+        // forwarded Docker port. Without a reachable inbound port no peer can connect to us,
+        // so the upload/seeding ratio stays pinned at 0. Default 6881 (the BitTorrent norm).
+        let bt_port: u16 = std::env::var("DLOAD_BT_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .filter(|p| *p >= 1 && *p < 65535)
+            .unwrap_or(6881);
+
         let opts = librqbit::SessionOptions {
             enable_upnp_port_forwarding: true,
-            listen_port_range: Some(6881..6891),
+            listen_port_range: Some(bt_port..bt_port + 1),
             fastresume: true,
             concurrent_init_limit: Some(5),
             peer_opts: Some(librqbit::PeerConnectionOptions {
@@ -2109,8 +2119,16 @@ async fn session_add_and_wait(
     // corrected output_folder — no content has been written yet.
     let needs_wrapper = paths.output_folder != download_folder;
     if needs_wrapper {
+        // Let the initial paused handle finish initializing before tearing it down. Deleting
+        // mid-init races librqbit's init task, which then errors on every file ("file is None")
+        // and logs "torrent is initializing, can't pause". Waiting first makes teardown clean.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            handle.wait_until_initialized(),
+        )
+        .await;
         // delete_files: true removes the 0-byte placeholder files librqbit created in the
-        // unwrapped output_folder. Safe because the handle was paused — no real content has
+        // unwrapped output_folder. Safe because the handle was paused, no real content has
         // been downloaded yet. Leaving them behind would clutter the shared download folder.
         if let Err(e) = session
             .delete(handle.id().into(), /*delete_files*/ true)
@@ -2176,8 +2194,29 @@ async fn session_add_and_wait(
     if current_status == DownloadStatus::Paused {
         // Already paused from the initial add; nothing to do.
         download.status = DownloadStatus::Paused;
-    } else if let Err(e) = session.unpause(&handle).await {
-        tracing::error!("Failed to unpause torrent after metadata resolve: {}", e);
+    } else {
+        // CRITICAL: wait for librqbit to finish initializing (checksum) before unpausing.
+        // Calling unpause() while the torrent is still in the Initializing state silently
+        // drops the start request (librqbit logs "no need to start torrent anymore, as it
+        // switched state from initializing"), leaving the torrent paused forever with zero
+        // peers. This is the root cause of ".torrent uploads and the qBittorrent/Sonarr add
+        // path never download": those have metadata immediately, so add_torrent returns mid
+        // init and the unpause races it. Magnet adds masked the bug because add_torrent only
+        // returns once metadata is resolved from peers, by which point init is already past.
+        if let Err(e) = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            handle.wait_until_initialized(),
+        )
+        .await
+        {
+            tracing::warn!(
+                "torrent init exceeded {:?} before unpause; unpausing anyway",
+                e
+            );
+        }
+        if let Err(e) = session.unpause(&handle).await {
+            tracing::error!("Failed to unpause torrent after metadata resolve: {}", e);
+        }
     }
 
     state.update_download(download).await;

@@ -4,12 +4,18 @@ services:
     container_name: dload
     ports:
       - "3007:8080"
+      # BitTorrent listen port for incoming peers. Required for seeding (otherwise the
+      # ratio stays at 0). Must match DLOAD_BT_PORT, and forward it on your router too.
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
     volumes:
       - ./data:/data
       - ./downloads:/downloads
     environment:
       - RUST_LOG=info
       - DLOAD_JWT_SECRET=changeme-generate-a-random-secret
+      # BitTorrent listen port (must match the published port above).
+      - DLOAD_BT_PORT=6881
       # - DLOAD_CORS_ORIGIN=https://your-domain.com
     ulimits:
       nofile:

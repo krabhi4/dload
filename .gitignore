@@ -22,6 +22,9 @@ Thumbs.db
 # Downloads
 downloads/
 
+# arr-test environment data + scratch screenshots
+.arr-test/
+
 # Worktrees
 .worktrees/
 

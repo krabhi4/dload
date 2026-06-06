@@ -7,21 +7,21 @@ description = "A self-hosted download manager"
 repository = "https://github.com/krabhi4/dload"
 
 [dependencies]
-axum = "0.7"
-axum-extra = { version = "0.9", features = ["multipart"] }
+axum = "0.8"
+axum-extra = { version = "0.12", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
-bcrypt = "0.15"
-jsonwebtoken = "9"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+bcrypt = "0.19"
+jsonwebtoken = "10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-tower-http = { version = "0.5", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-thiserror = "1"
+thiserror = "2"
 anyhow = "1"
 base64 = "0.22"
 content_disposition = "0.4"
@@ -31,7 +31,7 @@ regex = "1"
 futures = "0.3"
 tokio-util = "0.7"
 bytes = "1"
-zip = "2"
+zip = "8"
 librqbit = "8"
 
 [dev-dependencies]

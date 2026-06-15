@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.95-slim AS builder
+FROM rust:1.96-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -22,17 +22,22 @@ RUN touch src/main.rs && cargo build --release --locked
 # Runtime stage
 FROM debian:bookworm-slim
 
+# gosu: entrypoint uses it to drop to PUID/PGID.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     ca-certificates \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/dload /usr/local/bin/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /data /downloads
 
 EXPOSE 8080
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["dload"]

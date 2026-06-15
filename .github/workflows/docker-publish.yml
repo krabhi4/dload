@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+    # Release tags (e.g. v0.2.1) publish versioned image tags. paths-ignore is
+    # not applied to tag pushes, and a release commit bumps Cargo.toml anyway,
+    # so tagged releases always build.
+    tags:
+      - 'v*.*.*'
     paths-ignore:
       - '**.md'
       - 'LICENSE'
@@ -42,9 +47,12 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest (main) + sha-<commit> always; X.Y.Z and X.Y on vX.Y.Z tags.
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7

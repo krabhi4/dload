@@ -2719,6 +2719,38 @@ async function checkFirstUser() {
   }
 }
 
+// Show the login modal in register mode if no users exist yet, else sign-in.
+function showLoginScreen() {
+  hideAppLoading();
+  document.getElementById("login-modal").style.display = "flex";
+  document.getElementById("login-username").focus();
+  var loginForm = document.getElementById("login-form");
+  checkFirstUser().then(function (isFirst) {
+    var btn = loginForm ? loginForm.querySelector('button[type="submit"]') : null;
+    if (isFirst === null) {
+      // Connection failed — show error in login hint
+      var hint = document.getElementById("login-hint");
+      if (hint) {
+        hint.textContent = "Cannot reach server. Check your connection and refresh.";
+        hint.style.color = "var(--danger)";
+      }
+    } else if (isFirst) {
+      var hint = document.getElementById("login-hint");
+      if (hint) hint.textContent = "Create your admin account to get started";
+      var subtitle = document.querySelector(".login-subtitle");
+      if (subtitle) subtitle.textContent = "Set up your download manager";
+      if (btn) {
+        btn.textContent = "Create Account";
+        btn.dataset.mode = "register";
+      }
+    } else if (btn && btn.dataset.mode === "register") {
+      // Accounts exist now — fall back to Sign In mode.
+      btn.textContent = "Sign In";
+      delete btn.dataset.mode;
+    }
+  });
+}
+
 async function init() {
   var loginForm = document.getElementById("login-form");
   if (loginForm) {
@@ -2791,28 +2823,21 @@ async function init() {
   }
 
   if (!token) {
-    hideAppLoading();
-    document.getElementById("login-modal").style.display = "flex";
-    document.getElementById("login-username").focus();
-    // Check if this is the first user
-    checkFirstUser().then(function (isFirst) {
-      if (isFirst === null) {
-        // Connection failed — show error in login hint
-        var hint = document.getElementById("login-hint");
-        if (hint) hint.textContent = "Cannot reach server. Check your connection and refresh.";
-        if (hint) hint.style.color = "var(--danger)";
-      } else if (isFirst) {
-        var hint = document.getElementById("login-hint");
-        if (hint) hint.textContent = "Create your admin account to get started";
-        var subtitle = document.querySelector(".login-subtitle");
-        if (subtitle) subtitle.textContent = "Set up your download manager";
-        var btn = loginForm.querySelector('button[type="submit"]');
-        if (btn) {
-          btn.textContent = "Create Account";
-          btn.dataset.mode = "register";
-        }
-      }
-    });
+    showLoginScreen();
+    return;
+  }
+
+  // Token present but maybe stale: it still verifies after its account is
+  // deleted or the DB is wiped (stable secret). Confirm the user exists first.
+  var authed = await updateUserInformation();
+  if (authed === false) {
+    // Server says invalid (deleted user / wiped DB) → drop it. null (server
+    // unreachable) falls through so an outage doesn't force re-login.
+    token = "";
+    localStorage.removeItem("dload_token");
+    window.currentUserRole = null;
+    window.currentUserId = null;
+    showLoginScreen();
     return;
   }
 
@@ -2855,6 +2880,8 @@ async function startApp() {
   }
 }
 
+// Returns true (live user), false (server says token/user invalid → drop it),
+// or null (server unreachable → keep the token).
 async function updateUserInformation() {
   try {
     var result = await apiRequest("/auth/me", {
@@ -2886,9 +2913,12 @@ async function updateUserInformation() {
       // Store user role and ID for permission checks
       window.currentUserRole = result.user.role;
       window.currentUserId = result.user.id;
+      return true;
     }
+    return false;
   } catch (e) {
-    // Silent failure — user info will refresh on next navigation
+    // Network/server-unreachable error — don't treat as logged out.
+    return null;
   }
 }
 

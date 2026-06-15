@@ -1,4 +1,4 @@
-use crate::domain::{jwt_secret, Claims, Download, DownloadStatus};
+use crate::domain::{Download, DownloadStatus};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, Query, State},
@@ -35,33 +35,6 @@ fn extract_token(headers: &axum::http::HeaderMap) -> &str {
         .unwrap_or("")
 }
 
-fn require_auth(token: &str) -> Result<Claims, String> {
-    jsonwebtoken::decode::<Claims>(
-        token,
-        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
-        &jsonwebtoken::Validation::default(),
-    )
-    .map(|d| d.claims)
-    .map_err(|_| "Authentication required".to_string())
-}
-
-fn require_admin(token: &str) -> Result<Claims, String> {
-    jsonwebtoken::decode::<Claims>(
-        token,
-        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
-        &jsonwebtoken::Validation::default(),
-    )
-    .map(|d| d.claims)
-    .map_err(|_| "Invalid token".to_string())
-    .and_then(|c| {
-        if c.role == "ADMIN" {
-            Ok(c)
-        } else {
-            Err("Admin access required".to_string())
-        }
-    })
-}
-
 #[derive(serde::Deserialize)]
 struct ReorderRequest {
     ids: Vec<String>,
@@ -85,7 +58,7 @@ async fn list_downloads(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    if require_auth(extract_token(&headers)).is_err() {
+    if state.authenticate(extract_token(&headers)).await.is_err() {
         return axum::response::IntoResponse::into_response((
             axum::http::StatusCode::UNAUTHORIZED,
             "Authentication required",
@@ -99,7 +72,7 @@ async fn reorder_downloads_handler(
     headers: axum::http::HeaderMap,
     Json(payload): Json<ReorderRequest>,
 ) -> axum::response::Response {
-    if let Err(e) = require_admin(extract_token(&headers)) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 
@@ -119,7 +92,7 @@ async fn add_download(
     headers: axum::http::HeaderMap,
     request: axum::extract::Request,
 ) -> axum::response::Response {
-    if require_auth(extract_token(&headers)).is_err() {
+    if state.authenticate(extract_token(&headers)).await.is_err() {
         return (StatusCode::UNAUTHORIZED, "Authentication required").into_response();
     }
 
@@ -344,7 +317,7 @@ async fn remove_download(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if let Err(e) = require_admin(token) {
+    if let Err(e) = state.authenticate_admin(token).await {
         return Json(serde_json::json!({
             "success": false,
             "error": e
@@ -364,7 +337,7 @@ async fn pause_download(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if let Err(e) = require_admin(extract_token(&headers)) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return Json(serde_json::json!({ "success": false, "error": e }));
     }
     state.pause_download(&id).await;
@@ -376,7 +349,7 @@ async fn cancel_download(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if let Err(e) = require_admin(extract_token(&headers)) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return Json(serde_json::json!({ "success": false, "error": e }));
     }
     state.cancel_download(&id).await;
@@ -407,7 +380,7 @@ async fn resume_download(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if let Err(e) = require_admin(extract_token(&headers)) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return Json(serde_json::json!({ "success": false, "error": e }));
     }
     state.resume_download(&id).await;
@@ -418,7 +391,7 @@ async fn resume_all_downloads(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if let Err(e) = require_admin(extract_token(&headers)) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return Json(serde_json::json!({ "success": false, "error": e }));
     }
 
@@ -451,7 +424,7 @@ async fn export_torrent(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    if require_auth(extract_token(&headers)).is_err() {
+    if state.authenticate(extract_token(&headers)).await.is_err() {
         return axum::response::IntoResponse::into_response((
             axum::http::StatusCode::UNAUTHORIZED,
             "Authentication required",
@@ -505,7 +478,7 @@ async fn start_http_mirror(
     headers: axum::http::HeaderMap,
     Json(payload): Json<HttpMirrorRequest>,
 ) -> axum::response::Response {
-    if let Err(e) = require_admin(extract_token(&headers)) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return axum::response::IntoResponse::into_response((
             axum::http::StatusCode::UNAUTHORIZED,
             e,

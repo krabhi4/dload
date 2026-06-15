@@ -1,4 +1,3 @@
-use crate::domain::{jwt_secret, Claims};
 use crate::manager::SharedState;
 use axum::{
     extract::{Path, Query, State},
@@ -21,16 +20,6 @@ fn extract_token(headers: &axum::http::HeaderMap) -> &str {
         .unwrap_or("")
 }
 
-fn require_auth(token: &str) -> Result<Claims, String> {
-    jsonwebtoken::decode::<Claims>(
-        token,
-        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
-        &jsonwebtoken::Validation::default(),
-    )
-    .map(|d| d.claims)
-    .map_err(|_| "Authentication required".to_string())
-}
-
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/api/history", get(list_history).delete(clear_history))
@@ -43,7 +32,7 @@ async fn list_history(
     Query(q): Query<HistoryQuery>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    if require_auth(extract_token(&headers)).is_err() {
+    if state.authenticate(extract_token(&headers)).await.is_err() {
         return axum::response::IntoResponse::into_response((
             axum::http::StatusCode::UNAUTHORIZED,
             "Authentication required",
@@ -59,7 +48,7 @@ async fn delete_history_item(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if require_auth(extract_token(&headers)).is_err() {
+    if state.authenticate(extract_token(&headers)).await.is_err() {
         return Json(serde_json::json!({ "success": false, "error": "Authentication required" }));
     }
     state.delete_history(&id).await;
@@ -70,7 +59,7 @@ async fn clear_history(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if require_auth(extract_token(&headers)).is_err() {
+    if state.authenticate(extract_token(&headers)).await.is_err() {
         return Json(serde_json::json!({ "success": false, "error": "Authentication required" }));
     }
     state.delete_all_history().await;

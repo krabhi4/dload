@@ -197,6 +197,8 @@ h1, h2, h3 { font-weight: 600; margin: 0; }
   font-weight: 600;
 }
 .btn-primary:hover { background: rgba(136, 192, 208, 0.22); }
+.btn-primary.is-danger { color: var(--err); border-color: var(--err); background: var(--err-tint); }
+.btn-primary.is-danger:hover { background: rgba(217, 121, 130, 0.24); }
 .btn-ghost { background: none; border-color: transparent; color: var(--dim); }
 .btn-ghost:hover { color: var(--text); background: var(--surface-hi); }
 .btn-danger, .btn-danger-outline {
@@ -218,6 +220,9 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 }
 input::placeholder { color: var(--dim); opacity: 0.7; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 select {
   cursor: pointer;
   appearance: none; -webkit-appearance: none; -moz-appearance: none;
@@ -259,8 +264,8 @@ select {
 .filter-chip.active { color: var(--accent); font-weight: 600; }
 .filter-chip.active::before { content: "\25B8\00A0"; }
 .live-indicator { font-size: 12px; color: var(--ok); display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; }
-.live-glyph { display: inline-block; animation: spin 3s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.live-glyph { display: inline-block; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .resume-all-enter { animation: pageIn 0.2s ease; }
 
 .file-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -321,7 +326,7 @@ select {
 .dl-prog { display: flex; align-items: center; gap: 8px; }
 .progress-bar {
   flex: 1; height: 12px; background: transparent;
-  border: 1px solid var(--border); overflow: hidden; position: relative;
+  border: 1px solid var(--border-hi); overflow: hidden; position: relative;
 }
 .progress-fill {
   position: absolute; inset: 0; transform-origin: left center;
@@ -352,7 +357,6 @@ select {
 .action-btn.resume-btn:hover { color: var(--ok); }
 .action-btn.cancel-btn:hover { color: var(--err); }
 
-.mirror-status { font-size: 11px; color: var(--accent); margin-left: 6px; }
 
 /* ─── Row dropdown menus ─── */
 .more-dropdown, .delete-dropdown { position: relative; }
@@ -625,9 +629,16 @@ select {
 
 /* ─── Responsive ─── */
 @media (max-width: 860px) {
-  .nav-tabs, .head-stats, .user-info, .logout-btn { display: none; }
+  .nav-tabs, .user-info, .logout-btn { display: none; }
+  .head-stats { gap: 10px; font-size: 12px; }
+  .head-stat.up { display: none; }
   .hamburger-btn { display: inline-flex; align-items: center; }
   .app-header { gap: 0; justify-content: space-between; }
+  .add-form { flex-wrap: wrap; }
+  .add-form .add-prompt { display: none; }
+  .add-form #download-url { flex: 1 1 100%; border: 1px solid var(--border); }
+  .folder-select { flex: 1 1 auto; max-width: none; }
+  #attach-torrent-btn, .add-form .btn-primary { white-space: nowrap; }
   .dl-head { display: none; }
   .download-row {
     grid-template-columns: 18px minmax(0,1fr) auto;
@@ -644,7 +655,8 @@ select {
   .download-metrics { grid-area: meta; text-align: left; color: var(--dim); }
   .speed, .eta { display: none; }
   .actions { grid-area: actions; justify-self: end; align-self: center; }
-  .history-item { grid-template-columns: 28px minmax(0,1fr) auto; row-gap: 4px; height: auto; padding: 10px 4px; }
+  .history-item { display: flex; align-items: center; gap: 10px; height: auto; padding: 11px 4px; }
+  .history-info { flex: 1; min-width: 0; }
   .history-time, .history-size { display: none; }
   .form-row { flex-direction: column; gap: 0; }
 }

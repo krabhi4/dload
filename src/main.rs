@@ -1,7 +1,7 @@
 use axum::http::{HeaderValue, Method};
 use axum::{
     http::{header, StatusCode},
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing::get,
     Router,
 };
@@ -116,14 +116,24 @@ async fn main() {
     .unwrap();
 }
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
+async fn index() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        INDEX_HTML,
+    )
 }
 
 async fn style_css() -> impl IntoResponse {
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/css")],
+        [
+            (header::CONTENT_TYPE, "text/css"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
         STYLE_CSS,
     )
 }
@@ -131,7 +141,10 @@ async fn style_css() -> impl IntoResponse {
 async fn app_js() -> impl IntoResponse {
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/javascript")],
+        [
+            (header::CONTENT_TYPE, "application/javascript"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
         APP_JS,
     )
 }

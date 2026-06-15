@@ -402,7 +402,7 @@ function showDownloads() {
     '<input type="text" id="download-url" placeholder="paste a URL, magnet link, or attach a .torrent">' +
     '<select id="download-folder" class="folder-select" title="Download folder" style="display:none"></select>' +
     '<input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" multiple hidden>' +
-    '<button type="button" id="attach-torrent-btn" class="btn-ghost" title="Attach .torrent file" aria-label="Attach .torrent file">⊕ .torrent</button>' +
+    '<button type="button" id="attach-torrent-btn" class="btn-ghost" title="Attach .torrent file" aria-label="Attach .torrent file">↑ .torrent</button>' +
     '<button type="submit" class="btn-primary">+ add</button>' +
     "</form>" +
     '<div class="toolbar-actions">' +
@@ -410,7 +410,7 @@ function showDownloads() {
     ["all", "active", "queued", "paused", "completed"].map(function (f) {
       return '<button class="filter-chip' + (f === currentFilter ? " active" : "") + '" data-filter="' + f + '" onclick="setFilter(\'' + f + '\')">' + f + "</button>";
     }).join("") +
-    '<span class="live-indicator"><span class="live-glyph" aria-hidden="true">⟳</span> live</span>' +
+    '<span class="live-indicator"><span class="live-glyph" aria-hidden="true">●</span> live</span>' +
     "</div>" +
     '<div class="toolbar-buttons">' +
     '<button id="resume-all-btn" class="btn-ghost btn-small" style="display:none" onclick="resumeAllDownloads()">▶ resume all</button>' +
@@ -468,16 +468,20 @@ function visibleHistoryItems() {
 
 function setHistorySearch(v) {
   historySearch = v || "";
+  selectedHistoryIds.clear();
   renderHistory(rawHistory);
+  updateSelectedBtn();
 }
 
 function setHistoryFilter(f) {
   historyFilter = f;
+  selectedHistoryIds.clear();
   var chips = document.querySelectorAll(".hist-filters .filter-chip[data-hfilter]");
   for (var i = 0; i < chips.length; i++) {
     chips[i].classList.toggle("active", chips[i].getAttribute("data-hfilter") === f);
   }
   renderHistory(rawHistory);
+  updateSelectedBtn();
 }
 
 function updateSelectAllChip() {
@@ -679,6 +683,9 @@ function toggleDetail(id, event) {
   document.querySelectorAll('.download-detail').forEach(function (el) {
     el.classList.remove('open');
   });
+  document.querySelectorAll('.download-item').forEach(function (el) {
+    el.setAttribute('aria-expanded', el.getAttribute('data-id') === expandedId ? 'true' : 'false');
+  });
   if (expandedId !== null) {
     var detail = document.getElementById('detail-' + expandedId);
     if (detail) detail.classList.add('open');
@@ -703,7 +710,7 @@ function statusGlyph(status) {
 
 function buildDownloadItem(d, index) {
   var stagger = Math.min(index || 0, 9);
-  var statusClass = escapeHtml(d.status.toLowerCase());
+  var statusClass = escapeHtml((d.status || "").toLowerCase());
   var progressClass =
     statusClass === "completed"
       ? "completed"
@@ -722,22 +729,6 @@ function buildDownloadItem(d, index) {
 
   if (d.status === "Completed" && d.total_size === 0 && d.downloaded_size > 0) {
     progress = 100;
-  }
-
-  // Protocol icon
-  var protocolIcon;
-  if (isTorrent) {
-    protocolIcon =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>' +
-      '<path d="M8 12l2 2 4-4"/>' +
-      "</svg>";
-  } else {
-    protocolIcon =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<circle cx="12" cy="12" r="10"/>' +
-      '<path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>' +
-      "</svg>";
   }
 
   // Size display
@@ -759,29 +750,8 @@ function buildDownloadItem(d, index) {
       ? "\u2191 " + formatSpeed(d.upload_speed)
       : "--";
 
-  // Connections display
-  var connDisplay = "";
-  if (isActive || isSeeding) {
-    if (isTorrent) {
-      connDisplay = isSeeding
-        ? (d.seeds || 0) + " seed" + ((d.seeds || 0) !== 1 ? "s" : "")
-        : (d.peers || 0) + " peer" + ((d.peers || 0) !== 1 ? "s" : "");
-    } else {
-      connDisplay = (d.connections || 1) + " conn";
-    }
-  }
-
   // ETA display
   var etaDisplay = isActive && d.eta ? escapeHtml(d.eta) : "";
-
-  // Mirror status label
-  var mirrorLabel = d.http_mirror_status
-      ? '<span class="mirror-status">' + ({
-          'downloading': 'HTTP Mirror',
-          'extracting': 'Extracting...',
-          'rechecking': 'Rechecking...'
-      }[d.http_mirror_status] || escapeHtml(d.http_mirror_status)) + '</span>'
-      : '';
 
   // Action buttons (admin only)
   var actions = "";
@@ -871,7 +841,7 @@ function buildDownloadItem(d, index) {
       '<span class="detail-value">' + escapeHtml(mirrorText) + "</span>";
   }
 
-  var pctLabel = d.status === "Completed" ? "✓" : Math.round(progress) + "%";
+  var pctLabel = d.status === "Completed" ? "100%" : Math.round(progress) + "%";
   var isExpanded = expandedId === d.id;
 
   var isCompleted = d.status === 'Completed';
@@ -1292,7 +1262,7 @@ function renderDownloads(downloads) {
       var fill = el.querySelector('.progress-fill');
       if (fill) fill.style.transform = 'scaleX(' + (progress / 100) + ')';
       var pctEl = el.querySelector('.progress-pct');
-      if (pctEl) pctEl.textContent = d.status === 'Completed' ? '✓' : Math.round(progress) + '%';
+      if (pctEl) pctEl.textContent = d.status === 'Completed' ? '100%' : Math.round(progress) + '%';
 
       // Update metrics
       var metricsSpans = el.querySelectorAll('.download-metrics > span');
@@ -1313,24 +1283,6 @@ function renderDownloads(downloads) {
       if (speedEl) {
         var isSeeding = d.status === 'Seeding';
         speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
-      }
-
-      // Update connections
-      var connEl = el.querySelector('.conn');
-      if (connEl) {
-        var isTorrent = d.protocol === 'Torrent';
-        var isSeeding = d.status === 'Seeding';
-        var connDisplay = '';
-        if (isActive || isSeeding) {
-          if (isTorrent) {
-            connDisplay = isSeeding
-              ? (d.seeds || 0) + ' seed' + ((d.seeds || 0) !== 1 ? 's' : '')
-              : (d.peers || 0) + ' peer' + ((d.peers || 0) !== 1 ? 's' : '');
-          } else {
-            connDisplay = (d.connections || 1) + ' conn';
-          }
-        }
-        connEl.textContent = connDisplay;
       }
 
       // Update ETA
@@ -1367,8 +1319,6 @@ function updateStats(downloads) {
   }).length;
 
   var el;
-  var bar = document.querySelector(".stats-bar");
-  if (bar) bar.style.display = downloads.length === 0 ? "none" : "";
   el = document.getElementById("active-count");
   if (el) el.textContent = active;
   el = document.getElementById("total-speed");
@@ -1418,7 +1368,7 @@ async function clearCompletedDownloads() {
     showToast("error", "Permission denied", "Only administrators can clear completed downloads");
     return;
   }
-  var completed = lastDownloads.filter(function (d) { return d.status === "Completed"; });
+  var completed = rawDownloads.filter(function (d) { return d.status === "Completed"; });
   if (completed.length === 0) return;
   try {
     await Promise.all(
@@ -1841,6 +1791,7 @@ function renderHistory(items) {
     );
     var actionsDiv = document.getElementById("history-actions");
     if (actionsDiv) actionsDiv.style.display = hasAny ? "flex" : "none";
+    updateSelectedBtn();
     return;
   }
 
@@ -1900,7 +1851,7 @@ function renderHistory(items) {
             hour: "2-digit",
             minute: "2-digit",
           });
-          var statusClass = h.status.toLowerCase();
+          var statusClass = (h.status || "").toLowerCase();
           return (
             '<div class="history-item' +
             (isSelected ? " selected" : "") +
@@ -2522,7 +2473,7 @@ function createFolderItem(label, iconSvg, onActivate) {
   };
   var iconSpan = document.createElement("span");
   iconSpan.className = "folder-icon";
-  iconSpan.textContent = label === ".." ? "\u2190" : "\uD83D\uDCC1";
+  iconSpan.textContent = label === ".." ? "\u2190" : "\u25B8";
   var nameSpan = document.createElement("span");
   nameSpan.textContent = label;
   div.appendChild(iconSpan);
@@ -2649,12 +2600,12 @@ async function saveSettings() {
       ),
       min_split_size: (function () {
         var e = document.getElementById("settings-min-split");
-        return e ? Math.max(1, parseInt(e.value) || 20) * 1048576 : current.min_split_size || 20971520;
+        return e ? Math.min(1024, Math.max(1, parseInt(e.value) || 20)) * 1048576 : current.min_split_size || 20971520;
       })(),
       username: current.username || "",
       port: (function () {
         var e = document.getElementById("settings-port");
-        return e ? parseInt(e.value) || 8080 : current.port || 8080;
+        return e ? Math.min(65535, Math.max(1, parseInt(e.value) || 8080)) : current.port || 8080;
       })(),
       download_folders: settingsFolders,
     };
@@ -2842,7 +2793,7 @@ function logout() {
   var hint = document.getElementById("login-hint");
   if (hint) { hint.textContent = ""; hint.style.color = ""; }
   var subtitle = document.querySelector(".login-subtitle");
-  if (subtitle) subtitle.textContent = "";
+  if (subtitle) subtitle.textContent = "sign in to your download server";
 
   document.getElementById("login-modal").style.display = "flex";
   document.getElementById("login-username").focus();

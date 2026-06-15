@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-06-16
+
+### Changed
+- Dependency upgrades: axum 0.8, axum-extra 0.12, rusqlite 0.40, reqwest 0.13, tower-http 0.6, thiserror 2, bcrypt 0.19, zip 8, jsonwebtoken 10 (with the rust_crypto provider), openssl 0.10.80, plus a batch of minor/patch updates.
+- Docker build image bumped to rust 1.96-slim.
+
 ## [0.2.1] - 2026-06-15
 
 ### Security

@@ -42,7 +42,10 @@ docker compose up -d
 docker run -d \
   --name dload \
   -p 8080:8080 \
-  -v ./downloads:/data \
+  -e PUID=$(id -u) \
+  -e PGID=$(id -g) \
+  -v ./data:/data \
+  -v ./downloads:/downloads \
   ghcr.io/krabhi4/dload:latest
 ```
 
@@ -61,6 +64,23 @@ Default settings:
 - **Max Concurrent**: 3 downloads
 - **Username**: admin
 - **Password**: admin
+
+### File Permissions (PUID / PGID)
+
+dload drops root inside the container and runs as the `PUID`/`PGID` you provide
+(default `1000:1000`) — the same convention as the LinuxServer.io and *arr
+images. This keeps the SQLite database and downloaded files owned by your host
+user instead of `root:root`. Set them to your own ids (`id -u` / `id -g`):
+
+```yaml
+environment:
+  - PUID=1000
+  - PGID=1000
+```
+
+On startup the entrypoint also re-owns existing files under `/data` and
+`/downloads` to match, so volumes created by an older root-only build are
+migrated automatically.
 
 ### Multiple Download Folders
 

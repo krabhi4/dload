@@ -1,4 +1,3 @@
-use crate::domain::{jwt_secret, Claims};
 use crate::manager::SharedState;
 use axum::{
     extract::{Query, State},
@@ -13,24 +12,6 @@ fn extract_token(headers: &axum::http::HeaderMap) -> &str {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("")
-}
-
-fn require_admin(headers: &axum::http::HeaderMap) -> Result<Claims, String> {
-    let token = extract_token(headers);
-    jsonwebtoken::decode::<Claims>(
-        token,
-        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
-        &jsonwebtoken::Validation::default(),
-    )
-    .map(|d| d.claims)
-    .map_err(|_| "Authentication required".to_string())
-    .and_then(|c| {
-        if c.role == "ADMIN" {
-            Ok(c)
-        } else {
-            Err("Admin access required".to_string())
-        }
-    })
 }
 
 #[derive(serde::Deserialize)]
@@ -85,9 +66,9 @@ fn validate_browse_path(path: &str) -> Result<String, String> {
 async fn browse_dirs(
     Query(params): Query<BrowseParams>,
     headers: axum::http::HeaderMap,
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
 ) -> axum::response::Response {
-    if let Err(e) = require_admin(&headers) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 
@@ -148,10 +129,10 @@ async fn browse_dirs(
 
 async fn create_dir(
     headers: axum::http::HeaderMap,
-    State(_state): State<SharedState>,
+    State(state): State<SharedState>,
     Json(req): Json<CreateDirRequest>,
 ) -> axum::response::Response {
-    if let Err(e) = require_admin(&headers) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 

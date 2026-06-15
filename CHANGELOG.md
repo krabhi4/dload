@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-06-15
+
+### Security
+- Authenticated API requests now confirm the token's user still exists in the database on every request. Because JWTs are signed with a stable secret, a leftover browser token previously kept working after its account was deleted or the database was wiped/recreated (e.g. it could still add downloads with no users present). The database role is now authoritative, so a demoted admin's existing token no longer grants admin access.
+
+### Fixed
+- Downloaded files and the SQLite database are no longer owned by `root`. The container drops privileges to a configurable `PUID`/`PGID` via `gosu` and re-owns `/data` and `/downloads` on startup.
+- Torrent sessions failed to initialize when running as a non-root user because librqbit's DHT state directory under `$HOME` was not writable; `$HOME` now points at the writable `/data` volume.
+- The Web UI drops a stale/expired token on load and shows the login/registration screen instead of silently using a dead session.
+
+### Added
+- `PUID`/`PGID` environment variables (LinuxServer.io / *arr convention) for host-friendly file ownership.
+- Tag-driven container releases: pushing a `vX.Y.Z` git tag publishes versioned `ghcr.io` image tags (`X.Y.Z`, `X.Y`) alongside the rolling `latest` built from `main`.
+
 ## [0.2.0] - 2026-03-10
 
 ### Added

@@ -23,7 +23,7 @@ fn extract_token(headers: &axum::http::HeaderMap) -> &str {
 pub fn router(state: SharedState) -> Router {
     Router::new()
         .route("/api/history", get(list_history).delete(clear_history))
-        .route("/api/history/:id", delete(delete_history_item))
+        .route("/api/history/{id}", delete(delete_history_item))
         .with_state(state)
 }
 

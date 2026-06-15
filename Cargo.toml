@@ -10,7 +10,7 @@ repository = "https://github.com/krabhi4/dload"
 axum = "0.7"
 axum-extra = { version = "0.9", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 bcrypt = "0.15"
 # jsonwebtoken 10 made the crypto backend pluggable; its default features

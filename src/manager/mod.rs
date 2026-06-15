@@ -251,6 +251,40 @@ impl ManagerState {
             .expect("repo task panicked")
     }
 
+    /// Decode a JWT, then confirm its subject still exists in the DB and return
+    /// that user (DB role authoritative). The secret is stable, so signature +
+    /// expiry alone keeps accepting tokens after the user is deleted or the DB is
+    /// wiped — re-checking the DB closes that hole.
+    pub async fn authenticate(&self, token: &str) -> Result<crate::domain::User, &'static str> {
+        let claims = jsonwebtoken::decode::<crate::domain::Claims>(
+            token,
+            &jsonwebtoken::DecodingKey::from_secret(crate::domain::jwt_secret()),
+            &jsonwebtoken::Validation::default(),
+        )
+        .map(|d| d.claims)
+        .map_err(|_| "Authentication required")?;
+
+        let sub = claims.sub;
+        self.repo_blocking(move |repo| repo.get_user_by_username(&sub))
+            .await
+            .ok()
+            .flatten()
+            .ok_or("Authentication required")
+    }
+
+    /// Like [`authenticate`](Self::authenticate) but requires the live DB user
+    /// to be an admin (DB role, not the token's — a demoted admin's token fails).
+    pub async fn authenticate_admin(
+        &self,
+        token: &str,
+    ) -> Result<crate::domain::User, &'static str> {
+        match self.authenticate(token).await {
+            Ok(u) if u.role == crate::domain::Role::Admin => Ok(u),
+            Ok(_) => Err("Admin access required"),
+            Err(e) => Err(e),
+        }
+    }
+
     async fn get_torrent_session(&self) -> anyhow::Result<Arc<Session>> {
         // Hold write lock for the entire check-and-create to prevent races
         let mut guard = self.torrent_session.write().await;
@@ -2366,5 +2400,86 @@ mod tests {
         cache.invalidate_all().await;
         assert!(!cache.is_valid("a").await);
         assert!(!cache.is_valid("b").await);
+    }
+
+    // ─── DB-backed JWT authentication ─────────────────────────────────────
+
+    fn test_state() -> SharedState {
+        let db = Arc::new(crate::db::Database::new(":memory:").unwrap());
+        let repo = Arc::new(Repository::new(db));
+        let (state, _) = ManagerState::new(Settings::default(), repo);
+        Arc::new(state)
+    }
+
+    fn mint_token(username: &str, role: &str) -> String {
+        let claims = crate::domain::Claims {
+            sub: username.to_string(),
+            role: role.to_string(),
+            exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+        };
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(crate::domain::jwt_secret()),
+        )
+        .unwrap()
+    }
+
+    fn make_user(username: &str, role: crate::domain::Role) -> crate::domain::User {
+        crate::domain::User {
+            id: uuid::Uuid::new_v4().to_string(),
+            username: username.to_string(),
+            password_hash: "x".to_string(),
+            role,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticate_accepts_live_user() {
+        let state = test_state();
+        state
+            .repo
+            .insert_user(&make_user("alice", crate::domain::Role::Admin))
+            .unwrap();
+        let token = mint_token("alice", "ADMIN");
+        let user = state
+            .authenticate(&token)
+            .await
+            .expect("live user should authenticate");
+        assert_eq!(user.username, "alice");
+        assert!(state.authenticate_admin(&token).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn authenticate_rejects_token_for_missing_user() {
+        // DB wipe / deleted user: validly signed token, but no such user in the DB.
+        let state = test_state();
+        let token = mint_token("ghost", "ADMIN");
+        assert!(state.authenticate(&token).await.is_err());
+        assert!(state.authenticate_admin(&token).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn authenticate_admin_uses_db_role_not_token_role() {
+        let state = test_state();
+        state
+            .repo
+            .insert_user(&make_user("bob", crate::domain::Role::User))
+            .unwrap();
+        // Token forges role ADMIN, but the DB record is USER → the DB wins.
+        let token = mint_token("bob", "ADMIN");
+        assert!(state.authenticate(&token).await.is_ok());
+        assert_eq!(
+            state.authenticate_admin(&token).await.unwrap_err(),
+            "Admin access required"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticate_rejects_garbage_token() {
+        let state = test_state();
+        assert!(state.authenticate("not-a-jwt").await.is_err());
+        assert!(state.authenticate("").await.is_err());
     }
 }

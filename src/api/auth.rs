@@ -48,16 +48,6 @@ struct ChangePasswordRequest {
     new_password: String,
 }
 
-fn decode_token(token: &str) -> Result<Claims, String> {
-    jsonwebtoken::decode::<Claims>(
-        token,
-        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
-        &jsonwebtoken::Validation::default(),
-    )
-    .map(|d| d.claims)
-    .map_err(|_| "Invalid token".to_string())
-}
-
 async fn auth_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let has_users = state
         .repo_blocking(|repo| repo.get_all_users().map(|u| !u.is_empty()).unwrap_or(false))
@@ -237,45 +227,33 @@ async fn login(
     }))
 }
 
-async fn verify_token(Json(token): Json<String>) -> Json<serde_json::Value> {
-    match jsonwebtoken::decode::<Claims>(
-        &token,
-        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
-        &jsonwebtoken::Validation::default(),
-    ) {
-        Ok(decoded) => Json(serde_json::json!({
+async fn verify_token(
+    State(state): State<SharedState>,
+    Json(token): Json<String>,
+) -> Json<serde_json::Value> {
+    match state.authenticate(&token).await {
+        Ok(user) => Json(serde_json::json!({
             "valid": true,
-            "username": decoded.claims.sub,
-            "role": decoded.claims.role
+            "username": user.username,
+            "role": user.role.as_str()
         })),
         Err(_) => Json(serde_json::json!({ "valid": false })),
     }
 }
 
+// Always 200; token validity is in `success`. app.js relies on this to tell
+// "invalid token → drop it" (200 + success:false) from "server down → keep it"
+// (request throws) — don't switch this to a 4xx.
 async fn get_profile(
     State(state): State<SharedState>,
     axum::extract::Json(token): axum::extract::Json<String>,
 ) -> Json<serde_json::Value> {
-    let claims = match decode_token(&token) {
-        Ok(c) => c,
+    let user = match state.authenticate(&token).await {
+        Ok(u) => u,
         Err(_) => {
             return Json(serde_json::json!({
                 "success": false,
                 "error": "Invalid token"
-            }));
-        }
-    };
-
-    let sub = claims.sub.clone();
-    let user = match state
-        .repo_blocking(move |repo| repo.get_user_by_username(&sub))
-        .await
-    {
-        Ok(Some(u)) => u,
-        _ => {
-            return Json(serde_json::json!({
-                "success": false,
-                "error": "User not found"
             }));
         }
     };
@@ -301,20 +279,10 @@ async fn list_users(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    let claims = match decode_token(token) {
-        Ok(c) => c,
-        Err(_) => {
-            return Json(serde_json::json!({
-                "success": false,
-                "error": "Authentication required"
-            }));
-        }
-    };
-
-    if claims.role != "ADMIN" {
+    if let Err(e) = state.authenticate_admin(token).await {
         return Json(serde_json::json!({
             "success": false,
-            "error": "Admin access required"
+            "error": e
         }));
     }
 
@@ -339,20 +307,15 @@ async fn create_user(
     State(state): State<SharedState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Json<serde_json::Value> {
-    let claims = match decode_token(&payload.token) {
-        Ok(c) => c,
-        Err(_) => {
-            return Json(serde_json::json!({
-                "success": false,
-                "error": "Invalid token"
-            }));
-        }
-    };
-
-    if claims.role != "ADMIN" {
+    if let Err(e) = state.authenticate_admin(&payload.token).await {
+        let error = if e == "Admin access required" {
+            "Only admins can create users"
+        } else {
+            "Invalid token"
+        };
         return Json(serde_json::json!({
             "success": false,
-            "error": "Only admins can create users"
+            "error": error
         }));
     }
 
@@ -431,26 +394,12 @@ async fn change_password(
     State(state): State<SharedState>,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> Json<serde_json::Value> {
-    let claims = match decode_token(&payload.token) {
-        Ok(c) => c,
+    let user = match state.authenticate(&payload.token).await {
+        Ok(u) => u,
         Err(_) => {
             return Json(serde_json::json!({
                 "success": false,
                 "error": "Invalid token"
-            }));
-        }
-    };
-
-    let sub_lookup = claims.sub.clone();
-    let user = match state
-        .repo_blocking(move |repo| repo.get_user_by_username(&sub_lookup))
-        .await
-    {
-        Ok(Some(u)) => u,
-        _ => {
-            return Json(serde_json::json!({
-                "success": false,
-                "error": "User not found"
             }));
         }
     };
@@ -487,7 +436,7 @@ async fn change_password(
         }
     };
 
-    let sub_update = claims.sub.clone();
+    let sub_update = user.username.clone();
     if let Err(e) = state
         .repo_blocking(move |repo| repo.update_user_password(&sub_update, &new_hash))
         .await
@@ -499,7 +448,7 @@ async fn change_password(
         }));
     }
     // Invalidate any cookie sessions issued before the password change.
-    state.sessions.remove_by_username(&claims.sub).await;
+    state.sessions.remove_by_username(&user.username).await;
     // Blow the Basic Auth cache so cached old creds stop working immediately.
     state.basic_auth_cache.invalidate_all().await;
 
@@ -520,8 +469,14 @@ async fn delete_user(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    let claims = match decode_token(token) {
-        Ok(c) => c,
+    let actor = match state.authenticate_admin(token).await {
+        Ok(u) => u,
+        Err("Admin access required") => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Only admins can delete users"
+            }));
+        }
         Err(_) => {
             return Json(serde_json::json!({
                 "success": false,
@@ -529,13 +484,6 @@ async fn delete_user(
             }));
         }
     };
-
-    if claims.role != "ADMIN" {
-        return Json(serde_json::json!({
-            "success": false,
-            "error": "Only admins can delete users"
-        }));
-    }
 
     // Prevent self-deletion and last-admin deletion
     let id_lookup = id.clone();
@@ -545,7 +493,7 @@ async fn delete_user(
         .ok()
         .flatten();
     if let Some(target_user) = target_user {
-        if target_user.username == claims.sub {
+        if target_user.username == actor.username {
             return Json(serde_json::json!({
                 "success": false,
                 "error": "You cannot delete your own account"

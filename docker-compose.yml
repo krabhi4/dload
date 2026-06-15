@@ -12,6 +12,10 @@ services:
       - ./data:/data
       - ./downloads:/downloads
     environment:
+      # Your host user/group, so ./data and ./downloads aren't root-owned
+      # (find yours with `id -u` / `id -g`; or set them in a .env file).
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
       - RUST_LOG=info
       - DLOAD_JWT_SECRET=changeme-generate-a-random-secret
       # BitTorrent listen port (must match the published port above).

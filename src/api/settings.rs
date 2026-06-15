@@ -1,4 +1,4 @@
-use crate::domain::{jwt_secret, Claims, DownloadFolder, Settings};
+use crate::domain::{DownloadFolder, Settings};
 use crate::manager::SharedState;
 use axum::{extract::State, response::Json, routing::get, Router};
 
@@ -16,31 +16,11 @@ fn extract_token(headers: &axum::http::HeaderMap) -> &str {
         .unwrap_or("")
 }
 
-fn require_auth(headers: &axum::http::HeaderMap) -> Result<Claims, String> {
-    jsonwebtoken::decode::<Claims>(
-        extract_token(headers),
-        &jsonwebtoken::DecodingKey::from_secret(jwt_secret()),
-        &jsonwebtoken::Validation::default(),
-    )
-    .map(|d| d.claims)
-    .map_err(|_| "Authentication required".to_string())
-}
-
-fn require_admin(headers: &axum::http::HeaderMap) -> Result<Claims, String> {
-    require_auth(headers).and_then(|c| {
-        if c.role == "ADMIN" {
-            Ok(c)
-        } else {
-            Err("Admin access required".to_string())
-        }
-    })
-}
-
 async fn get_settings(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    if require_auth(&headers).is_err() {
+    if state.authenticate(extract_token(&headers)).await.is_err() {
         return axum::response::IntoResponse::into_response((
             axum::http::StatusCode::UNAUTHORIZED,
             "Authentication required",
@@ -55,7 +35,7 @@ async fn update_settings(
     headers: axum::http::HeaderMap,
     Json(settings): Json<Settings>,
 ) -> axum::response::Response {
-    if let Err(e) = require_admin(&headers) {
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
         return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 

@@ -33,7 +33,7 @@ regex = "1"
 futures = "0.3"
 tokio-util = "0.7"
 bytes = "1"
-zip = "2"
+zip = "8"
 librqbit = "8"
 
 [dev-dependencies]

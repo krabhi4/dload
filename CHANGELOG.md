@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-06-16
+
+### Security
+- Bumped `rand` 0.9.2 → 0.9.3 to pick up the fix for GHSA-cq8v-f236-94qc (a soundness issue in `ThreadRng` that could cause undefined behaviour when a custom `log` logger calls `rand::rng()` during reseeding). dload does not meet the trigger conditions, but the vulnerable version is no longer in the dependency tree.
+
+### Changed
+- Dropped OpenSSL from the dependency tree: `librqbit` now uses its `rust-tls` feature (rustls via `ring`), so the build and runtime images no longer need `pkg-config`/`libssl-dev` or `libssl3`. The application's own `reqwest` client already used rustls.
+- Container build now produces a true multi-architecture image (`linux/amd64` + `linux/arm64`) built natively per-arch on GitHub-hosted runners, replacing the amd64-only build.
+- Rebuilt the GHCR build pipeline for speed: the dependency layer is cached with `cargo-chef`, the release profile uses thin LTO with parallel codegen, and the builder image is pinned to Debian bookworm so its glibc matches the runtime image.
+
 ## [0.3.0] - 2026-06-16
 
 ### Changed

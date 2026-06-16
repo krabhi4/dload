@@ -34,7 +34,7 @@ futures = "0.3"
 tokio-util = "0.7"
 bytes = "1"
 zip = "8"
-librqbit = "8"
+librqbit = { version = "8", default-features = false, features = ["rust-tls", "http-api-client"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -42,6 +42,6 @@ tempfile = "3"
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 strip = true

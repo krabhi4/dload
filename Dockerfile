@@ -1,30 +1,19 @@
-# Build stage
-FROM rust:1.96-slim AS builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
+FROM lukemathwalker/cargo-chef:latest-rust-1.96-slim-bookworm AS chef
 WORKDIR /app
 
-# Cache dependencies - build a dummy project first
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release --locked
-# Remove only the dummy source, keep cached deps in target/
-RUN rm -rf src
-
-# Build the real project
+FROM chef AS planner
 COPY . .
-RUN touch src/main.rs && cargo build --release --locked
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Runtime stage
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY . .
+RUN cargo build --release --locked
+
 FROM debian:bookworm-slim
 
-# gosu: entrypoint uses it to drop to PUID/PGID.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl3 \
     ca-certificates \
     gosu \
     && rm -rf /var/lib/apt/lists/*

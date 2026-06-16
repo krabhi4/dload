@@ -95,8 +95,7 @@ function dismissToast(id) {
 
 // ─── Dialogs (confirm / prompt) ─────────────────────
 //
-// Editorial replacement for window.confirm / window.prompt. Matches the
-// broadsheet aesthetic — Fraunces title, accent top-rule, warm paper card.
+// In-app replacement for window.confirm / window.prompt.
 // Returns a Promise; null-ish result = user cancelled.
 
 var activeDialog = null;
@@ -391,40 +390,42 @@ function formatSpeed(bytesPerSec) {
 // ─── Views ──────────────────────────────────────────
 
 var currentPage = "downloads";
+var currentFilter = "all";
+var rawDownloads = [];
 
 function showDownloads() {
   return (
-    '<div class="page-header downloads-header">' +
-    "<h1>Downloads</h1>" +
-    "</div>" +
-    '<div class="add-section">' +
-    '<form id="add-download-form" class="input-group">' +
+    '<div class="toolbar">' +
+    '<form id="add-download-form" class="add-form">' +
     '<label for="download-url" class="sr-only">Download URL</label>' +
-    '<input type="text" id="download-url" placeholder="Paste URL or magnet link">' +
+    '<span class="add-prompt" aria-hidden="true">❯</span>' +
+    '<input type="text" id="download-url" placeholder="paste a URL, magnet link, or attach a .torrent">' +
     '<select id="download-folder" class="folder-select" title="Download folder" style="display:none"></select>' +
     '<input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" multiple hidden>' +
-    '<button type="button" id="attach-torrent-btn" class="btn-icon" title="Attach .torrent file" aria-label="Attach .torrent file">' +
-    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-    '<path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>' +
-    '</svg>' +
-    '<span class="btn-icon-label">Attach .torrent file</span>' +
-    '</button>' +
-    '<button type="submit" class="btn-primary">Download</button>' +
+    '<button type="button" id="attach-torrent-btn" class="btn-ghost" title="Attach .torrent file" aria-label="Attach .torrent file">↑ .torrent</button>' +
+    '<button type="submit" class="btn-primary">+ add</button>' +
     "</form>" +
+    '<div class="toolbar-actions">' +
+    '<div class="dl-filters">' +
+    ["all", "active", "queued", "paused", "completed"].map(function (f) {
+      return '<button class="filter-chip' + (f === currentFilter ? " active" : "") + '" data-filter="' + f + '" onclick="setFilter(\'' + f + '\')">' + f + "</button>";
+    }).join("") +
+    '<span class="live-indicator"><span class="live-glyph" aria-hidden="true">●</span> live</span>' +
+    "</div>" +
+    '<div class="toolbar-buttons">' +
+    '<button id="resume-all-btn" class="btn-ghost btn-small" style="display:none" onclick="resumeAllDownloads()">▶ resume all</button>' +
+    '<button id="clear-completed-btn" class="btn-ghost btn-small" style="display:none" onclick="clearCompletedDownloads()">✕ clear completed</button>' +
+    "</div>" +
+    "</div>" +
     '<div id="torrent-file-chips" class="file-chips" hidden></div>' +
     "</div>" +
-    '<div class="stats-bar" style="display:none">' +
-    '<span class="stat-val" id="active-count">0</span> active' +
-    '<span id="queue-stat" style="display:none"> (<span class="stat-val" id="queued-count">0</span> queued)</span>' +
-    '<span class="stat-sep">&middot;</span>' +
-    '&darr; <span class="stat-val speed-val" id="total-speed">0 B/s</span>' +
-    '<span id="upload-stat" style="display:none"> &uarr; <span class="stat-val" id="total-upload">0 B/s</span></span>' +
-    '<div class="stats-bar-actions">' +
-    '<button id="resume-all-btn" class="btn-bar-action" style="display:none" onclick="resumeAllDownloads()">Resume all</button>' +
-    '<button id="clear-completed-btn" class="btn-bar-action" style="display:none" onclick="clearCompletedDownloads()">Clear completed</button>' +
+    '<section class="panel">' +
+    '<span class="box-label">downloads</span>' +
+    '<div class="dl-head">' +
+    "<span></span><span>NAME</span><span class=\"ta-r\">SIZE</span><span class=\"ta-r\">↓ SPEED</span><span>PROGRESS</span><span class=\"ta-r\">ETA</span><span>STATUS</span><span></span>" +
     "</div>" +
-    "</div>" +
-    '<div id="downloads-list">' + renderSkeletons() + '</div>'
+    '<div id="downloads-list">' + renderSkeletons() + "</div>" +
+    "</section>"
   );
 }
 
@@ -446,18 +447,86 @@ function renderSkeletons() {
 }
 
 var selectedHistoryIds = new Set();
+var historySearch = "";
+var historyFilter = "all";
+var rawHistory = [];
+
+function historyMatches(h) {
+  var s = (h.status || "").toLowerCase();
+  if (historyFilter === "completed" && s !== "completed") return false;
+  if (historyFilter === "failed" && s !== "failed") return false;
+  if (historySearch) {
+    var q = historySearch.toLowerCase();
+    if ((h.filename || "").toLowerCase().indexOf(q) === -1 && (h.url || "").toLowerCase().indexOf(q) === -1) return false;
+  }
+  return true;
+}
+
+function visibleHistoryItems() {
+  return rawHistory.filter(historyMatches);
+}
+
+function setHistorySearch(v) {
+  historySearch = v || "";
+  selectedHistoryIds.clear();
+  renderHistory(rawHistory);
+  updateSelectedBtn();
+}
+
+function setHistoryFilter(f) {
+  historyFilter = f;
+  selectedHistoryIds.clear();
+  var chips = document.querySelectorAll(".hist-filters .filter-chip[data-hfilter]");
+  for (var i = 0; i < chips.length; i++) {
+    chips[i].classList.toggle("active", chips[i].getAttribute("data-hfilter") === f);
+  }
+  renderHistory(rawHistory);
+  updateSelectedBtn();
+}
+
+function updateSelectAllChip() {
+  var chip = document.getElementById("history-select-all");
+  if (!chip) return;
+  var vis = visibleHistoryItems();
+  var allSelected = vis.length > 0 && vis.every(function (h) { return selectedHistoryIds.has(h.id); });
+  chip.textContent = (allSelected ? "[x]" : "[ ]") + " select all";
+  chip.classList.toggle("is-all", allSelected);
+}
+
+function toggleSelectAllHistory() {
+  var vis = visibleHistoryItems();
+  var allSelected = vis.length > 0 && vis.every(function (h) { return selectedHistoryIds.has(h.id); });
+  vis.forEach(function (h) {
+    if (allSelected) selectedHistoryIds.delete(h.id);
+    else selectedHistoryIds.add(h.id);
+  });
+  renderHistory(rawHistory);
+  updateSelectedBtn();
+}
 
 function showArchive() {
   return (
     '<div class="page-header archive-header history-header">' +
     "<div>" +
-    "<h1>Archive</h1>" +
-    '<p class="page-standfirst">Every completed and removed download, grouped by day.</p>' +
-    '<p class="archive-hint">Entries stay here even after you clear them from Downloads.</p>' +
+    "<h1>History</h1>" +
+    '<p class="page-standfirst">Completed and removed downloads, grouped by day.</p>' +
+    '<p class="archive-hint">Entries remain after you clear them from Downloads; files on disk are untouched.</p>' +
     "</div>" +
     '<div class="history-actions" id="history-actions">' +
-    '<button class="btn-danger-outline btn-small" id="delete-selected-btn" style="display:none" onclick="deleteSelectedHistory()">Delete Selected</button>' +
-    '<button class="btn-ghost btn-small" onclick="clearAllHistory()">Clear All</button>' +
+    '<button class="btn-danger-outline btn-small" id="delete-selected-btn" style="display:none" onclick="deleteSelectedHistory()">✕ delete selected</button>' +
+    '<button class="btn-ghost btn-small" onclick="clearAllHistory()">✕ clear all</button>' +
+    "</div>" +
+    "</div>" +
+    '<div class="history-toolbar">' +
+    '<div class="hist-search">' +
+    '<span class="hist-search-prompt" aria-hidden="true">/</span>' +
+    '<input type="text" id="history-search" placeholder="search history..." aria-label="Search history" oninput="setHistorySearch(this.value)">' +
+    "</div>" +
+    '<div class="hist-filters">' +
+    ["all", "completed", "failed"].map(function (f) {
+      return '<button class="filter-chip' + (f === historyFilter ? " active" : "") + '" data-hfilter="' + f + '" onclick="setHistoryFilter(\'' + f + '\')">' + f + "</button>";
+    }).join("") +
+    '<button class="filter-chip hist-select-all" id="history-select-all" onclick="toggleSelectAllHistory()">[ ] select all</button>' +
     "</div>" +
     "</div>" +
     '<div id="history-list" class="archive-list"></div>'
@@ -469,11 +538,13 @@ function showSettings() {
     '<div class="page-header">' +
     "<h1>Settings</h1>" +
     "</div>" +
+    '<section class="panel">' +
+    '<span class="box-label">configuration</span>' +
     '<form id="settings-form" class="settings-grid">' +
     '<div class="form-field">' +
-    '<label>Download Folders</label>' +
+    "<label>Download Folders</label>" +
     '<div id="folder-list" class="folder-list"></div>' +
-    '<button type="button" class="btn-ghost btn-small" id="add-folder-btn" onclick="addFolderRow()">+ Add Folder</button>' +
+    '<button type="button" class="btn-ghost btn-small" id="add-folder-btn" onclick="addFolderRow()">+ add folder</button>' +
     '<span class="hint">Configure where files are saved. One folder must be the default.</span>' +
     "</div>" +
     '<div class="form-row">' +
@@ -488,10 +559,23 @@ function showSettings() {
     '<span class="hint">More connections can improve speed for HTTP downloads</span>' +
     "</div>" +
     "</div>" +
+    '<div class="form-row">' +
+    '<div class="form-field-half">' +
+    '<label for="settings-min-split">Min Split Size (MB)</label>' +
+    '<input type="number" id="settings-min-split" value="20" min="1" max="1024">' +
+    '<span class="hint">Smallest chunk before a file is split across connections</span>' +
+    "</div>" +
+    '<div class="form-field-half">' +
+    '<label for="settings-port">Listen Port</label>' +
+    '<input type="number" id="settings-port" value="8080" min="1" max="65535">' +
+    '<span class="hint">Restart required for a port change to take effect</span>' +
+    "</div>" +
+    "</div>" +
     '<div class="settings-actions">' +
-    '<button type="button" class="btn-primary" id="save-settings-btn">Save Settings</button>' +
+    '<button type="button" class="btn-primary" id="save-settings-btn">✓ save settings</button>' +
     "</div>" +
     "</form>" +
+    "</section>" +
     '<div id="user-management-section"></div>'
   );
 }
@@ -501,7 +585,8 @@ function showProfile() {
     '<div class="page-header">' +
     "<h1>Profile</h1>" +
     "</div>" +
-    '<div class="profile-section">' +
+    '<section class="panel profile-section">' +
+    '<span class="box-label">account</span>' +
     '<div class="form-row">' +
     '<div class="form-field-half">' +
     "<label>Username</label>" +
@@ -531,9 +616,9 @@ function showProfile() {
     '<label for="confirm-password">Confirm New Password</label>' +
     '<input type="password" id="confirm-password" required autocomplete="new-password">' +
     "</div>" +
-    '<button type="submit" class="btn-primary">Update Password</button>' +
+    '<button type="submit" class="btn-primary">✓ update password</button>' +
     "</form>" +
-    "</div>"
+    "</section>"
   );
 }
 
@@ -558,10 +643,32 @@ function sortDownloads(downloads) {
   });
 }
 
+function matchesFilter(d, f) {
+  if (f === "all") return true;
+  var s = (d.status || "").toLowerCase();
+  if (f === "active") return s === "downloading" || s === "fetching" || s === "seeding";
+  if (f === "queued") return s === "queued";
+  if (f === "paused") return s === "paused" || s === "stopped";
+  if (f === "completed") return s === "completed";
+  return true;
+}
+
 function getPageDownloads(downloads) {
-  // Downloads page now shows everything — active, queued, and recently-completed.
-  // Completed items remain until user removes them; they are also mirrored in Archive.
-  return sortDownloads(downloads);
+  var filtered = downloads.filter(function (d) {
+    return matchesFilter(d, currentFilter);
+  });
+  return sortDownloads(filtered);
+}
+
+function setFilter(f) {
+  currentFilter = f;
+  var chips = document.querySelectorAll(".filter-chip");
+  for (var i = 0; i < chips.length; i++) {
+    chips[i].classList.toggle("active", chips[i].getAttribute("data-filter") === f);
+  }
+  lastDownloads = [];
+  expandedId = null;
+  renderDownloads(rawDownloads);
 }
 
 function toggleDetail(id, event) {
@@ -576,6 +683,9 @@ function toggleDetail(id, event) {
   document.querySelectorAll('.download-detail').forEach(function (el) {
     el.classList.remove('open');
   });
+  document.querySelectorAll('.download-item').forEach(function (el) {
+    el.setAttribute('aria-expanded', el.getAttribute('data-id') === expandedId ? 'true' : 'false');
+  });
   if (expandedId !== null) {
     var detail = document.getElementById('detail-' + expandedId);
     if (detail) detail.classList.add('open');
@@ -584,9 +694,23 @@ function toggleDetail(id, event) {
 
 // ─── Rendering ──────────────────────────────────────
 
+function statusGlyph(status) {
+  switch ((status || "").toLowerCase()) {
+    case "downloading": return "▶ DL";
+    case "fetching": return "▶ FETCH";
+    case "seeding": return "↑ SEED";
+    case "queued": return "○ QUEUED";
+    case "paused": return "⏸ PAUSED";
+    case "completed": return "✓ DONE";
+    case "failed": return "✗ FAILED";
+    case "stopped": return "■ STOPPED";
+    default: return status;
+  }
+}
+
 function buildDownloadItem(d, index) {
   var stagger = Math.min(index || 0, 9);
-  var statusClass = escapeHtml(d.status.toLowerCase());
+  var statusClass = escapeHtml((d.status || "").toLowerCase());
   var progressClass =
     statusClass === "completed"
       ? "completed"
@@ -605,22 +729,6 @@ function buildDownloadItem(d, index) {
 
   if (d.status === "Completed" && d.total_size === 0 && d.downloaded_size > 0) {
     progress = 100;
-  }
-
-  // Protocol icon
-  var protocolIcon;
-  if (isTorrent) {
-    protocolIcon =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>' +
-      '<path d="M8 12l2 2 4-4"/>' +
-      "</svg>";
-  } else {
-    protocolIcon =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<circle cx="12" cy="12" r="10"/>' +
-      '<path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>' +
-      "</svg>";
   }
 
   // Size display
@@ -642,29 +750,8 @@ function buildDownloadItem(d, index) {
       ? "\u2191 " + formatSpeed(d.upload_speed)
       : "--";
 
-  // Connections display
-  var connDisplay = "";
-  if (isActive || isSeeding) {
-    if (isTorrent) {
-      connDisplay = isSeeding
-        ? (d.seeds || 0) + " seed" + ((d.seeds || 0) !== 1 ? "s" : "")
-        : (d.peers || 0) + " peer" + ((d.peers || 0) !== 1 ? "s" : "");
-    } else {
-      connDisplay = (d.connections || 1) + " conn";
-    }
-  }
-
   // ETA display
   var etaDisplay = isActive && d.eta ? escapeHtml(d.eta) : "";
-
-  // Mirror status label
-  var mirrorLabel = d.http_mirror_status
-      ? '<span class="mirror-status">' + ({
-          'downloading': 'HTTP Mirror',
-          'extracting': 'Extracting...',
-          'rechecking': 'Rechecking...'
-      }[d.http_mirror_status] || escapeHtml(d.http_mirror_status)) + '</span>'
-      : '';
 
   // Action buttons (admin only)
   var actions = "";
@@ -747,6 +834,14 @@ function buildDownloadItem(d, index) {
       "</span>";
   }
 
+  if (d.http_mirror_status) {
+    var mirrorText = ({ downloading: "HTTP Mirror", extracting: "Extracting…", rechecking: "Rechecking…" })[d.http_mirror_status] || d.http_mirror_status;
+    detailRows +=
+      '<span class="detail-label">HTTP Mirror</span>' +
+      '<span class="detail-value">' + escapeHtml(mirrorText) + "</span>";
+  }
+
+  var pctLabel = d.status === "Completed" ? "100%" : Math.round(progress) + "%";
   var isExpanded = expandedId === d.id;
 
   var isCompleted = d.status === 'Completed';
@@ -758,25 +853,22 @@ function buildDownloadItem(d, index) {
     + ' onclick="toggleDetail(\'' + safeId + '\', event)"'
     + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();toggleDetail(\'' + safeId + '\', event)}">'
     + '<div class="download-row">'
-    + (isCompleted ? '' : '<div class="drag-handle" title="Drag to reorder">'
-    + '<svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">'
-    + '<circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="8" r="1.5"/><circle cx="4" cy="13" r="1.5"/>'
-    + '<circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>'
-    + '</svg></div>')
-    + '<div class="protocol-icon ' + (isTorrent ? 'torrent' : 'http') + '">' + protocolIcon + '</div>'
+    + '<span class="drag-handle"' + (isCompleted ? ' aria-hidden="true"' : ' title="Drag to reorder"') + '>' + (isCompleted ? '' : '⠿') + '</span>'
     + '<div class="download-info">'
-    + '<div class="download-name">' + safeName + '</div>'
-    + '<div class="just-completed-stamp" aria-hidden="true">Received</div>'
-    + '<div class="download-url" title="' + safeUrl + '">' + safeUrl + '</div>'
+    + '<span class="download-name">' + safeName + '</span>'
+    + '<span class="proto-tag">' + (isTorrent ? '·torrent' : '·http') + '</span>'
+    + '<span class="download-url" title="' + safeUrl + '">' + safeUrl + '</span>'
     + '</div>'
-    + '<div class="download-metrics">'
-    + '<span>' + sizeDisplay + '</span>'
-    + '<span class="speed">' + displaySpeed + '</span>'
-    + '<span class="conn">' + connDisplay + '</span>'
+    + '<span class="download-metrics"><span>' + sizeDisplay + '</span></span>'
+    + '<span class="speed' + (isActive ? '' : ' idle') + '">' + displaySpeed + '</span>'
+    + '<span class="dl-prog">'
+    + '<span class="progress-bar" role="progressbar" aria-valuenow="' + progress + '" aria-valuemin="0" aria-valuemax="100" aria-label="Download progress">'
+    + '<span class="progress-fill ' + progressClass + '" style="transform: scaleX(' + (progress / 100) + ')"></span>'
+    + '</span>'
+    + '<span class="progress-pct">' + pctLabel + '</span>'
+    + '</span>'
     + '<span class="eta">' + etaDisplay + '</span>'
-    + mirrorLabel
-    + '</div>'
-    + '<span class="status-badge ' + statusClass + '">' + safeStatus + '</span>'
+    + '<span class="status-badge ' + statusClass + '">' + escapeHtml(statusGlyph(d.status)) + '</span>'
     + '<div class="actions">'
     + actions
     + (isTorrent ? '<div class="more-dropdown">'
@@ -817,11 +909,6 @@ function buildDownloadItem(d, index) {
       + '<button role="menuitem" class="danger" onclick="event.stopPropagation(); deleteDownload(\'' + safeId + '\', true)">Delete from disk</button>'
       + '</div>'
       + '</div>' : '')
-    + '</div>'
-    + '</div>'
-    + '<div class="download-progress">'
-    + '<div class="progress-bar" role="progressbar" aria-valuenow="' + progress + '" aria-valuemin="0" aria-valuemax="100" aria-label="Download progress">'
-    + '<div class="progress-fill ' + progressClass + '" style="transform: scaleX(' + (progress / 100) + ')"></div>'
     + '</div>'
     + '</div>'
     + '<div class="download-detail' + (isExpanded ? ' open' : '') + '" id="detail-' + safeId + '">'
@@ -1098,10 +1185,12 @@ function renderDownloads(downloads) {
   var filtered = getPageDownloads(downloads);
 
   if (filtered.length === 0) {
-    renderHtml(container, '<div class="empty-state">'
-      + '<p>Ready when you are.</p>'
-      + '<span>Paste an HTTP, FTP, SFTP, or magnet link above &mdash; or attach a .torrent file.</span>'
-      + '</div>');
+    var filtering = currentFilter !== "all" && rawDownloads.length > 0;
+    var msg = filtering ? "No " + currentFilter + " downloads." : "Ready when you are.";
+    var sub = filtering
+      ? "Nothing matches this filter right now."
+      : "Paste an HTTP, FTP, SFTP, or magnet link above &mdash; or attach a .torrent file.";
+    renderHtml(container, '<div class="empty-state"><p>' + msg + '</p><span>' + sub + '</span></div>');
     lastDownloads = filtered;
     return;
   }
@@ -1172,6 +1261,8 @@ function renderDownloads(downloads) {
       // Update progress bar width
       var fill = el.querySelector('.progress-fill');
       if (fill) fill.style.transform = 'scaleX(' + (progress / 100) + ')';
+      var pctEl = el.querySelector('.progress-pct');
+      if (pctEl) pctEl.textContent = d.status === 'Completed' ? '100%' : Math.round(progress) + '%';
 
       // Update metrics
       var metricsSpans = el.querySelectorAll('.download-metrics > span');
@@ -1192,24 +1283,6 @@ function renderDownloads(downloads) {
       if (speedEl) {
         var isSeeding = d.status === 'Seeding';
         speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
-      }
-
-      // Update connections
-      var connEl = el.querySelector('.conn');
-      if (connEl) {
-        var isTorrent = d.protocol === 'Torrent';
-        var isSeeding = d.status === 'Seeding';
-        var connDisplay = '';
-        if (isActive || isSeeding) {
-          if (isTorrent) {
-            connDisplay = isSeeding
-              ? (d.seeds || 0) + ' seed' + ((d.seeds || 0) !== 1 ? 's' : '')
-              : (d.peers || 0) + ' peer' + ((d.peers || 0) !== 1 ? 's' : '');
-          } else {
-            connDisplay = (d.connections || 1) + ' conn';
-          }
-        }
-        connEl.textContent = connDisplay;
       }
 
       // Update ETA
@@ -1246,8 +1319,6 @@ function updateStats(downloads) {
   }).length;
 
   var el;
-  var bar = document.querySelector(".stats-bar");
-  if (bar) bar.style.display = downloads.length === 0 ? "none" : "";
   el = document.getElementById("active-count");
   if (el) el.textContent = active;
   el = document.getElementById("total-speed");
@@ -1297,7 +1368,7 @@ async function clearCompletedDownloads() {
     showToast("error", "Permission denied", "Only administrators can clear completed downloads");
     return;
   }
-  var completed = lastDownloads.filter(function (d) { return d.status === "Completed"; });
+  var completed = rawDownloads.filter(function (d) { return d.status === "Completed"; });
   if (completed.length === 0) return;
   try {
     await Promise.all(
@@ -1317,6 +1388,7 @@ async function clearCompletedDownloads() {
 async function loadDownloads() {
   try {
     var downloads = await apiRequest("/downloads");
+    rawDownloads = downloads;
     // Detect newly failed downloads
     if (lastDownloads.length > 0) {
       downloads.forEach(function (d) {
@@ -1420,7 +1492,7 @@ function renderFolderList() {
     radio.type = "button";
     radio.className = "folder-default-btn" + (f.is_default ? " active" : "");
     radio.title = f.is_default ? "Default folder" : "Set as default";
-    radio.textContent = f.is_default ? "\u2605" : "\u2606";
+    radio.textContent = f.is_default ? "\u25cf" : "\u25cb";
     radio.onclick = function () {
       settingsFolders.forEach(function (ff) { ff.is_default = false; });
       f.is_default = true;
@@ -1506,6 +1578,10 @@ async function loadSettings() {
     if (el) el.value = settings.max_concurrent;
     el = document.getElementById("settings-connections");
     if (el) el.value = settings.max_connections_per_file;
+    el = document.getElementById("settings-min-split");
+    if (el) el.value = Math.max(1, Math.round((settings.min_split_size || 20971520) / 1048576));
+    el = document.getElementById("settings-port");
+    if (el) el.value = settings.port || 8080;
 
     // Load user management for admin users
     if (window.currentUserRole === "ADMIN") {
@@ -1689,7 +1765,8 @@ async function deleteUser(id) {
 async function loadHistory() {
   try {
     var history = await apiRequest("/history");
-    renderHistory(history);
+    rawHistory = history || [];
+    renderHistory(rawHistory);
   } catch (e) {
     showToast("error", "Failed to load history", e.message);
   }
@@ -1699,16 +1776,22 @@ function renderHistory(items) {
   var container = document.getElementById("history-list");
   if (!container) return;
 
-  if (!items || items.length === 0) {
+  var allItems = items || [];
+  items = allItems.filter(historyMatches);
+  updateSelectAllChip();
+
+  if (items.length === 0) {
+    var hasAny = allItems.length > 0;
     renderHtml(
       container,
       '<div class="empty-state">' +
-      "<p>Nothing archived yet.</p>" +
-      "<span>Completed and removed downloads appear here, grouped by day.</span>" +
+      "<p>" + (hasAny ? "No matching history." : "No history yet.") + "</p>" +
+      "<span>" + (hasAny ? "Try a different search or filter." : "Completed and removed downloads appear here, grouped by day.") + "</span>" +
       "</div>",
     );
     var actionsDiv = document.getElementById("history-actions");
-    if (actionsDiv) actionsDiv.style.display = "none";
+    if (actionsDiv) actionsDiv.style.display = hasAny ? "flex" : "none";
+    updateSelectedBtn();
     return;
   }
 
@@ -1768,7 +1851,7 @@ function renderHistory(items) {
             hour: "2-digit",
             minute: "2-digit",
           });
-          var statusClass = h.status.toLowerCase();
+          var statusClass = (h.status || "").toLowerCase();
           return (
             '<div class="history-item' +
             (isSelected ? " selected" : "") +
@@ -1797,13 +1880,11 @@ function renderHistory(items) {
             "</div>" +
             '<span class="history-size">' + sizeDisplay + "</span>" +
             '<span class="status-badge ' + statusClass + '">' +
-            escapeHtml(h.status) +
+            escapeHtml(statusGlyph(h.status)) +
             "</span>" +
             '<button class="delete-btn" onclick="deleteHistoryItem(\'' +
             escapeHtml(h.id) +
-            '\')" title="Remove from history" aria-label="Remove from history">' +
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
-            "</button>" +
+            '\')" title="Remove from history" aria-label="Remove from history">✕</button>' +
             "</div>"
           );
         })
@@ -1834,6 +1915,7 @@ function toggleHistorySelect(id, checked) {
   );
   if (item) item.classList.toggle("selected", checked);
   updateSelectedBtn();
+  updateSelectAllChip();
 }
 
 function updateSelectedBtn() {
@@ -1884,7 +1966,7 @@ async function deleteSelectedHistory() {
 
 async function clearAllHistory() {
   var ok = await showConfirm({
-    eyebrow: "Archive",
+    eyebrow: "History",
     title: "Clear all history?",
     message: "Every entry in the completed archive will be removed. Files on disk are not touched — only the record of what was downloaded.",
     danger: true,
@@ -1981,7 +2063,7 @@ async function addDownload(url) {
   } catch (e) {
     showToast("error", "Failed to add download", e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Download"; }
+    if (btn) { btn.disabled = false; btn.textContent = "+ add"; }
   }
 }
 
@@ -2009,7 +2091,7 @@ async function addTorrentFiles(files, optionalUrl) {
   } catch (e) {
     showToast("error", "Failed to upload torrent", e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Download"; }
+    if (btn) { btn.disabled = false; btn.textContent = "+ add"; }
   }
 }
 
@@ -2391,7 +2473,7 @@ function createFolderItem(label, iconSvg, onActivate) {
   };
   var iconSpan = document.createElement("span");
   iconSpan.className = "folder-icon";
-  iconSpan.textContent = label === ".." ? "\u2190" : "\uD83D\uDCC1";
+  iconSpan.textContent = label === ".." ? "\u2190" : "\u25B8";
   var nameSpan = document.createElement("span");
   nameSpan.textContent = label;
   div.appendChild(iconSpan);
@@ -2516,9 +2598,15 @@ async function saveSettings() {
       max_connections_per_file: parseInt(
         document.getElementById("settings-connections").value,
       ),
-      min_split_size: current.min_split_size || 20971520,
+      min_split_size: (function () {
+        var e = document.getElementById("settings-min-split");
+        return e ? Math.min(1024, Math.max(1, parseInt(e.value) || 20)) * 1048576 : current.min_split_size || 20971520;
+      })(),
       username: current.username || "",
-      port: current.port || 8080,
+      port: (function () {
+        var e = document.getElementById("settings-port");
+        return e ? Math.min(65535, Math.max(1, parseInt(e.value) || 8080)) : current.port || 8080;
+      })(),
       download_folders: settingsFolders,
     };
 
@@ -2571,22 +2659,22 @@ document.addEventListener("keydown", function (e) {
 // ─── Navigation ─────────────────────────────────────
 
 function navigate(hash) {
-  // Alias legacy routes to new Archive page
-  if (hash === "#completed" || hash === "#history") {
-    hash = "#archive";
+  // Alias legacy routes to the History page
+  if (hash === "#completed" || hash === "#archive") {
+    hash = "#history";
   }
 
   var routes = {
     "#downloads": showDownloads,
-    "#archive": showArchive,
+    "#history": showArchive,
     "#settings": showSettings,
     "#profile": showProfile,
   };
 
   var render = routes[hash] || showDownloads;
   currentPage =
-    hash === "#archive"
-      ? "archive"
+    hash === "#history"
+      ? "history"
       : hash === "#settings"
         ? "settings"
         : hash === "#profile"
@@ -2595,7 +2683,10 @@ function navigate(hash) {
   document.documentElement.setAttribute("data-page", currentPage);
   lastDownloads = [];
   expandedId = null;
+  currentFilter = "all";
   selectedHistoryIds.clear();
+  historySearch = "";
+  historyFilter = "all";
   var main = document.getElementById("main-content");
   main.classList.remove("page-enter");
   void main.offsetHeight;
@@ -2616,7 +2707,7 @@ function navigate(hash) {
     loadSettings();
   } else if (hash === "#profile") {
     loadProfile();
-  } else if (hash === "#archive") {
+  } else if (hash === "#history") {
     loadHistory();
   } else {
     loadDownloads();
@@ -2702,7 +2793,7 @@ function logout() {
   var hint = document.getElementById("login-hint");
   if (hint) { hint.textContent = ""; hint.style.color = ""; }
   var subtitle = document.querySelector(".login-subtitle");
-  if (subtitle) subtitle.textContent = "";
+  if (subtitle) subtitle.textContent = "sign in to your download server";
 
   document.getElementById("login-modal").style.display = "flex";
   document.getElementById("login-username").focus();

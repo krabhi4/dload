@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-16
+
+### Changed
+- Redesigned the Web UI from the editorial (serif) theme to a terminal/TUI aesthetic: Nord palette, monospace grid, ASCII-style progress bars, glyph + label status badges, and box-drawing panels. Dark-first, with a light variant that follows the OS preference. The stylesheet is hand-rolled vanilla CSS with no build step and no external font/CDN dependency — the strict Content-Security-Policy blocks web fonts, so the system monospace stack is used.
+- Renamed the "Archive" tab back to "History" (canonical route `#history`, with `#archive`/`#completed` kept as aliases) and replaced its promotional copy with factual descriptions.
+
+### Added
+- Downloads page: status filter chips (all / active / queued / paused / completed) and a live-refresh indicator.
+- History page: a search box, completed/failed filters, and a select-all toggle.
+- Settings: minimum split size and listen port are now editable (previously persisted but not surfaced in the UI).
+- Responsive mobile layout — download rows collapse into cards and navigation moves into a drawer.
+
 ## [0.2.2] - 2026-06-16
 
 ### Changed

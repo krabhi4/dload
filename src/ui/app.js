@@ -618,6 +618,11 @@ function showProfile() {
     "</div>" +
     '<button type="submit" class="btn-primary">✓ update password</button>' +
     "</form>" +
+    "<hr>" +
+    "<h2>API Keys</h2>" +
+    '<p class="hint">Long-lived keys for the browser extension and other clients. A key acts as your account on the download API; revoke any you no longer use.</p>' +
+    '<button type="button" class="btn-primary" onclick="createApiKey()">+ generate key</button>' +
+    '<div id="api-keys-list" class="api-keys-list"></div>' +
     "</section>"
   );
 }
@@ -1475,6 +1480,146 @@ async function changePassword() {
     }
   } catch (e) {
     showToast("error", "Failed to update password", e.message);
+  }
+}
+
+// ─── API keys ───────────────────────────────────────
+
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    showToast("success", "Copied", "API key copied to clipboard");
+  } catch (e) {
+    showToast("error", "Copy failed", e.message || "Could not copy");
+  }
+}
+
+async function loadApiKeys() {
+  var container = document.getElementById("api-keys-list");
+  if (!container) return;
+  try {
+    var result = await apiRequest("/auth/api-keys");
+    if (Array.isArray(result.keys)) {
+      renderApiKeys(result.keys);
+    } else {
+      // {success:false} (auth/other failure) — don't show the empty state.
+      container.innerHTML = '<p class="hint">Could not load API keys.</p>';
+    }
+  } catch (e) {
+    container.innerHTML = '<p class="hint">Could not load API keys.</p>';
+  }
+}
+
+function renderApiKeys(keys) {
+  var container = document.getElementById("api-keys-list");
+  if (!container) return;
+  if (!keys.length) {
+    container.innerHTML =
+      '<p class="hint">No API keys yet. Generate one to use the browser extension.</p>';
+    return;
+  }
+  var html =
+    '<table class="user-table"><thead><tr>' +
+    "<th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th>Actions</th>" +
+    "</tr></thead><tbody>";
+  keys.forEach(function (k) {
+    html +=
+      "<tr>" +
+      "<td>" + escapeHtml(k.name) + "</td>" +
+      "<td><code>" + escapeHtml(k.prefix) + "…</code></td>" +
+      "<td>" + new Date(k.created_at).toLocaleDateString() + "</td>" +
+      "<td>" + (k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never") + "</td>" +
+      '<td><button class="btn-danger btn-small" onclick="revokeApiKey(\'' +
+      escapeHtml(k.id) +
+      "')\">revoke</button></td>" +
+      "</tr>";
+  });
+  html += "</tbody></table>";
+  container.innerHTML = html;
+}
+
+async function createApiKey() {
+  var name;
+  try {
+    name = await showPrompt({
+      title: "→ new api key",
+      label: "Name",
+      placeholder: "browser extension",
+      confirmLabel: "Generate",
+    });
+  } catch (e) {
+    return; // another dialog already open
+  }
+  if (name === null) return; // cancelled
+  name = (name || "").trim();
+  if (!name) {
+    showToast("error", "Name required", "Give the key a name so you can recognize it later.");
+    return;
+  }
+
+  try {
+    var result = await apiRequest("/auth/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name: name }),
+    });
+    if (!result.success) {
+      showToast("error", "Could not create key", result.error || "Failed");
+      return;
+    }
+    await loadApiKeys();
+    var key = result.key;
+    showDialog({
+      eyebrow: "copy it now — shown only once",
+      title: "→ api key created",
+      message: key,
+      actions: [
+        { label: "Done", variant: "ghost", value: false },
+        {
+          label: "Copy",
+          variant: "primary",
+          value: function () {
+            copyToClipboard(key);
+            return true;
+          },
+        },
+      ],
+    });
+  } catch (e) {
+    showToast("error", "Could not create key", e.message);
+  }
+}
+
+async function revokeApiKey(id) {
+  var ok = await showConfirm({
+    title: "→ revoke api key?",
+    message: "Any client using this key will immediately stop working.",
+    danger: true,
+    confirmLabel: "Revoke",
+  });
+  if (!ok) return;
+  try {
+    var result = await apiRequest("/auth/api-keys/" + encodeURIComponent(id), {
+      method: "DELETE",
+    });
+    if (result.success) {
+      showToast("success", "Revoked", "API key revoked.");
+      await loadApiKeys();
+    } else {
+      showToast("error", "Could not revoke", result.error || "Failed");
+    }
+  } catch (e) {
+    showToast("error", "Could not revoke", e.message);
   }
 }
 
@@ -2707,6 +2852,7 @@ function navigate(hash) {
     loadSettings();
   } else if (hash === "#profile") {
     loadProfile();
+    loadApiKeys();
   } else if (hash === "#history") {
     loadHistory();
   } else {

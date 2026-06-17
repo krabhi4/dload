@@ -1,0 +1,26 @@
+{
+  "name": "send-to-dload",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Forward downloads, magnets, and .torrent links to your self-hosted dload server.",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev:ff": "web-ext run --source-dir . --firefox nightly --browser-console",
+    "dev:cr": "web-ext run --source-dir . --target chromium --browser-console",
+    "lint": "web-ext lint --source-dir . --output text --self-hosted --ignore-files scripts/** tests/** node_modules/** dist/** && eslint src/ && vitest run",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "package:firefox": "node scripts/build.mjs firefox",
+    "package:chrome": "node scripts/build.mjs chromium"
+  },
+  "devDependencies": {
+    "eslint": "^9.10.0",
+    "globals": "^15.9.0",
+    "vitest": "^2.1.0",
+    "web-ext": "^8.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

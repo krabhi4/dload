@@ -75,3 +75,38 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+
+  extension:
+    name: Extension lint, test & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extensions/send-to-dload
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: extensions/send-to-dload/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run web-ext lint
+        run: npx web-ext lint --source-dir . --output text --self-hosted --ignore-files scripts/** tests/** node_modules/** dist/**
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build artifacts
+        run: npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: send-to-dload-dist
+          path: extensions/send-to-dload/dist
+          if-no-files-found: error

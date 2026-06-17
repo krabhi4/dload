@@ -38,3 +38,15 @@ pub struct Claims {
     pub role: String,
     pub exp: usize,
 }
+
+/// A user's API key as returned when listing (no hash/secret — that's never
+/// surfaced after creation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKey {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub prefix: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}

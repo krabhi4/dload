@@ -1,0 +1,10 @@
+{
+  "extension_name": {
+    "message": "Send to dload",
+    "description": "The extension's display name (shown in toolbar, chrome://extensions, addons.mozilla.org)."
+  },
+  "extension_description": {
+    "message": "Forward downloads, magnet links, and .torrent files to your self-hosted dload server.",
+    "description": "Shown in the extension listings."
+  }
+}

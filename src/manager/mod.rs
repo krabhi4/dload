@@ -251,11 +251,21 @@ impl ManagerState {
             .expect("repo task panicked")
     }
 
+    /// Authenticate a login JWT or an API key (by the `dload_` prefix) — the
+    /// download/service surface accepts both.
+    pub async fn authenticate(&self, token: &str) -> Result<crate::domain::User, &'static str> {
+        if token.starts_with(crate::domain::API_KEY_PREFIX) {
+            self.authenticate_api_key(token).await
+        } else {
+            self.authenticate_jwt(token).await
+        }
+    }
+
     /// Decode a JWT, then confirm its subject still exists in the DB and return
     /// that user (DB role authoritative). The secret is stable, so signature +
     /// expiry alone keeps accepting tokens after the user is deleted or the DB is
     /// wiped — re-checking the DB closes that hole.
-    pub async fn authenticate(&self, token: &str) -> Result<crate::domain::User, &'static str> {
+    async fn authenticate_jwt(&self, token: &str) -> Result<crate::domain::User, &'static str> {
         let claims = jsonwebtoken::decode::<crate::domain::Claims>(
             token,
             &jsonwebtoken::DecodingKey::from_secret(crate::domain::jwt_secret()),
@@ -272,6 +282,39 @@ impl ManagerState {
             .ok_or("Authentication required")
     }
 
+    async fn authenticate_api_key(&self, key: &str) -> Result<crate::domain::User, &'static str> {
+        let hash = crate::domain::hash_api_key(key);
+        let hash_lookup = hash.clone();
+        let user = self
+            .repo_blocking(move |repo| repo.get_user_by_api_key_hash(&hash_lookup))
+            .await
+            .ok()
+            .flatten()
+            .ok_or("Authentication required")?;
+
+        let now = chrono::Utc::now();
+        let now_s = now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        let cutoff_s = (now - chrono::Duration::seconds(60))
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        let _ = self
+            .repo_blocking(move |repo| repo.touch_api_key(&hash, &now_s, &cutoff_s))
+            .await;
+
+        Ok(user)
+    }
+
+    /// JWT-only authentication — rejects API keys. Used by account-security and
+    /// admin-management endpoints so a leaked API key cannot reach them.
+    pub async fn authenticate_session(
+        &self,
+        token: &str,
+    ) -> Result<crate::domain::User, &'static str> {
+        if token.starts_with(crate::domain::API_KEY_PREFIX) {
+            return Err("Authentication required");
+        }
+        self.authenticate_jwt(token).await
+    }
+
     /// Like [`authenticate`](Self::authenticate) but requires the live DB user
     /// to be an admin (DB role, not the token's — a demoted admin's token fails).
     pub async fn authenticate_admin(
@@ -279,6 +322,18 @@ impl ManagerState {
         token: &str,
     ) -> Result<crate::domain::User, &'static str> {
         match self.authenticate(token).await {
+            Ok(u) if u.role == crate::domain::Role::Admin => Ok(u),
+            Ok(_) => Err("Admin access required"),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// JWT-only admin check (rejects API keys) for admin-management endpoints.
+    pub async fn authenticate_session_admin(
+        &self,
+        token: &str,
+    ) -> Result<crate::domain::User, &'static str> {
+        match self.authenticate_session(token).await {
             Ok(u) if u.role == crate::domain::Role::Admin => Ok(u),
             Ok(_) => Err("Admin access required"),
             Err(e) => Err(e),
@@ -2481,5 +2536,111 @@ mod tests {
         let state = test_state();
         assert!(state.authenticate("not-a-jwt").await.is_err());
         assert!(state.authenticate("").await.is_err());
+    }
+
+    // ─── API keys ─────────────────────────────────────────────────────────
+
+    fn insert_key_for(state: &SharedState, user_id: &str) -> String {
+        let key = crate::domain::generate_api_key();
+        let hash = crate::domain::hash_api_key(&key);
+        let prefix = key.chars().take(12).collect::<String>();
+        state
+            .repo
+            .insert_api_key_if_under_cap(
+                &crate::db::repository::NewApiKey {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    user_id: user_id.to_string(),
+                    name: "test".to_string(),
+                    key_hash: hash,
+                    prefix,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                },
+                1000,
+            )
+            .unwrap();
+        key
+    }
+
+    #[tokio::test]
+    async fn authenticate_accepts_valid_api_key() {
+        let state = test_state();
+        let user = make_user("carol", crate::domain::Role::User);
+        state.repo.insert_user(&user).unwrap();
+        let key = insert_key_for(&state, &user.id);
+
+        let got = state.authenticate(&key).await.expect("api key should auth");
+        assert_eq!(got.username, "carol");
+    }
+
+    #[tokio::test]
+    async fn authenticate_rejects_unknown_or_revoked_api_key() {
+        let state = test_state();
+        let user = make_user("dave", crate::domain::Role::User);
+        state.repo.insert_user(&user).unwrap();
+        let key = insert_key_for(&state, &user.id);
+
+        // A well-formed but unknown key.
+        assert!(state
+            .authenticate(&crate::domain::generate_api_key())
+            .await
+            .is_err());
+
+        // Revoke the real key → it stops authenticating immediately.
+        state.repo.delete_api_keys_for_user(&user.id).unwrap();
+        assert!(state.authenticate(&key).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn session_auth_rejects_api_keys_but_accepts_jwt() {
+        let state = test_state();
+        let user = make_user("erin", crate::domain::Role::Admin);
+        state.repo.insert_user(&user).unwrap();
+        let key = insert_key_for(&state, &user.id);
+        let jwt = mint_token("erin", "ADMIN");
+
+        // API key works on the service surface but NOT on session-only endpoints.
+        assert!(state.authenticate(&key).await.is_ok());
+        assert!(state.authenticate_session(&key).await.is_err());
+        assert!(state.authenticate_session_admin(&key).await.is_err());
+
+        // A real session JWT is accepted by the session paths.
+        assert!(state.authenticate_session(&jwt).await.is_ok());
+        assert!(state.authenticate_session_admin(&jwt).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn api_keys_are_scoped_per_user() {
+        let state = test_state();
+        let a = make_user("ava", crate::domain::Role::User);
+        let b = make_user("ben", crate::domain::Role::User);
+        state.repo.insert_user(&a).unwrap();
+        state.repo.insert_user(&b).unwrap();
+        insert_key_for(&state, &a.id);
+        let b_key_id = {
+            let key = crate::domain::generate_api_key();
+            let hash = crate::domain::hash_api_key(&key);
+            let id = uuid::Uuid::new_v4().to_string();
+            state
+                .repo
+                .insert_api_key_if_under_cap(
+                    &crate::db::repository::NewApiKey {
+                        id: id.clone(),
+                        user_id: b.id.clone(),
+                        name: "b".to_string(),
+                        key_hash: hash,
+                        prefix: "p".to_string(),
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                    1000,
+                )
+                .unwrap();
+            id
+        };
+
+        assert_eq!(state.repo.list_api_keys_for_user(&a.id).unwrap().len(), 1);
+        // ava cannot delete ben's key.
+        assert!(!state.repo.delete_api_key(&b_key_id, &a.id).unwrap());
+        // ben can.
+        assert!(state.repo.delete_api_key(&b_key_id, &b.id).unwrap());
     }
 }

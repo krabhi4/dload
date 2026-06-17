@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-18
+
+### Added
+- **API keys.** Users can generate long-lived, named, revocable API keys under **Profile → API keys** in the web UI. A key is shown once at creation (only its SHA-256 hash is stored), can be revoked at any time, and authenticates the download/service API via `Authorization: Bearer <key>` (the key prefix is `dload_`). Endpoints: `GET/POST /api/auth/api-keys`, `DELETE /api/auth/api-keys/{id}`. Account-security and admin-management endpoints (change password, user management, key management) remain **session-only** (JWT) so a leaked key cannot escalate; a deleted user's keys are purged automatically.
+- `send-to-dload` browser extension — see `extensions/send-to-dload/`. Detects any browser download, magnet link, or `.torrent` URL and forwards it to a self-hosted dload server. Supports Chrome / Edge / Brave / Opera and Firefox from a single source tree, ships with a filter pipeline (host whitelist/blacklist, extension include/exclude, size bounds), a durable retry queue with exponential backoff, and an activity log. Authenticates with an API key. Distributed as `.zip` (Chrome) and `.xpi` (Firefox) on GitHub Releases — no store listing in this release.
+- CI: new `extension` job in `.github/workflows/ci.yml` runs web-ext lint + vitest + build, uploads the artifacts as a workflow run artifact.
+
 ## [0.3.1] - 2026-06-16
 
 ### Security

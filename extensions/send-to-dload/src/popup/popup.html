@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Send to dload</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <strong>Send to dload</strong>
+      <span id="status" class="pill pill-unknown">checking…</span>
+    </header>
+
+    <section id="form" hidden>
+      <p class="hint">
+        Send the current page URL to your dload server.
+      </p>
+      <button id="send-page" class="primary">Send this page</button>
+      <p id="send-result" class="result" hidden></p>
+    </section>
+
+    <section id="unconfigured" hidden>
+      <p class="hint">
+        dload is not configured yet.
+      </p>
+      <a id="open-options" href="#">Open settings →</a>
+    </section>
+
+    <section id="recent">
+      <h2>Recent activity</h2>
+      <ol id="recent-list"></ol>
+    </section>
+
+    <footer>
+      <a id="open-options-2" href="#">Settings</a>
+    </footer>
+
+    <script src="../shared/polyfill.js"></script>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

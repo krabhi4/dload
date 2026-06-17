@@ -1,6 +1,6 @@
 [package]
 name = "dload"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "A self-hosted download manager"
@@ -13,6 +13,8 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 bcrypt = "0.19"
+sha2 = "0.10"
+hex = "0.4"
 # jsonwebtoken 10 made the crypto backend pluggable; its default features
 # enable no provider, so encode/decode panics at runtime. Pin the pure-Rust one.
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }

@@ -24,6 +24,7 @@ A fast, lightweight download manager built in Rust that streams directly to disk
 - **qBittorrent API Compatible**: Works as a drop-in replacement for qBittorrent in Sonarr, Radarr, and other arr apps
 - **SQLite Database**: Persistent download history
 - **Docker Ready**: Multi-platform builds (amd64, arm64)
+- **Browser Extension**: [`send-to-dload`](extensions/send-to-dload/) for Chrome / Firefox — detects any browser download, magnet link, or `.torrent` URL and forwards it to dload (alpha)
 
 ## Quick Start
 

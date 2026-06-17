@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Send to dload — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Send to dload</h1>
+
+      <section>
+        <h2>Server</h2>
+
+        <label for="serverUrl">dload server URL</label>
+        <input id="serverUrl" type="url" placeholder="http://192.168.0.10:8080" spellcheck="false" />
+
+        <label for="apiKey">API key</label>
+        <input id="apiKey" type="password" placeholder="dload_…" autocomplete="off" spellcheck="false" />
+        <p class="hint">
+          Stored locally and never sent anywhere except your configured dload server.
+          Generate one in the dload web UI under <strong>Profile → API keys</strong> and paste it here.
+        </p>
+
+        <div class="row">
+          <button id="test" class="primary">Test connection</button>
+          <span id="test-result" class="result"></span>
+        </div>
+      </section>
+
+      <section>
+        <h2>Filters &amp; rules</h2>
+
+        <label class="row">
+          <input id="enabled" type="checkbox" />
+          <span>Extension enabled</span>
+        </label>
+
+        <label for="mode">Host filter mode</label>
+        <select id="mode">
+          <option value="blacklist">Blacklist (capture everything except these hosts)</option>
+          <option value="whitelist">Whitelist (capture only these hosts)</option>
+        </select>
+
+        <label for="hostnameList">Hostnames (one per line, supports <code>*.example.com</code>)</label>
+        <textarea id="hostnameList" rows="4" spellcheck="false" placeholder="tracker.example.com&#10;*.cdn.example"></textarea>
+
+        <label for="extensionInclude">Allowed extensions (comma- or newline-separated)</label>
+        <textarea id="extensionInclude" rows="4" spellcheck="false" placeholder=".torrent, .iso, .zip, .mp4"></textarea>
+
+        <label for="extensionExclude">Excluded extensions</label>
+        <textarea id="extensionExclude" rows="3" spellcheck="false" placeholder=".html, .js, .css"></textarea>
+
+        <div class="grid">
+          <div>
+            <label for="minSize">Minimum size (bytes)</label>
+            <input id="minSize" type="number" min="0" step="1024" />
+          </div>
+          <div>
+            <label for="maxSize">Maximum size (bytes, 0 = no max)</label>
+            <input id="maxSize" type="number" min="0" step="1024" />
+          </div>
+        </div>
+
+        <label class="row">
+          <input id="allowMagnets" type="checkbox" />
+          <span>Capture magnet links</span>
+        </label>
+        <label class="row">
+          <input id="allowHttpDownloads" type="checkbox" />
+          <span>Capture HTTP/HTTPS/FTP file downloads</span>
+        </label>
+        <label class="row">
+          <input id="notifyOnSend" type="checkbox" />
+          <span>Notification on successful send</span>
+        </label>
+        <label class="row">
+          <input id="notifyOnSkip" type="checkbox" />
+          <span>Notification when a download is skipped by rules</span>
+        </label>
+      </section>
+
+      <section>
+        <h2>Recent activity</h2>
+        <p class="hint">
+          Last 200 detection events. Newest at the bottom.
+        </p>
+        <button id="clear-log" class="secondary">Clear log</button>
+        <table id="log-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Kind</th>
+              <th>URL</th>
+              <th>Decision</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="log-body"></tbody>
+        </table>
+      </section>
+
+      <footer>
+        <button id="save" class="primary">Save settings</button>
+        <span id="save-result" class="result"></span>
+      </footer>
+    </main>
+
+    <script src="../shared/polyfill.js"></script>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

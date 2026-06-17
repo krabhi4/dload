@@ -18,7 +18,27 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/auth/me", post(get_profile))
         .route("/api/auth/users", get(list_users).post(create_user))
         .route("/api/auth/users/{id}", delete(delete_user))
+        .route(
+            "/api/auth/api-keys",
+            get(list_api_keys).post(create_api_key),
+        )
+        .route("/api/auth/api-keys/{id}", delete(delete_api_key))
         .with_state(state)
+}
+
+const MAX_API_KEYS_PER_USER: i64 = 50;
+
+#[derive(Debug, serde::Deserialize)]
+struct CreateApiKeyRequest {
+    name: String,
+}
+
+fn bearer_token(headers: &axum::http::HeaderMap) -> &str {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -279,7 +299,7 @@ async fn list_users(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if let Err(e) = state.authenticate_admin(token).await {
+    if let Err(e) = state.authenticate_session_admin(token).await {
         return Json(serde_json::json!({
             "success": false,
             "error": e
@@ -307,7 +327,7 @@ async fn create_user(
     State(state): State<SharedState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Json<serde_json::Value> {
-    if let Err(e) = state.authenticate_admin(&payload.token).await {
+    if let Err(e) = state.authenticate_session_admin(&payload.token).await {
         let error = if e == "Admin access required" {
             "Only admins can create users"
         } else {
@@ -394,7 +414,7 @@ async fn change_password(
     State(state): State<SharedState>,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> Json<serde_json::Value> {
-    let user = match state.authenticate(&payload.token).await {
+    let user = match state.authenticate_session(&payload.token).await {
         Ok(u) => u,
         Err(_) => {
             return Json(serde_json::json!({
@@ -469,7 +489,7 @@ async fn delete_user(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    let actor = match state.authenticate_admin(token).await {
+    let actor = match state.authenticate_session_admin(token).await {
         Ok(u) => u,
         Err("Admin access required") => {
             return Json(serde_json::json!({
@@ -525,6 +545,7 @@ async fn delete_user(
         .repo_blocking(move |repo| -> anyhow::Result<Option<String>> {
             let username = repo.get_user_by_id(&id_for_delete)?.map(|u| u.username);
             repo.delete_user(&id_for_delete)?;
+            repo.delete_api_keys_for_user(&id_for_delete)?;
             Ok(username)
         })
         .await
@@ -547,4 +568,120 @@ async fn delete_user(
         "success": true,
         "message": "User deleted successfully"
     }))
+}
+
+// ─── API keys ────────────────────────────────────────────────────────────
+// Session-only (never an API key), so a leaked key can't mint/list/revoke keys.
+
+async fn list_api_keys(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+) -> Json<serde_json::Value> {
+    let user = match state.authenticate_session(bearer_token(&headers)).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "success": false, "error": e })),
+    };
+
+    let user_id = user.id.clone();
+    let keys = state
+        .repo_blocking(move |repo| repo.list_api_keys_for_user(&user_id).unwrap_or_default())
+        .await;
+    let keys_json: Vec<_> = keys
+        .into_iter()
+        .map(|k| {
+            serde_json::json!({
+                "id": k.id,
+                "name": k.name,
+                "prefix": k.prefix,
+                "created_at": k.created_at.to_rfc3339(),
+                "last_used_at": k.last_used_at.map(|d| d.to_rfc3339()),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "keys": keys_json }))
+}
+
+async fn create_api_key(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<CreateApiKeyRequest>,
+) -> Json<serde_json::Value> {
+    let user = match state.authenticate_session(bearer_token(&headers)).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "success": false, "error": e })),
+    };
+
+    let name = payload.name.trim().to_string();
+    if name.is_empty() || name.len() > 64 {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Name must be 1-64 characters"
+        }));
+    }
+
+    let key = crate::domain::generate_api_key();
+    let key_hash = crate::domain::hash_api_key(&key);
+    let prefix = key.chars().take(12).collect::<String>();
+    let id = uuid::Uuid::new_v4().to_string();
+    let created_at = chrono::Utc::now().to_rfc3339();
+
+    let new_key = crate::db::repository::NewApiKey {
+        id: id.clone(),
+        user_id: user.id.clone(),
+        name: name.clone(),
+        key_hash,
+        prefix: prefix.clone(),
+        created_at: created_at.clone(),
+    };
+    let inserted = state
+        .repo_blocking(move |repo| {
+            repo.insert_api_key_if_under_cap(&new_key, MAX_API_KEYS_PER_USER)
+        })
+        .await;
+    match inserted {
+        Ok(true) => {}
+        Ok(false) => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Too many API keys (max 50). Revoke some first."
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to create API key: {}", e);
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Failed to create API key"
+            }));
+        }
+    }
+
+    Json(serde_json::json!({
+        "success": true,
+        "id": id,
+        "name": name,
+        "prefix": prefix,
+        "key": key, // shown to the user exactly once
+        "created_at": created_at,
+    }))
+}
+
+async fn delete_api_key(
+    State(state): State<SharedState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Json<serde_json::Value> {
+    let user = match state.authenticate_session(bearer_token(&headers)).await {
+        Ok(u) => u,
+        Err(e) => return Json(serde_json::json!({ "success": false, "error": e })),
+    };
+
+    let user_id = user.id.clone();
+    let removed = state
+        .repo_blocking(move |repo| repo.delete_api_key(&id, &user_id).unwrap_or(false))
+        .await;
+    if removed {
+        Json(serde_json::json!({ "success": true }))
+    } else {
+        Json(serde_json::json!({ "success": false, "error": "API key not found" }))
+    }
 }

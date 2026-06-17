@@ -52,6 +52,16 @@ impl Database {
                 protocol TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                prefix TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
             );",
         )?;
 
@@ -226,7 +236,9 @@ impl Database {
 
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_downloads_info_hash ON downloads(info_hash);
-             CREATE INDEX IF NOT EXISTS idx_history_created_at ON download_history(created_at);",
+             CREATE INDEX IF NOT EXISTS idx_history_created_at ON download_history(created_at);
+             CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+             CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);",
         )?;
 
         Ok(Self {

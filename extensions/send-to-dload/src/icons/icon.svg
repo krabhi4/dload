@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="22" fill="#d4a24e"/>
+  <!-- Tray -->
+  <rect x="22" y="86" width="84" height="22" rx="4" fill="#0c0c0a"/>
+  <line x1="22" y1="86" x2="22" y2="100" stroke="#d4a24e" stroke-width="2"/>
+  <line x1="106" y1="86" x2="106" y2="100" stroke="#d4a24e" stroke-width="2"/>
+  <!-- Arrow shaft -->
+  <line x1="64" y1="24" x2="64" y2="76" stroke="#0c0c0a" stroke-width="10" stroke-linecap="round"/>
+  <!-- Arrow head -->
+  <polyline points="42,60 64,82 86,60" fill="none" stroke="#0c0c0a" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,10 +1,22 @@
-use crate::domain::{Download, DownloadFolder, DownloadStatus, Protocol, Role, Settings, User};
+use crate::domain::{
+    ApiKey, Download, DownloadFolder, DownloadStatus, Protocol, Role, Settings, User,
+};
 use rusqlite::params;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct Repository {
     db: Arc<crate::db::Database>,
+}
+
+/// Fields for inserting a new API key (the SHA-256 hash, not the plaintext).
+pub struct NewApiKey {
+    pub id: String,
+    pub user_id: String,
+    pub name: String,
+    pub key_hash: String,
+    pub prefix: String,
+    pub created_at: String,
 }
 
 impl Repository {
@@ -356,6 +368,106 @@ impl Repository {
     pub fn delete_user(&self, id: &str) -> anyhow::Result<()> {
         let conn = self.db.conn.lock().unwrap();
         conn.execute("DELETE FROM users WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ─── API keys ───────────────────────────────────────
+
+    pub fn get_user_by_api_key_hash(&self, key_hash: &str) -> anyhow::Result<Option<User>> {
+        let conn = self.db.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.username, u.password_hash, u.role, u.created_at
+             FROM users u JOIN api_keys k ON k.user_id = u.id
+             WHERE k.key_hash = ?1",
+        )?;
+        let mut rows = stmt.query(params![key_hash])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(User {
+                id: row.get(0)?,
+                username: row.get(1)?,
+                password_hash: row.get(2)?,
+                role: Role::parse(&row.get::<_, String>(3)?),
+                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+                    .map(|d| d.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Stamp last_used_at only if unset/older than cutoff, so the hot auth path
+    // doesn't write on every request.
+    pub fn touch_api_key(&self, key_hash: &str, now: &str, cutoff: &str) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE api_keys SET last_used_at = ?1
+             WHERE key_hash = ?2 AND (last_used_at IS NULL OR last_used_at < ?3)",
+            params![now, key_hash, cutoff],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_api_keys_for_user(&self, user_id: &str) -> anyhow::Result<Vec<ApiKey>> {
+        let conn = self.db.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, name, prefix, created_at, last_used_at
+             FROM api_keys WHERE user_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let keys = stmt
+            .query_map(params![user_id], |row| {
+                Ok(ApiKey {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    name: row.get(2)?,
+                    prefix: row.get(3)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    last_used_at: row
+                        .get::<_, Option<String>>(5)?
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                        .map(|d| d.with_timezone(&chrono::Utc)),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(keys)
+    }
+
+    // Count + insert in one statement under the lock, so concurrent creates
+    // can't race past the cap. Returns false if the cap was reached.
+    pub fn insert_api_key_if_under_cap(&self, k: &NewApiKey, max: i64) -> anyhow::Result<bool> {
+        let conn = self.db.conn.lock().unwrap();
+        let rows = conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, key_hash, prefix, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE (SELECT COUNT(*) FROM api_keys WHERE user_id = ?2) < ?7",
+            params![
+                k.id,
+                k.user_id,
+                k.name,
+                k.key_hash,
+                k.prefix,
+                k.created_at,
+                max
+            ],
+        )?;
+        Ok(rows > 0)
+    }
+
+    // Scoped to its owner so a user can't revoke another's key.
+    pub fn delete_api_key(&self, id: &str, user_id: &str) -> anyhow::Result<bool> {
+        let conn = self.db.conn.lock().unwrap();
+        let rows = conn.execute(
+            "DELETE FROM api_keys WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn delete_api_keys_for_user(&self, user_id: &str) -> anyhow::Result<()> {
+        let conn = self.db.conn.lock().unwrap();
+        conn.execute("DELETE FROM api_keys WHERE user_id = ?1", params![user_id])?;
         Ok(())
     }
 

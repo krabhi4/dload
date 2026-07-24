@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-24
+
+### Fixed
+- **Torrents failed to start with `error initializing persistent DHT`.** The container drops privileges to `PUID:PGID` via `gosu`, which resets `HOME` to the target user's home directory (`/` for a UID with no `/etc/passwd` entry). That silently overrode the `export HOME=/data` in the entrypoint, so `librqbit` tried to persist its DHT routing table at `/.cache/com.rqbit.dht/dht.json` — a path the unprivileged user cannot create — and every torrent/magnet add failed at `Session::new()`. HTTP downloads were unaffected. The entrypoint now sets `HOME=/data` on `gosu`'s exec'd command (`gosu … env HOME=/data …`) so it survives into the application process and DHT state persists to the writable `/data` volume.
+
 ## [0.4.0] - 2026-06-18
 
 ### Added

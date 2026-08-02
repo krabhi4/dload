@@ -166,7 +166,11 @@ impl Database {
                         "UPDATE downloads SET download_folder = ?1 WHERE id = ?2",
                         rusqlite::params![&folder, &id],
                     ) {
-                        tracing::warn!("migration download_folder backfill failed for {}: {}", id, e);
+                        tracing::warn!(
+                            "migration download_folder backfill failed for {}: {}",
+                            id,
+                            e
+                        );
                     }
                 }
 
@@ -179,7 +183,9 @@ impl Database {
             }
         }
 
-        if let Err(e) = conn.execute_batch("ALTER TABLE downloads ADD COLUMN position INTEGER DEFAULT 0;") {
+        if let Err(e) =
+            conn.execute_batch("ALTER TABLE downloads ADD COLUMN position INTEGER DEFAULT 0;")
+        {
             tracing::warn!("migration position failed: {}", e);
         }
         // One-time migration: backfill positions from created_at order so existing

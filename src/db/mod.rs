@@ -65,15 +65,19 @@ impl Database {
             );",
         )?;
 
-        let _ = conn.execute_batch(
+        if let Err(e) = conn.execute_batch(
             "ALTER TABLE downloads ADD COLUMN info_hash TEXT;
              ALTER TABLE downloads ADD COLUMN category TEXT;
              ALTER TABLE downloads ADD COLUMN content_path TEXT;",
-        );
-        let _ = conn.execute_batch(
+        ) {
+            tracing::warn!("migration info_hash/category/content_path failed: {}", e);
+        }
+        if let Err(e) = conn.execute_batch(
             "ALTER TABLE downloads ADD COLUMN http_mirror_status TEXT;
              ALTER TABLE downloads ADD COLUMN http_mirror_url TEXT;",
-        );
+        ) {
+            tracing::warn!("migration http_mirror_status/http_mirror_url failed: {}", e);
+        }
         let _ = conn
             .execute_batch("ALTER TABLE downloads ADD COLUMN restart_resume INTEGER DEFAULT 0;");
         // One-time migration: existing torrent downloads should auto-resume.
@@ -90,18 +94,22 @@ impl Database {
                 .unwrap_or(0)
                 > 0;
             if !already_done {
-                let _ = conn.execute_batch(
+                if let Err(e) = conn.execute_batch(
                     "UPDATE downloads SET restart_resume = 1
                      WHERE protocol = 'Torrent'
                      AND status IN ('Downloading', 'Seeding', 'Paused', 'Queued')
                      AND restart_resume = 0;
                      INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_restart_resume', '1');",
-                );
+                ) {
+                    tracing::warn!("migration restart_resume failed: {}", e);
+                }
             }
         }
-        let _ = conn.execute_batch(
+        if let Err(e) = conn.execute_batch(
             "ALTER TABLE downloads ADD COLUMN download_folder TEXT NOT NULL DEFAULT '';",
-        );
+        ) {
+            tracing::warn!("migration download_folder failed: {}", e);
+        }
         // One-time migration: backfill download_folder from existing content_path/save_path.
         // Priority per row: parent(content_path) if set → parent(save_path) if non-empty →
         // configured default folder. Rows where pre-fix content_path == save_path end up at the
@@ -154,20 +162,26 @@ impl Database {
                         .and_then(parent_of)
                         .or_else(|| parent_of(&save_path))
                         .unwrap_or_else(|| default_dir.clone());
-                    let _ = conn.execute(
+                    if let Err(e) = conn.execute(
                         "UPDATE downloads SET download_folder = ?1 WHERE id = ?2",
                         rusqlite::params![&folder, &id],
-                    );
+                    ) {
+                        tracing::warn!("migration download_folder backfill failed for {}: {}", id, e);
+                    }
                 }
 
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
                     rusqlite::params![&"migration_download_folder_backfill", &"1"],
-                );
+                ) {
+                    tracing::warn!("migration download_folder backfill marker failed: {}", e);
+                }
             }
         }
 
-        let _ = conn.execute_batch("ALTER TABLE downloads ADD COLUMN position INTEGER DEFAULT 0;");
+        if let Err(e) = conn.execute_batch("ALTER TABLE downloads ADD COLUMN position INTEGER DEFAULT 0;") {
+            tracing::warn!("migration position failed: {}", e);
+        }
         // One-time migration: backfill positions from created_at order so existing
         // downloads get a sensible initial ordering.
         {
@@ -180,12 +194,14 @@ impl Database {
                 .unwrap_or(0)
                 > 0;
             if !already_done {
-                let _ = conn.execute_batch(
+                if let Err(e) = conn.execute_batch(
                     "UPDATE downloads SET position = (
                         SELECT COUNT(*) FROM downloads d2 WHERE d2.created_at < downloads.created_at
                      );
                      INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_position_backfill', '1');",
-                );
+                ) {
+                    tracing::warn!("migration position backfill failed: {}", e);
+                }
             }
         }
 
@@ -222,15 +238,40 @@ impl Database {
                         "path": dir,
                         "is_default": true,
                     }]);
-                    let _ = conn.execute(
+                    if let Err(e) = conn.execute(
                         "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
                         rusqlite::params![&"download_folders", &folder.to_string()],
-                    );
+                    ) {
+                        tracing::warn!("migration download_folders failed: {}", e);
+                    }
                 }
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
                     rusqlite::params![&"migration_download_folders", &"1"],
-                );
+                ) {
+                    tracing::warn!("migration download_folders marker failed: {}", e);
+                }
+            }
+        }
+
+        // One-time migration: add tags column to downloads table.
+        // Guarded by a settings flag so it only runs once.
+        {
+            let already_done: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key = 'migration_tags_column'",
+                    [],
+                    |row| row.get::<_, i32>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            if !already_done {
+                if let Err(e) = conn.execute_batch(
+                    "ALTER TABLE downloads ADD COLUMN tags TEXT DEFAULT '';
+                     INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_tags_column', '1');",
+                ) {
+                    tracing::warn!("tags column migration failed: {}", e);
+                }
             }
         }
 

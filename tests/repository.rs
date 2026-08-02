@@ -220,6 +220,36 @@ fn get_history_page_empty_when_offset_past_end() {
     assert!(r.get_history_page(10, 100).unwrap().is_empty());
 }
 
+// tags_from_string sorts alphabetically; clone and sort to compare
+// with input order (which is ["action", "4k"]).
+#[test]
+fn tags_roundtrip_through_repository() {
+    let r = repo();
+    let mut d = sample_download("tagged", 0);
+    d.tags = vec!["action".into(), "4k".into()];
+    r.insert_download(&d).unwrap();
+    let all = r.get_all_downloads().unwrap();
+    let mut got = all[0].tags.clone();
+    got.sort_unstable();
+    assert_eq!(got, vec!["4k", "action"]);
+}
+
+#[test]
+fn update_download_persists_tags() {
+    let r = repo();
+    let mut d = sample_download("updatetag", 0);
+    d.tags = vec!["old".into()];
+    r.insert_download(&d).unwrap();
+
+    let mut updated = d.clone();
+    updated.tags = vec!["new1".into(), "new2".into()];
+    r.update_download(&updated).unwrap();
+
+    let all = r.get_all_downloads().unwrap();
+    let got = all.iter().find(|d| d.id == "updatetag").unwrap();
+    assert_eq!(got.tags, vec!["new1", "new2"]);
+}
+
 // ─── download_folders persistence ────────────────────────────────────────
 
 #[test]

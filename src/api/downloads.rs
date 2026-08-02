@@ -7,7 +7,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 #[derive(serde::Deserialize)]
@@ -256,6 +256,14 @@ async fn handle_add_download_multipart(
             )
                 .into_response();
         }
+    }
+
+    if urls.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Too many URLs (max 100 per request)".to_string(),
+        )
+            .into_response();
     }
 
     let download_dir = {
@@ -547,7 +555,7 @@ async fn start_http_mirror(
     ))
 }
 
-fn validate_download_url(url: &str) -> Result<(), String> {
+pub fn validate_download_url(url: &str) -> Result<(), String> {
     if url.is_empty() {
         return Err("URL is required".to_string());
     }
@@ -581,6 +589,19 @@ fn validate_download_url(url: &str) -> Result<(), String> {
     match parsed.host() {
         Some(url::Host::Domain(host)) => {
             let host_lower = host.to_ascii_lowercase();
+            // Check for decimal IP notation (e.g., 2130706433 = 127.0.0.1)
+            if let Ok(dec) = host_lower.parse::<u32>() {
+                let octets = [
+                    ((dec >> 24) & 0xFF) as u8,
+                    ((dec >> 16) & 0xFF) as u8,
+                    ((dec >> 8) & 0xFF) as u8,
+                    (dec & 0xFF) as u8,
+                ];
+                let ip = IpAddr::V4(Ipv4Addr::from(octets));
+                if is_private_ip(&ip) {
+                    return Err("Private/internal IP addresses not allowed".to_string());
+                }
+            }
             if host_lower == "localhost"
                 || host_lower == "metadata.google.internal"
                 || host_lower.ends_with(".internal")
@@ -605,19 +626,21 @@ fn validate_download_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn is_private_ip(ip: &IpAddr) -> bool {
+pub fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_loopback()                           // 127.0.0.0/8
-                || v4.is_private()                     // 10/8, 172.16/12, 192.168/16
-                || v4.is_link_local()                  // 169.254.0.0/16 (AWS metadata etc.)
-                || v4.is_broadcast()                   // 255.255.255.255
-                || v4.is_unspecified()                 // 0.0.0.0
-                || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // 100.64.0.0/10 (CGNAT)
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64
         }
         IpAddr::V6(v6) => {
             v6.is_loopback()
                 || v6.is_unspecified()
+                || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xc0) == 0x80)
+                || (v6.octets()[0] & 0xfe) == 0xfc
                 || v6
                     .to_ipv4_mapped()
                     .is_some_and(|v4| is_private_ip(&IpAddr::V4(v4)))
@@ -641,6 +664,19 @@ fn validate_mirror_url(url: &str) -> Result<(), String> {
     match parsed.host() {
         Some(url::Host::Domain(host)) => {
             let host_lower = host.to_ascii_lowercase();
+            // Check for decimal IP notation (e.g., 2130706433 = 127.0.0.1)
+            if let Ok(dec) = host_lower.parse::<u32>() {
+                let octets = [
+                    ((dec >> 24) & 0xFF) as u8,
+                    ((dec >> 16) & 0xFF) as u8,
+                    ((dec >> 8) & 0xFF) as u8,
+                    (dec & 0xFF) as u8,
+                ];
+                let ip = IpAddr::V4(Ipv4Addr::from(octets));
+                if is_private_ip(&ip) {
+                    return Err("Private/internal IP addresses not allowed".to_string());
+                }
+            }
             if host_lower == "localhost"
                 || host_lower == "metadata.google.internal"
                 || host_lower.ends_with(".internal")

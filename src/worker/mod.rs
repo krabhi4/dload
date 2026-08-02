@@ -3,7 +3,7 @@ pub mod mirror;
 pub mod torrent;
 
 use crate::domain::Protocol;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 /// Outcome of checking a redirect target against SSRF rules.
 #[derive(Debug, PartialEq, Eq)]
@@ -31,6 +31,18 @@ pub(crate) fn redirect_decision(url: &url::Url, previous_count: usize) -> Redire
                 || host_lower.ends_with(".local")
             {
                 return RedirectDecision::Block("redirect to internal host blocked");
+            }
+            if let Ok(dec) = host.parse::<u32>() {
+                let octets = [
+                    ((dec >> 24) & 0xFF) as u8,
+                    ((dec >> 16) & 0xFF) as u8,
+                    ((dec >> 8) & 0xFF) as u8,
+                    (dec & 0xFF) as u8,
+                ];
+                let ip = IpAddr::V4(Ipv4Addr::from(octets));
+                if is_private_ip(&ip) {
+                    return RedirectDecision::Block("redirect to private IP blocked");
+                }
             }
         }
         Some(url::Host::Ipv4(v4)) if is_private_ip(&IpAddr::V4(v4)) => {
@@ -70,6 +82,8 @@ pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
         IpAddr::V6(v6) => {
             v6.is_loopback()
                 || v6.is_unspecified()
+                || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xc0) == 0x80)
+                || (v6.octets()[0] & 0xfe) == 0xfc
                 || v6
                     .to_ipv4_mapped()
                     .is_some_and(|v4| is_private_ip(&IpAddr::V4(v4)))

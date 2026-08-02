@@ -39,16 +39,16 @@ async fn update_settings(
         return axum::response::IntoResponse::into_response((axum::http::StatusCode::FORBIDDEN, e));
     }
 
-    if settings.max_concurrent == 0 {
+    if settings.max_concurrent == 0 || settings.max_concurrent > 100 {
         return axum::response::IntoResponse::into_response((
             axum::http::StatusCode::BAD_REQUEST,
-            "max_concurrent must be at least 1",
+            "max_concurrent must be between 1 and 100",
         ));
     }
-    if settings.max_connections_per_file == 0 {
+    if settings.max_connections_per_file == 0 || settings.max_connections_per_file > 100 {
         return axum::response::IntoResponse::into_response((
             axum::http::StatusCode::BAD_REQUEST,
-            "max_connections_per_file must be at least 1",
+            "max_connections_per_file must be between 1 and 100",
         ));
     }
 

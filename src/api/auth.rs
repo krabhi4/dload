@@ -143,7 +143,7 @@ async fn register(
     };
 
     let token = match jsonwebtoken::encode(
-        &jsonwebtoken::Header::default(),
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &claims,
         &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
     ) {
@@ -225,7 +225,7 @@ async fn login(
     };
 
     let token = match jsonwebtoken::encode(
-        &jsonwebtoken::Header::default(),
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &claims,
         &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
     ) {

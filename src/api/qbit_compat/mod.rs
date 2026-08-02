@@ -84,8 +84,11 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
         .route("/api/v2/torrents/rename", post(torrents::noop))
         .route("/api/v2/torrents/setSuperSeeding", post(torrents::noop))
         .route("/api/v2/torrents/setAutoManagement", post(torrents::noop))
-        .route("/api/v2/torrents/addTags", post(torrents::noop))
-        .route("/api/v2/torrents/removeTags", post(torrents::noop))
+        .route("/api/v2/torrents/addTags", post(torrents::add_tags))
+        .route("/api/v2/torrents/removeTags", post(torrents::remove_tags))
+        .route("/api/v2/torrents/createTags", post(torrents::create_tags))
+        .route("/api/v2/torrents/deleteTags", post(torrents::delete_tags))
+        .route("/api/v2/torrents/setTags", post(torrents::set_tags))
         .route("/api/v2/torrents/editCategory", post(torrents::noop))
         .route("/api/v2/torrents/removeCategories", post(torrents::noop))
         .route(

@@ -27,11 +27,11 @@ impl Repository {
     pub fn insert_download(&self, download: &Download) -> anyhow::Result<()> {
         let conn = self.db.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO downloads (id, url, filename, save_path, total_size, downloaded_size,
-             speed, progress, status, protocol, connections, created_at, completed_at, error_message,
-             info_hash, category, content_path, http_mirror_status, http_mirror_url, restart_resume, position,
-             download_folder)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+             "INSERT INTO downloads (id, url, filename, save_path, total_size, downloaded_size,
+              speed, progress, status, protocol, connections, created_at, completed_at, error_message,
+              info_hash, category, content_path, http_mirror_status, http_mirror_url, restart_resume, position,
+              download_folder, tags)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 download.id,
                 download.url,
@@ -55,6 +55,7 @@ impl Repository {
                 download.restart_resume as i32,
                 download.position,
                 download.download_folder,
+                download.tags_to_string(),
             ],
         )?;
         Ok(())
@@ -63,11 +64,11 @@ impl Repository {
     pub fn update_download(&self, download: &Download) -> anyhow::Result<()> {
         let conn = self.db.conn.lock().unwrap();
         conn.execute(
-            "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
-             speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10,
-             info_hash=?11, category=?12, content_path=?13, http_mirror_status=?14, http_mirror_url=?15,
-             restart_resume=?16, position=?17, download_folder=?18
-             WHERE id=?19",
+             "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
+              speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10,
+              info_hash=?11, category=?12, content_path=?13, http_mirror_status=?14, http_mirror_url=?15,
+              restart_resume=?16, position=?17, download_folder=?18, tags=?19
+              WHERE id=?20",
             params![
                 download.filename,
                 download.save_path,
@@ -87,6 +88,7 @@ impl Repository {
                 download.restart_resume as i32,
                 download.position,
                 download.download_folder,
+                download.tags_to_string(),
                 download.id,
             ],
         )?;
@@ -96,11 +98,11 @@ impl Repository {
     pub fn get_all_downloads(&self) -> anyhow::Result<Vec<Download>> {
         let conn = self.db.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, url, filename, save_path, total_size, downloaded_size, speed,
-             progress, status, protocol, connections, created_at, completed_at, error_message,
-             info_hash, category, content_path, http_mirror_status, http_mirror_url, restart_resume,
-             position, download_folder
-             FROM downloads ORDER BY position ASC, created_at ASC",
+             "SELECT id, url, filename, save_path, total_size, downloaded_size, speed,
+              progress, status, protocol, connections, created_at, completed_at, error_message,
+              info_hash, category, content_path, http_mirror_status, http_mirror_url, restart_resume,
+              position, download_folder, tags
+              FROM downloads ORDER BY position ASC, created_at ASC",
         )?;
 
         let downloads = stmt
@@ -135,6 +137,10 @@ impl Repository {
                     error_message: row.get(13)?,
                     info_hash: row.get(14)?,
                     category: row.get(15)?,
+                    tags: row
+                        .get::<_, Option<String>>(22)?
+                        .map(|s| Download::tags_from_string(&s))
+                        .unwrap_or_default(),
                     content_path: row.get(16)?,
                     http_mirror_status: row.get(17)?,
                     http_mirror_url: row.get(18)?,

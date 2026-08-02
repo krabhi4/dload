@@ -266,10 +266,12 @@ impl ManagerState {
     /// expiry alone keeps accepting tokens after the user is deleted or the DB is
     /// wiped — re-checking the DB closes that hole.
     async fn authenticate_jwt(&self, token: &str) -> Result<crate::domain::User, &'static str> {
+        let mut validation = jsonwebtoken::Validation::default();
+        validation.algorithms = vec![jsonwebtoken::Algorithm::HS256];
         let claims = jsonwebtoken::decode::<crate::domain::Claims>(
             token,
             &jsonwebtoken::DecodingKey::from_secret(crate::domain::jwt_secret()),
-            &jsonwebtoken::Validation::default(),
+            &validation,
         )
         .map(|d| d.claims)
         .map_err(|_| "Authentication required")?;
@@ -2473,7 +2475,7 @@ mod tests {
             exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
         };
         jsonwebtoken::encode(
-            &jsonwebtoken::Header::default(),
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
             &claims,
             &jsonwebtoken::EncodingKey::from_secret(crate::domain::jwt_secret()),
         )

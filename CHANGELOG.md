@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Tags / labels.** Downloads can now carry multiple tags (free-form strings), matching the qBittorrent Web API. Tags are exposed in the UI as small chips on each download row and in the detail panel. Endpoints: `GET /api/v2/torrents/tags`, `POST /api/v2/torrents/createTags`, `POST /api/v2/torrents/deleteTags`, `POST /api/v2/torrents/addTags`, `POST /api/v2/torrents/removeTags`, `POST /api/v2/torrents/setTags`. The `info` endpoint now supports `?tag=` filtering (empty = untagged only).
+- **Tag-to-folder routing.** When a torrent is added with tags, the server automatically routes it to the download folder whose **label** matches a tag (case-insensitive). Priority: category mapping > tag label match > savepath > default. This lets users tag content as `movies`, `tv`, etc., and have it land in the right folder without per-client configuration.
+- qBittorrent `addTags`, `removeTags`, `setTags`, `createTags`, `deleteTags` endpoints now persist instead of returning no-op stubs.
+
+### Changed
+- Downloads list now shows tag chips inline next to the protocol badge.
+- Download detail panel includes a Tags row.
+- The `tags` column is now persisted in the `downloads` table (one-time migration adds `tags TEXT DEFAULT ''`).
+
+### Security
+- SSRF: URL validation now rejects decimal-IP hosts (e.g. `2130706433`) in both the native API and the qBit-compat add handlers, and the redirect policy now blocks decimal-IP redirect targets.
+- IPv6: `is_private_ip` now rejects link-local (`fe80::/10`) and unique-local (`fc00::/7`) addresses, closing an IPv6 SSRF bypass.
+- JWT: encode and decode paths now explicitly restrict to `HS256`; `alg:none` is no longer accepted.
+- Headers: `Strict-Transport-Security` and `Permissions-Policy` are now set on every response.
+- Input limits: `max_concurrent` and `max_connections_per_file` are now capped at 100; URL-based add endpoints cap at 100 URLs per request.
+- Path traversal: torrent metadata paths are sanitized through `sanitize_rel_path` before joining with the download folder, preventing `..`-based escapes.
+
 ## [0.4.1] - 2026-07-24
 
 ### Fixed

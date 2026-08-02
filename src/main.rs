@@ -76,24 +76,23 @@ async fn main() {
 
     let allowed_origin = std::env::var("DLOAD_CORS_ORIGIN").unwrap_or_default();
     let cors = if allowed_origin.is_empty() {
-        // No CORS — only same-origin requests allowed (safest default)
-        CorsLayer::new()
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        None
     } else {
-        CorsLayer::new()
-            .allow_origin(
-                allowed_origin
-                    .parse::<HeaderValue>()
-                    .expect("Invalid DLOAD_CORS_ORIGIN"),
-            )
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        Some(
+            CorsLayer::new()
+                .allow_origin(
+                    allowed_origin
+                        .parse::<HeaderValue>()
+                        .expect("Invalid DLOAD_CORS_ORIGIN"),
+                )
+                .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
+        )
     };
 
     let security_headers = axum::middleware::from_fn(security_headers_middleware);
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(index))
         .route("/ui/style.css", get(style_css))
         .route("/ui/app.js", get(app_js))
@@ -101,8 +100,11 @@ async fn main() {
         .route("/manifest.json", get(manifest_json))
         .merge(api::router(manager.clone()))
         .merge(api::qbit_compat::router(manager, sessions))
-        .layer(cors)
         .layer(security_headers);
+
+    if let Some(cors) = cors {
+        app = app.layer(cors);
+    }
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     tracing::info!("Server starting on {}", addr);
@@ -171,6 +173,14 @@ async fn security_headers_middleware(
 ) -> axum::response::Response {
     let mut resp = next.run(req).await;
     let headers = resp.headers_mut();
+    headers.insert(
+        "Strict-Transport-Security",
+        "max-age=31536000; includeSubDomains".parse().unwrap(),
+    );
+    headers.insert(
+        "Permissions-Policy",
+        "geolocation=(), microphone=(), camera=()".parse().unwrap(),
+    );
     headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
     headers.insert("X-Frame-Options", "DENY".parse().unwrap());
     headers.insert(

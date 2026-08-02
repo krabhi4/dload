@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 static RE_CONTROL: LazyLock<Regex> =
@@ -127,6 +128,8 @@ pub struct Download {
     pub error_message: Option<String>,
     pub info_hash: Option<String>,
     pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub content_path: Option<String>,
     pub http_mirror_status: Option<String>,
     pub http_mirror_url: Option<String>,
@@ -167,12 +170,36 @@ impl Download {
             error_message: None,
             info_hash: None,
             category: None,
+            tags: Vec::new(),
             content_path: None,
             http_mirror_status: None,
             http_mirror_url: None,
             restart_resume: false,
             position: 0,
         }
+    }
+
+    /// Serialize tags to a comma-separated string (no spaces) for DB/API storage.
+    pub fn tags_to_string(&self) -> String {
+        let set: std::collections::HashSet<String> =
+            self.tags.iter().map(|t| t.trim().to_string()).collect();
+        let mut v: Vec<String> = set.into_iter().collect();
+        v.sort_unstable();
+        v.join(",")
+    }
+
+    /// Parse a comma-separated tag string into a deduplicated, trimmed, sorted Vec.
+    pub fn tags_from_string(s: &str) -> Vec<String> {
+        let mut v: Vec<String> = s
+            .split(',')
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.replace(',', ""))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        v.sort_unstable();
+        v
     }
 }
 
@@ -308,5 +335,65 @@ mod tests {
     fn derive_magnet_empty_dn_falls_back() {
         let magnet = "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=";
         assert_eq!(derive_initial_filename(magnet), "torrent-download");
+    }
+
+    // ─── tags ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tags_from_string_parses_comma_separated() {
+        assert_eq!(Download::tags_from_string("a,b,c"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn tags_from_string_strips_whitespace() {
+        assert_eq!(
+            Download::tags_from_string(" a , b , c "),
+            vec!["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn tags_from_string_deduplicates() {
+        assert_eq!(Download::tags_from_string("a,b,a,c,b"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn tags_from_string_empty_returns_empty() {
+        assert!(Download::tags_from_string("").is_empty());
+        assert!(Download::tags_from_string("  ").is_empty());
+    }
+
+    #[test]
+    fn tags_roundtrip() {
+        let mut d = Download::new("https://example.com/file.iso".into(), "/tmp");
+        d.tags = vec!["tv-sonarr".into(), "4k".into()];
+        assert_eq!(d.tags_to_string(), "4k,tv-sonarr"); // sorted!
+        let parsed = Download::tags_from_string(&d.tags_to_string());
+        assert_eq!(parsed, vec!["4k", "tv-sonarr"]); // sorted!
+    }
+
+    #[test]
+    fn tags_from_string_single_tag_no_comma() {
+        assert_eq!(Download::tags_from_string("single"), vec!["single"]);
+    }
+
+    #[test]
+    fn tags_to_string_empty_returns_empty() {
+        let d = Download::new("https://example.com/file.iso".into(), "/tmp");
+        assert_eq!(d.tags_to_string(), "");
+    }
+
+    #[test]
+    fn tags_to_string_single_tag() {
+        let mut d = Download::new("https://example.com/file.iso".into(), "/tmp");
+        d.tags = vec!["single".into()];
+        assert_eq!(d.tags_to_string(), "single");
+    }
+
+    #[test]
+    fn tags_to_string_trims_whitespace() {
+        let mut d = Download::new("https://example.com/file.iso".into(), "/tmp");
+        d.tags = vec![" a ".into(), "b".into()];
+        assert_eq!(d.tags_to_string(), "a,b");
     }
 }

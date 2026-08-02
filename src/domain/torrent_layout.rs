@@ -81,7 +81,13 @@ pub fn compute_torrent_paths(
 
     match layout {
         ContentLayout::SingleFile(rel) => {
-            let rel_str = normalize(&rel.to_string_lossy());
+            let raw = rel.to_string_lossy();
+            let rel_str = if raw.trim().is_empty() {
+                format!("download-{}", uuid::Uuid::new_v4())
+            } else {
+                normalize(&raw)
+            };
+            let rel_str = sanitize_rel_path(&rel_str);
             TorrentPaths {
                 output_folder: df.clone(),
                 content_path: join(&df, &rel_str),
@@ -112,9 +118,17 @@ fn normalize(s: &str) -> String {
     s.replace('\\', "/")
 }
 
+fn sanitize_rel_path(rel: &str) -> String {
+    rel.split('/')
+        .filter(|part| !part.starts_with(".."))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn join(base: &str, rel: &str) -> String {
     let base = base.trim_end_matches('/');
-    let rel = rel.trim_start_matches('/');
+    let rel = sanitize_rel_path(rel.trim_start_matches('/'));
     format!("{}/{}", base, rel)
 }
 

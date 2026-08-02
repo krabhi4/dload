@@ -365,7 +365,8 @@ async function apiRequest(endpoint, options) {
 function escapeHtml(str) {
   var div = document.createElement("div");
   div.textContent = str;
-  return div.innerHTML;
+  var html = div.innerHTML;
+  return html.replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 }
 
 function renderHtml(container, html) {
@@ -846,10 +847,23 @@ function buildDownloadItem(d, index) {
       '<span class="detail-value">' + escapeHtml(mirrorText) + "</span>";
   }
 
+  if (d.tags && d.tags.length > 0) {
+    detailRows +=
+      '<span class="detail-label">Tags</span>' +
+      '<span class="detail-value">' + escapeHtml(d.tags.join(', ')) + '</span>';
+  }
+
   var pctLabel = d.status === "Completed" ? "100%" : Math.round(progress) + "%";
   var isExpanded = expandedId === d.id;
 
   var isCompleted = d.status === 'Completed';
+  var tagsHtml = '<span class="tags-chips">';
+  if (d.tags && d.tags.length > 0) {
+    for (var i = 0; i < d.tags.length; i++) {
+      tagsHtml += '<span class="tag-chip">' + escapeHtml(d.tags[i]) + '</span>';
+    }
+  }
+  tagsHtml += '</span>';
   return '<div class="download-item ' + statusClass + ' proto-' + (isTorrent ? 'torrent' : 'http') + '" data-id="' + safeId + '"'
     + ' style="--i:' + stagger + '"'
     + (isCompleted ? '' : ' draggable="true"')
@@ -862,6 +876,7 @@ function buildDownloadItem(d, index) {
     + '<div class="download-info">'
     + '<span class="download-name">' + safeName + '</span>'
     + '<span class="proto-tag">' + (isTorrent ? '·torrent' : '·http') + '</span>'
+    + tagsHtml
     + '<span class="download-url" title="' + safeUrl + '">' + safeUrl + '</span>'
     + '</div>'
     + '<span class="download-metrics"><span>' + sizeDisplay + '</span></span>'

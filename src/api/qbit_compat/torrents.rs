@@ -7,6 +7,7 @@ use axum::{
 use serde::Deserialize;
 
 use super::QbitState;
+use crate::api::downloads::validate_download_url;
 use crate::domain::{Download, DownloadStatus, Protocol};
 
 /// No-op handler for endpoints we accept but don't act on (setShareLimits, topPrio, etc.)
@@ -15,11 +16,12 @@ pub async fn noop(_body: String) -> impl IntoResponse {
 }
 
 /// Resolve download directory for a qBit add request.
-/// Priority: category→folder mapping > savepath matching a folder > default folder.
+/// Priority: category→folder mapping > tag→folder label match > savepath matching a folder > default folder.
 async fn resolve_qbit_download_dir(
     state: &QbitState,
     category: Option<&str>,
     savepath: Option<&str>,
+    tags: &[String],
 ) -> String {
     let settings = state.manager.settings.read().await;
     let default_path = settings.default_folder_path().to_string();
@@ -34,7 +36,19 @@ async fn resolve_qbit_download_dir(
         }
     }
 
-    // 2. Check if savepath matches a configured folder
+    // 2. Check if any tag matches a folder label
+    if !tags.is_empty() {
+        for tag in tags {
+            let tag_lower = tag.to_lowercase();
+            for f in &settings.download_folders {
+                if f.label.to_lowercase() == tag_lower {
+                    return f.path.clone();
+                }
+            }
+        }
+    }
+
+    // 3. Check if savepath matches a configured folder
     if let Some(sp) = savepath {
         let sp = sp.trim_end_matches('/');
         if sp.contains("..") {
@@ -169,7 +183,7 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "state": to_qbit_state(&d.status),
         "category": d.category.as_deref().unwrap_or(""),
         "label": d.category.as_deref().unwrap_or(""),
-        "tags": "",
+        "tags": d.tags_to_string(),
         "save_path": save_path,
         "content_path": content_path,
         "added_on": added_on,
@@ -260,6 +274,7 @@ fn parse_eta_to_secs(eta: &str) -> i64 {
 pub struct InfoQuery {
     pub filter: Option<String>,
     pub category: Option<String>,
+    pub tag: Option<String>,
     pub hashes: Option<String>,
     pub sort: Option<String>,
     pub reverse: Option<bool>,
@@ -296,6 +311,15 @@ pub async fn info(
             torrents.retain(|d| d.category.is_none());
         } else {
             torrents.retain(|d| d.category.as_deref() == Some(cat.as_str()));
+        }
+    }
+
+    // Filter by tag
+    if let Some(ref tag) = query.tag {
+        if tag.is_empty() {
+            torrents.retain(|d| d.tags.is_empty());
+        } else {
+            torrents.retain(|d| d.tags.contains(tag));
         }
     }
 
@@ -549,8 +573,215 @@ pub async fn categories(State(state): State<QbitState>) -> impl IntoResponse {
     Json(serde_json::json!(cats))
 }
 
-pub async fn tags() -> impl IntoResponse {
-    Json(serde_json::json!([]))
+pub async fn tags(State(state): State<QbitState>) -> impl IntoResponse {
+    let all = state.manager.get_all().await;
+    let mut tag_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for d in &all {
+        if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+            for tag in &d.tags {
+                tag_set.insert(tag.clone());
+            }
+        }
+    }
+    Json(serde_json::json!(tag_set.into_iter().collect::<Vec<_>>()))
+}
+
+pub async fn create_tags(State(_state): State<QbitState>, _body: String) -> impl IntoResponse {
+    // Tags are implicit — they exist when attached to a torrent.
+    (StatusCode::OK, "Ok.")
+}
+
+pub async fn delete_tags(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let tags_to_delete: Vec<String> = Download::tags_from_string(
+        params
+            .iter()
+            .find(|(k, _)| k == "tags")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or(""),
+    );
+
+    if tags_to_delete.is_empty() {
+        return (StatusCode::OK, "Ok.");
+    }
+
+    let all = state.manager.get_all().await;
+    for d in &all {
+        if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+            let mut updated = d.clone();
+            updated.tags.retain(|t| !tags_to_delete.contains(t));
+            if updated.tags != d.tags {
+                state.manager.update_download(&updated).await;
+            }
+        }
+    }
+    (StatusCode::OK, "Ok.")
+}
+
+pub async fn add_tags(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params
+        .iter()
+        .find(|(k, _)| k == "hashes")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let tags_to_add: Vec<String> = Download::tags_from_string(
+        params
+            .iter()
+            .find(|(k, _)| k == "tags")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or(""),
+    );
+
+    if tags_to_add.is_empty() {
+        return (StatusCode::OK, "Ok.");
+    }
+
+    let all = state.manager.get_all().await;
+    for hash in hashes.split('|') {
+        let hash = hash.trim();
+        if hash.is_empty() {
+            continue;
+        }
+        if hash == "all" {
+            for d in &all {
+                if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+                    let mut updated = d.clone();
+                    for tag in &tags_to_add {
+                        if !updated.tags.contains(tag) {
+                            updated.tags.push(tag.clone());
+                        }
+                    }
+                    if updated.tags != d.tags {
+                        state.manager.update_download(&updated).await;
+                    }
+                }
+            }
+            break;
+        }
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
+            if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+                let mut updated = d.clone();
+                for tag in &tags_to_add {
+                    if !updated.tags.contains(tag) {
+                        updated.tags.push(tag.clone());
+                    }
+                }
+                if updated.tags != d.tags {
+                    state.manager.update_download(&updated).await;
+                }
+            }
+        }
+    }
+    (StatusCode::OK, "Ok.")
+}
+
+pub async fn remove_tags(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params
+        .iter()
+        .find(|(k, _)| k == "hashes")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let tags_to_remove: Vec<String> = Download::tags_from_string(
+        params
+            .iter()
+            .find(|(k, _)| k == "tags")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or(""),
+    );
+
+    let all = state.manager.get_all().await;
+    for hash in hashes.split('|') {
+        let hash = hash.trim();
+        if hash.is_empty() {
+            continue;
+        }
+        if hash == "all" {
+            for d in &all {
+                if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+                    let mut updated = d.clone();
+                    if tags_to_remove.is_empty() {
+                        updated.tags.clear();
+                    } else {
+                        updated.tags.retain(|t| !tags_to_remove.contains(t));
+                    }
+                    if updated.tags != d.tags {
+                        state.manager.update_download(&updated).await;
+                    }
+                }
+            }
+            break;
+        }
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
+            if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+                let mut updated = d.clone();
+                if tags_to_remove.is_empty() {
+                    updated.tags.clear();
+                } else {
+                    updated.tags.retain(|t| !tags_to_remove.contains(t));
+                }
+                if updated.tags != d.tags {
+                    state.manager.update_download(&updated).await;
+                }
+            }
+        }
+    }
+    (StatusCode::OK, "Ok.")
+}
+
+pub async fn set_tags(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let hashes = params
+        .iter()
+        .find(|(k, _)| k == "hashes")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    let new_tags: Vec<String> = Download::tags_from_string(
+        params
+            .iter()
+            .find(|(k, _)| k == "tags")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or(""),
+    );
+
+    let all = state.manager.get_all().await;
+    for hash in hashes.split('|') {
+        let hash = hash.trim();
+        if hash.is_empty() {
+            continue;
+        }
+        if hash == "all" {
+            for d in &all {
+                if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+                    let mut updated = d.clone();
+                    updated.tags = new_tags.clone();
+                    if updated.tags != d.tags {
+                        state.manager.update_download(&updated).await;
+                    }
+                }
+            }
+            break;
+        }
+        if let Some(d) = all.iter().find(|d| hash_matches(d, hash)) {
+            if d.protocol == Protocol::Torrent && d.info_hash.is_some() {
+                let mut updated = d.clone();
+                updated.tags = new_tags.clone();
+                if updated.tags != d.tags {
+                    state.manager.update_download(&updated).await;
+                }
+            }
+        }
+    }
+    (StatusCode::OK, "Ok.")
 }
 
 pub async fn create_category(State(state): State<QbitState>, body: String) -> impl IntoResponse {
@@ -665,6 +896,7 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
     let mut urls: Vec<String> = Vec::new();
     let mut category: Option<String> = None;
     let mut savepath: Option<String> = None;
+    let mut tags: Vec<String> = Vec::new();
 
     for (k, v) in params {
         match k.as_str() {
@@ -687,12 +919,25 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
                     tracing::warn!("qbit_compat: rejected invalid savepath: {}", v);
                 }
             }
+            "tags" if !v.is_empty() => {
+                tags = Download::tags_from_string(&v);
+            }
             _ => {}
         }
     }
 
     let download_dir =
-        resolve_qbit_download_dir(&state, category.as_deref(), savepath.as_deref()).await;
+        resolve_qbit_download_dir(&state, category.as_deref(), savepath.as_deref(), &tags).await;
+
+    for url in &urls {
+        if let Err(e) = validate_download_url(url) {
+            anyhow::bail!("Invalid URL '{}': {}", url, e);
+        }
+    }
+
+    if urls.len() > 100 {
+        anyhow::bail!("Too many URLs (max 100 per request)");
+    }
 
     for url in urls {
         let mut download = Download::new(url.clone(), &download_dir);
@@ -703,6 +948,7 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
         // after librqbit delivers the metadata. Pre-metadata status is Queued/Fetching,
         // which *arr treats as non-completed, so no import will fire against a stale path.
         download.content_path = None;
+        download.tags = tags.clone();
         state.manager.add_and_maybe_start(download).await;
     }
 
@@ -717,6 +963,7 @@ async fn handle_add_multipart(
     let mut torrent_bytes: Vec<Vec<u8>> = Vec::new();
     let mut category: Option<String> = None;
     let mut savepath: Option<String> = None;
+    let mut tags: Vec<String> = Vec::new();
     let mut total_torrent_bytes: usize = 0;
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -763,8 +1010,14 @@ async fn handle_add_multipart(
                     }
                 }
             }
+            "tags" => {
+                let text = field.text().await?;
+                if !text.is_empty() {
+                    tags = Download::tags_from_string(&text);
+                }
+            }
             _ => {
-                // Consume unknown fields (stopped, tags, dlLimit, etc.) to advance the stream
+                // Consume unknown fields (stopped, dlLimit, etc.) to advance the stream
                 if let Err(e) = field.bytes().await {
                     tracing::warn!("Failed to consume multipart field '{}': {}", name, e);
                 }
@@ -773,7 +1026,17 @@ async fn handle_add_multipart(
     }
 
     let download_dir =
-        resolve_qbit_download_dir(&state, category.as_deref(), savepath.as_deref()).await;
+        resolve_qbit_download_dir(&state, category.as_deref(), savepath.as_deref(), &tags).await;
+
+    for url in &urls {
+        if let Err(e) = validate_download_url(url) {
+            anyhow::bail!("Invalid URL '{}': {}", url, e);
+        }
+    }
+
+    if urls.len() > 100 {
+        anyhow::bail!("Too many URLs (max 100 per request)");
+    }
 
     // Process magnet links / URLs
     for url in urls {
@@ -784,6 +1047,7 @@ async fn handle_add_multipart(
         // See handle_add_urlencoded for the rationale — content_path is written once
         // metadata is in hand, not at submission time.
         download.content_path = None;
+        download.tags = tags.clone();
         state.manager.add_and_maybe_start(download).await;
     }
 
@@ -1102,6 +1366,16 @@ mod tests {
     }
 
     #[test]
+    fn to_qbit_torrent_tags_sorted_alphabetically() {
+        let mut d = Download::new("magnet:?xt=urn:btih:ABC".into(), "/media/tv");
+        d.protocol = Protocol::Torrent;
+        d.info_hash = Some("abc123".into());
+        d.tags = vec!["tv-sonarr".into(), "4k".into()];
+        let json = to_qbit_torrent(&d);
+        assert_eq!(json["tags"].as_str().unwrap(), "4k,tv-sonarr"); // sorted!
+    }
+
+    #[test]
     fn qbit_state_all_variants_are_valid() {
         let valid = [
             "downloading",
@@ -1143,5 +1417,115 @@ mod tests {
                 status
             );
         }
+    }
+
+    fn make_folders() -> Vec<crate::domain::DownloadFolder> {
+        vec![
+            crate::domain::DownloadFolder {
+                id: "default".into(),
+                label: "Default".into(),
+                path: "/downloads".into(),
+                is_default: true,
+            },
+            crate::domain::DownloadFolder {
+                id: "tv".into(),
+                label: "TV".into(),
+                path: "/media/tv".into(),
+                is_default: false,
+            },
+            crate::domain::DownloadFolder {
+                id: "movies".into(),
+                label: "Movies".into(),
+                path: "/media/movies".into(),
+                is_default: false,
+            },
+        ]
+    }
+
+    fn make_qbit_state(settings: crate::domain::Settings) -> QbitState {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        let db = Arc::new(crate::db::Database::new(":memory:").unwrap());
+        let repo = Arc::new(crate::db::repository::Repository::new(db));
+        let (manager_state, _) = crate::manager::ManagerState::new(settings, repo);
+        let manager: crate::manager::SharedState = Arc::new(manager_state);
+        QbitState {
+            manager,
+            sessions: Arc::new(crate::api::qbit_compat::session::SessionStore::new()),
+            categories: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            categories_persist_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    #[tokio::test]
+    async fn tag_match_case_insensitive_returns_folder() {
+        let settings = crate::domain::Settings {
+            download_folders: make_folders(),
+            ..crate::domain::Settings::default()
+        };
+        let state = make_qbit_state(settings);
+        let dir = resolve_qbit_download_dir(&state, None, None, &["tv".into()]).await;
+        assert_eq!(dir, "/media/tv");
+    }
+
+    #[tokio::test]
+    async fn tag_match_first_wins() {
+        let settings = crate::domain::Settings {
+            download_folders: make_folders(),
+            ..crate::domain::Settings::default()
+        };
+        let state = make_qbit_state(settings);
+        let dir =
+            resolve_qbit_download_dir(&state, None, None, &["Movies".into(), "TV".into()]).await;
+        assert_eq!(dir, "/media/movies");
+    }
+
+    #[tokio::test]
+    async fn category_beats_tag() {
+        let settings = crate::domain::Settings {
+            download_folders: make_folders(),
+            ..crate::domain::Settings::default()
+        };
+        let state = make_qbit_state(settings);
+        let mut cats = std::collections::HashMap::new();
+        cats.insert("tv-sonarr".into(), Some("tv".into()));
+        *state.categories.write().await = cats;
+        let dir =
+            resolve_qbit_download_dir(&state, Some("tv-sonarr"), None, &["Movies".into()]).await;
+        assert_eq!(dir, "/media/tv");
+    }
+
+    #[tokio::test]
+    async fn tag_beats_savepath() {
+        let settings = crate::domain::Settings {
+            download_folders: make_folders(),
+            ..crate::domain::Settings::default()
+        };
+        let state = make_qbit_state(settings);
+        let dir =
+            resolve_qbit_download_dir(&state, None, Some("/media/tv"), &["Movies".into()]).await;
+        assert_eq!(dir, "/media/movies");
+    }
+
+    #[tokio::test]
+    async fn no_tag_match_returns_default() {
+        let settings = crate::domain::Settings {
+            download_folders: make_folders(),
+            ..crate::domain::Settings::default()
+        };
+        let state = make_qbit_state(settings);
+        let dir = resolve_qbit_download_dir(&state, None, None, &["Unknown".into()]).await;
+        assert_eq!(dir, "/downloads");
+    }
+
+    #[tokio::test]
+    async fn empty_tags_falls_through_to_savepath() {
+        let settings = crate::domain::Settings {
+            download_folders: make_folders(),
+            ..crate::domain::Settings::default()
+        };
+        let state = make_qbit_state(settings);
+        let dir = resolve_qbit_download_dir(&state, None, Some("/media/tv"), &[]).await;
+        assert_eq!(dir, "/media/tv");
     }
 }

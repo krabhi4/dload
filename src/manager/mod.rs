@@ -266,8 +266,10 @@ impl ManagerState {
     /// expiry alone keeps accepting tokens after the user is deleted or the DB is
     /// wiped — re-checking the DB closes that hole.
     async fn authenticate_jwt(&self, token: &str) -> Result<crate::domain::User, &'static str> {
-        let mut validation = jsonwebtoken::Validation::default();
-        validation.algorithms = vec![jsonwebtoken::Algorithm::HS256];
+        let validation = jsonwebtoken::Validation {
+            algorithms: vec![jsonwebtoken::Algorithm::HS256],
+            ..Default::default()
+        };
         let claims = jsonwebtoken::decode::<crate::domain::Claims>(
             token,
             &jsonwebtoken::DecodingKey::from_secret(crate::domain::jwt_secret()),

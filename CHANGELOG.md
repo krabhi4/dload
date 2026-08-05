@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.5] - 2026-08-05
 
 ### Added
 - **Tags / labels.** Downloads can now carry multiple tags (free-form strings), matching the qBittorrent Web API. Tags are exposed in the UI as small chips on each download row and in the detail panel. Endpoints: `GET /api/v2/torrents/tags`, `POST /api/v2/torrents/createTags`, `POST /api/v2/torrents/deleteTags`, `POST /api/v2/torrents/addTags`, `POST /api/v2/torrents/removeTags`, `POST /api/v2/torrents/setTags`. The `info` endpoint now supports `?tag=` filtering (empty = untagged only).
@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Headers: `Strict-Transport-Security` and `Permissions-Policy` are now set on every response.
 - Input limits: `max_concurrent` and `max_connections_per_file` are now capped at 100; URL-based add endpoints cap at 100 URLs per request.
 - Path traversal: torrent metadata paths are sanitized through `sanitize_rel_path` before joining with the download folder, preventing `..`-based escapes.
+
+### Dependencies
+- Bumped `undici` 7.28.0 → 7.29.0 in `extensions/send-to-dload` to pick up security fixes for Cache-Control parsing (GHSA-4cwx-7wf7-3272), header value CRLF injection (GHSA-m8rv-5g2x-5cg5), cache bypass via qualified directives (GHSA-jr45-8vmc-qm54), stale Content-Length on retry (GHSA-8xcm-r25x-g524), and cookie attribute injection (GHSA-v3r7-h72x-cjcm).
 
 ## [0.4.1] - 2026-07-24
 

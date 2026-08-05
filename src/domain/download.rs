@@ -35,11 +35,18 @@ fn derive_initial_filename(url: &str) -> String {
         }
         return "torrent-download".to_string();
     }
-    url.split('/')
+    let raw = url
+        .split('/')
         .next_back()
         .filter(|s| !s.is_empty())
-        .unwrap_or("download")
-        .to_string()
+        .unwrap_or("download");
+    let cleaned = raw.split('?').next().unwrap_or(raw);
+    let cleaned = cleaned.split('#').next().unwrap_or(cleaned);
+    if cleaned.is_empty() {
+        "download".to_string()
+    } else {
+        cleaned.to_string()
+    }
 }
 
 /// Strip path traversal, null bytes, and dangerous characters from filenames.
@@ -301,8 +308,31 @@ mod tests {
 
     #[test]
     fn derive_http_trailing_slash_falls_back() {
-        // Trailing slash → empty last segment → fall back to "download"
         assert_eq!(derive_initial_filename("https://example.com/"), "download");
+    }
+
+    #[test]
+    fn derive_http_url_strips_query_string() {
+        assert_eq!(
+            derive_initial_filename("https://example.com/path/to/foo.iso?token=abc"),
+            "foo.iso"
+        );
+    }
+
+    #[test]
+    fn derive_http_url_strips_fragment() {
+        assert_eq!(
+            derive_initial_filename("https://example.com/path/to/foo.iso#section"),
+            "foo.iso"
+        );
+    }
+
+    #[test]
+    fn derive_http_url_empty_path_with_query_falls_back() {
+        assert_eq!(
+            derive_initial_filename("https://example.com/?X-Amz-Signature=verylongstring"),
+            "download"
+        );
     }
 
     #[test]

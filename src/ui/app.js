@@ -1464,11 +1464,11 @@ async function changePassword() {
     return;
   }
 
-  if (newPassword.length < 8) {
+  if (newPassword.length < 4) {
     showToast(
       "error",
       "Weak password",
-      "Password must be at least 8 characters",
+      "Password must be at least 4 characters",
     );
     return;
   }
@@ -1866,11 +1866,11 @@ async function createUser() {
     return;
   }
 
-  if (password.length < 8) {
+  if (password.length < 4) {
     showToast(
       "error",
       "Weak password",
-      "Password must be at least 8 characters",
+      "Password must be at least 4 characters",
     );
     return;
   }
@@ -3017,11 +3017,11 @@ async function init() {
 
       if (btn.dataset.mode === "register") {
         // First user registration
-        if (password.length < 8) {
+        if (password.length < 4) {
           showToast(
             "error",
             "Weak password",
-            "Password must be at least 8 characters",
+            "Password must be at least 4 characters",
           );
           btn.disabled = false;
           btn.textContent = btnLabel;

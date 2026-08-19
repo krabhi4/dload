@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-08-19
+
+### Changed
+- Lowered minimum password length requirement from 8 to 4 characters for user registration, user creation, and password changes.
+
+### Dependencies
+- Bumped `base64` (0.23.0 → 0.23.1), `rusqlite` (0.40.1 → 0.40.2), `thiserror` (2.0.19 → 2.0.20), `futures` (0.3.33 → 0.3.34), and `openssl-probe` (0.38.1 → 0.38.2) in backend dependencies.
+- Bumped `fast-uri` 3.1.4 → 3.1.5 and `js-yaml` 4.3.0 → 4.3.1 in `extensions/send-to-dload`.
+
 ## [0.4.5] - 2026-08-05
 
 ### Added

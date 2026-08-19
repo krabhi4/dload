@@ -81,10 +81,10 @@ async fn register(
     State(state): State<SharedState>,
     Json(payload): Json<RegisterRequest>,
 ) -> Json<serde_json::Value> {
-    if payload.password.len() < 8 {
+    if payload.password.len() < 4 {
         return Json(serde_json::json!({
             "success": false,
-            "error": "Password must be at least 8 characters"
+            "error": "Password must be at least 4 characters"
         }));
     }
     let username = payload.username.trim().to_string();
@@ -339,10 +339,10 @@ async fn create_user(
         }));
     }
 
-    if payload.password.len() < 8 {
+    if payload.password.len() < 4 {
         return Json(serde_json::json!({
             "success": false,
-            "error": "Password must be at least 8 characters"
+            "error": "Password must be at least 4 characters"
         }));
     }
     let username = payload.username.trim().to_string();
@@ -424,10 +424,10 @@ async fn change_password(
         }
     };
 
-    if payload.new_password.len() < 8 {
+    if payload.new_password.len() < 4 {
         return Json(serde_json::json!({
             "success": false,
-            "error": "Password must be at least 8 characters"
+            "error": "Password must be at least 4 characters"
         }));
     }
 

@@ -66,6 +66,12 @@ impl Database {
         )?;
 
         if let Err(e) = conn.execute_batch(
+            "ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;",
+        ) {
+            tracing::warn!("migration token_version failed: {}", e);
+        }
+
+        if let Err(e) = conn.execute_batch(
             "ALTER TABLE downloads ADD COLUMN info_hash TEXT;
              ALTER TABLE downloads ADD COLUMN category TEXT;
              ALTER TABLE downloads ADD COLUMN content_path TEXT;",

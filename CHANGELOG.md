@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] - 2026-08-19
+
+### Security
+- **SSRF: DNS rebinding protection.** The HTTP and mirror downloaders now resolve the target hostname and reject the request if the resolved IP is private/internal (loopback, RFC 1918, link-local, cloud metadata `169.254.169.254`, etc.). The resolved IP is pinned to the reqwest client via `.resolve()` so a DNS rebinding attack cannot redirect the server to an internal address between validation and connection. Previously only the string hostname was checked — a domain resolving to `169.254.169.254` passed validation.
+- **JWT revocation on password change.** Added a `token_version` column to the `users` table (default 0). JWT claims now carry a `ver` field; `authenticate_jwt` rejects tokens whose `ver` no longer matches the DB. Bumped atomically with the password hash on every password change, so a stolen token minted before the change is immediately invalid (previously it remained valid for up to 24h).
+- **Register endpoint DoS mitigation.** The `/api/auth/register` endpoint now rate-limits (shared with login) and checks whether registration is open (no users exist) **before** hashing the password with bcrypt. Previously every request — even after registration was closed — spent ~250ms of bcrypt CPU with no rate limit.
+- **Proxy header spoofing.** `X-Forwarded-For` and `X-Real-IP` headers are now only trusted when `DLOAD_TRUST_PROXY_HEADERS=1` (or `true`) is set. Default is off, so direct deployments without a reverse proxy use the socket peer address for rate limiting — preventing IP-spoofing bypass of the login throttle.
+- **Last-admin deletion race.** The admin-count check and the delete now run under a single `Mutex<Connection>` acquisition (`delete_user_guard_last_admin`), closing a TOCTOU window where two concurrent admin deletions could both pass the guard and delete both admins.
+- **Username uniqueness race.** `insert_user` now detects the SQLite UNIQUE constraint violation and returns a typed `InsertUserError::UsernameConflict`, so a concurrent create-user race surfaces "Username already exists" instead of a generic "Failed to create user".
+
+### Changed
+- HTTP mirror cancellation no longer uses a fixed 100ms sleep; replaced with `yield_now()` since the subsequent handle removal and librqbit's idempotent `session.delete()` make a timed wait unnecessary.
+
 ## [0.4.6] - 2026-08-19
 
 ### Changed

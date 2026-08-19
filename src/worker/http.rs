@@ -41,13 +41,11 @@ impl HttpDownloader {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<HttpDownloadResult> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
+        let client = crate::worker::ssrf_safe_client_builder(&self.download.url)
+            .await?
             .pool_max_idle_per_host(self.max_connections + 2)
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(30))
-            .redirect(crate::worker::ssrf_safe_redirect_policy())
-            .user_agent(format!("DLoad/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
         // HEAD request to get content-length and check range support

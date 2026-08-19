@@ -128,6 +128,7 @@ fn sample_user(name: &str, role: Role) -> User {
         password_hash: format!("$2b$12$dummyhashfor{name}"),
         role,
         created_at: chrono::Utc::now(),
+        token_version: 0,
     }
 }
 
@@ -155,28 +156,75 @@ fn insert_user_then_lookup_by_username_and_id() {
     r.insert_user(&u).unwrap();
     let by_name = r.get_user_by_username("carol").unwrap().unwrap();
     assert_eq!(by_name.id, u.id);
-    let by_id = r.get_user_by_id(&u.id).unwrap().unwrap();
-    assert_eq!(by_id.username, "carol");
-    assert_eq!(by_id.role, Role::User);
+    assert_eq!(by_name.username, "carol");
+    assert_eq!(by_name.role, Role::User);
 }
 
 #[test]
 fn delete_user_removes_row() {
     let r = repo();
-    let u = sample_user("dan", Role::User);
-    r.insert_user(&u).unwrap();
-    r.delete_user(&u.id).unwrap();
-    assert!(r.get_user_by_id(&u.id).unwrap().is_none());
+    let u1 = sample_user("dan1", Role::Admin);
+    let u2 = sample_user("dan2", Role::User);
+    r.insert_user(&u1).unwrap();
+    r.insert_user(&u2).unwrap();
+    let result = r.delete_user_guard_last_admin(&u2.id).unwrap();
+    assert_eq!(result, Some(Some("dan2".to_string())));
+    assert!(r.get_user_by_username("dan2").unwrap().is_none());
 }
 
 #[test]
-fn update_user_password_persists() {
+fn update_user_password_and_bumps_token_version() {
     let r = repo();
     let u = sample_user("eve", Role::User);
     r.insert_user(&u).unwrap();
-    r.update_user_password("eve", "$2b$12$newhash").unwrap();
+    let new_ver = r
+        .update_user_password_and_bump_version("eve", "$2b$12$newhash")
+        .unwrap();
+    assert_eq!(new_ver, 1, "token_version should be bumped from 0 to 1");
     let updated = r.get_user_by_username("eve").unwrap().unwrap();
     assert_eq!(updated.password_hash, "$2b$12$newhash");
+    assert_eq!(updated.token_version, 1);
+}
+
+#[test]
+fn insert_user_returns_username_conflict_on_duplicate() {
+    let r = repo();
+    let u = sample_user("frank", Role::User);
+    r.insert_user(&u).unwrap();
+    let dup = sample_user("frank", Role::Admin);
+    let err = r.insert_user(&dup).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            dload::db::repository::InsertUserError::UsernameConflict
+        ),
+        "duplicate username should return UsernameConflict"
+    );
+}
+
+#[test]
+fn delete_user_guard_last_admin_refuses_last_admin() {
+    let r = repo();
+    let a1 = sample_user("admin1", Role::Admin);
+    let a2 = sample_user("admin2", Role::Admin);
+    r.insert_user(&a1).unwrap();
+    r.insert_user(&a2).unwrap();
+
+    let result = r.delete_user_guard_last_admin(&a1.id).unwrap();
+    assert!(result.is_some(), "should delete when other admins exist");
+    assert_eq!(result.unwrap(), Some("admin1".to_string()));
+
+    let result = r.delete_user_guard_last_admin(&a2.id).unwrap();
+    assert!(result.is_none(), "should refuse to delete last admin");
+
+    assert!(r.get_user_by_username("admin2").unwrap().is_some());
+}
+
+#[test]
+fn delete_user_guard_last_admin_handles_nonexistent() {
+    let r = repo();
+    let result = r.delete_user_guard_last_admin("nonexistent").unwrap();
+    assert_eq!(result, Some(None));
 }
 
 // ─── history pagination ───────────────────────────────────────────────────

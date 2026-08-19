@@ -30,13 +30,11 @@ impl MirrorDownloader {
     }
 
     pub async fn run(&self) -> anyhow::Result<MirrorResult> {
-        let client = reqwest::Client::builder()
-            .tcp_nodelay(true)
+        let client = crate::worker::ssrf_safe_client_builder(&self.url)
+            .await?
             .pool_max_idle_per_host(6)
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(30))
-            .redirect(crate::worker::ssrf_safe_redirect_policy())
-            .user_agent(format!("DLoad/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
         // HEAD to get size and range support

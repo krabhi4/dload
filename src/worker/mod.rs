@@ -3,7 +3,7 @@ pub mod mirror;
 pub mod torrent;
 
 use crate::domain::Protocol;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 /// Outcome of checking a redirect target against SSRF rules.
 #[derive(Debug, PartialEq, Eq)]
@@ -67,6 +67,61 @@ pub fn ssrf_safe_redirect_policy() -> reqwest::redirect::Policy {
             RedirectDecision::Block(reason) => attempt.error(reason),
         }
     })
+}
+
+pub(crate) async fn resolve_host_to_public_ip(host: &str, port: u16) -> anyhow::Result<IpAddr> {
+    use std::net::ToSocketAddrs;
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_private_ip(&ip) {
+            anyhow::bail!("host resolves to private/internal IP: {}", ip);
+        }
+        return Ok(ip);
+    }
+
+    let socket_addrs = format!("{}:{}", host, port);
+    let resolved: Vec<IpAddr> = tokio::task::spawn_blocking(move || {
+        socket_addrs
+            .to_socket_addrs()
+            .map(|iter| iter.map(|sa| sa.ip()).collect())
+            .unwrap_or_default()
+    })
+    .await?;
+
+    if resolved.is_empty() {
+        anyhow::bail!("failed to resolve host: {}", host);
+    }
+
+    for ip in &resolved {
+        if !is_private_ip(ip) {
+            return Ok(*ip);
+        }
+    }
+
+    anyhow::bail!(
+        "host '{}' resolves only to private/internal addresses: {:?}",
+        host,
+        resolved
+    )
+}
+
+pub(crate) async fn ssrf_safe_client_builder(
+    url: &str,
+) -> anyhow::Result<reqwest::ClientBuilder> {
+    let parsed = url::Url::parse(url)?;
+    let host = parsed.host_str().ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+
+    let ip = resolve_host_to_public_ip(host, port).await?;
+
+    let mut builder = reqwest::Client::builder()
+        .tcp_nodelay(true)
+        .redirect(ssrf_safe_redirect_policy())
+        .user_agent(format!("DLoad/{}", env!("CARGO_PKG_VERSION")));
+
+    builder = builder.resolve(host, SocketAddr::new(ip, port));
+
+    Ok(builder)
 }
 
 pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
@@ -322,5 +377,31 @@ mod tests {
             redirect_decision(&u("http://[::1]/"), 0),
             RedirectDecision::Block(_)
         ));
+    }
+
+    // ─── resolve_host_to_public_ip ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn resolve_rejects_literal_private_ip() {
+        assert!(resolve_host_to_public_ip("127.0.0.1", 80).await.is_err());
+        assert!(resolve_host_to_public_ip("10.0.0.1", 80).await.is_err());
+        assert!(resolve_host_to_public_ip("169.254.169.254", 80).await.is_err());
+        assert!(resolve_host_to_public_ip("::1", 80).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_accepts_literal_public_ip() {
+        assert!(resolve_host_to_public_ip("8.8.8.8", 80).await.is_ok());
+        assert!(resolve_host_to_public_ip("1.1.1.1", 80).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_nonexistent_host() {
+        assert!(resolve_host_to_public_ip(
+            "nonexistent.invalid.example",
+            80
+        )
+        .await
+        .is_err());
     }
 }

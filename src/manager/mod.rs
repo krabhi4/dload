@@ -103,23 +103,33 @@ impl LoginRateLimiter {
     }
 }
 
-/// Extracts a client IP from proxy headers first (`X-Forwarded-For`,
-/// `X-Real-IP`), then falls back to the direct socket peer address so
-/// deployments without a reverse proxy still get rate limiting.
 pub fn extract_client_ip(
     headers: &axum::http::HeaderMap,
     peer: Option<std::net::SocketAddr>,
 ) -> Option<IpAddr> {
-    if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = v.split(',').next() {
-            if let Ok(ip) = first.trim().parse::<IpAddr>() {
-                return Some(ip);
+    let trust_proxy = std::env::var("DLOAD_TRUST_PROXY_HEADERS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    extract_client_ip_inner(headers, peer, trust_proxy)
+}
+
+fn extract_client_ip_inner(
+    headers: &axum::http::HeaderMap,
+    peer: Option<std::net::SocketAddr>,
+    trust_proxy: bool,
+) -> Option<IpAddr> {
+    if trust_proxy {
+        if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = v.split(',').next() {
+                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                    return Some(ip);
+                }
             }
         }
-    }
-    if let Some(v) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        if let Ok(ip) = v.trim().parse::<IpAddr>() {
-            return Some(ip);
+        if let Some(v) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            if let Ok(ip) = v.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
         }
     }
     peer.map(|p| p.ip())
@@ -279,11 +289,18 @@ impl ManagerState {
         .map_err(|_| "Authentication required")?;
 
         let sub = claims.sub;
-        self.repo_blocking(move |repo| repo.get_user_by_username(&sub))
+        let token_ver = claims.ver;
+        let user = self
+            .repo_blocking(move |repo| repo.get_user_by_username(&sub))
             .await
             .ok()
             .flatten()
-            .ok_or("Authentication required")
+            .ok_or("Authentication required")?;
+
+        if user.token_version != token_ver {
+            return Err("Authentication required");
+        }
+        Ok(user)
     }
 
     async fn authenticate_api_key(&self, key: &str) -> Result<crate::domain::User, &'static str> {
@@ -1583,8 +1600,7 @@ impl ManagerState {
 
         // 4. Cancel any existing monitoring token FIRST (so monitor_torrent exits cleanly)
         self.cancel_download(&id).await;
-        // Brief yield to let monitor_torrent react to cancellation
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
 
         // 5. Pause torrent in librqbit and delete from session (keep files)
         let torrent_id = {
@@ -2356,7 +2372,7 @@ mod tests {
     fn prefers_x_forwarded_for_first_hop() {
         let h = headers(&[("x-forwarded-for", "203.0.113.5, 10.0.0.1, 10.0.0.2")]);
         assert_eq!(
-            extract_client_ip(&h, None).unwrap(),
+            extract_client_ip_inner(&h, None, true).unwrap(),
             "203.0.113.5".parse::<IpAddr>().unwrap()
         );
     }
@@ -2365,7 +2381,7 @@ mod tests {
     fn falls_through_to_x_real_ip_when_xff_missing() {
         let h = headers(&[("x-real-ip", "198.51.100.42")]);
         assert_eq!(
-            extract_client_ip(&h, None).unwrap(),
+            extract_client_ip_inner(&h, None, true).unwrap(),
             "198.51.100.42".parse::<IpAddr>().unwrap()
         );
     }
@@ -2375,14 +2391,14 @@ mod tests {
         let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 12345);
         let h = HeaderMap::new();
         assert_eq!(
-            extract_client_ip(&h, Some(peer)).unwrap(),
+            extract_client_ip_inner(&h, Some(peer), false).unwrap(),
             "1.2.3.4".parse::<IpAddr>().unwrap()
         );
     }
 
     #[test]
     fn returns_none_when_nothing_available() {
-        assert_eq!(extract_client_ip(&HeaderMap::new(), None), None);
+        assert_eq!(extract_client_ip_inner(&HeaderMap::new(), None, false), None);
     }
 
     #[test]
@@ -2390,7 +2406,17 @@ mod tests {
         let h = headers(&[("x-forwarded-for", "not-an-ip, 10.0.0.1")]);
         // First token is malformed → extractor returns None from the XFF branch;
         // with no X-Real-IP and no peer, we get None overall
-        assert_eq!(extract_client_ip(&h, None), None);
+        assert_eq!(extract_client_ip_inner(&h, None, true), None);
+    }
+
+    #[test]
+    fn ignores_proxy_headers_when_trust_proxy_disabled() {
+        let h = headers(&[("x-forwarded-for", "203.0.113.5")]);
+        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 12345);
+        assert_eq!(
+            extract_client_ip_inner(&h, Some(peer), false).unwrap(),
+            "10.0.0.1".parse::<IpAddr>().unwrap()
+        );
     }
 
     // ─── LoginRateLimiter ─────────────────────────────────────────────────
@@ -2475,6 +2501,7 @@ mod tests {
             sub: username.to_string(),
             role: role.to_string(),
             exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            ver: 0,
         };
         jsonwebtoken::encode(
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
@@ -2491,6 +2518,7 @@ mod tests {
             password_hash: "x".to_string(),
             role,
             created_at: chrono::Utc::now(),
+            token_version: 0,
         }
     }
 
@@ -2542,6 +2570,26 @@ mod tests {
         assert!(state.authenticate("").await.is_err());
     }
 
+    #[tokio::test]
+    async fn authenticate_rejects_old_jwt_after_password_change() {
+        // After a password change, token_version is bumped in the DB. A JWT
+        // minted with the old version must be rejected even though its
+        // signature and expiry are still valid.
+        let state = test_state();
+        state
+            .repo
+            .insert_user(&make_user("alice", crate::domain::Role::Admin))
+            .unwrap();
+        let old_token = mint_token("alice", "ADMIN");
+        assert!(state.authenticate(&old_token).await.is_ok());
+        let new_version = state
+            .repo
+            .update_user_password_and_bump_version("alice", "newhash")
+            .unwrap();
+        assert_eq!(new_version, 1);
+        assert!(state.authenticate(&old_token).await.is_err());
+    }
+
     // ─── API keys ─────────────────────────────────────────────────────────
 
     fn insert_key_for(state: &SharedState, user_id: &str) -> String {
@@ -2590,7 +2638,12 @@ mod tests {
             .is_err());
 
         // Revoke the real key → it stops authenticating immediately.
-        state.repo.delete_api_keys_for_user(&user.id).unwrap();
+        let keys = state.repo.list_api_keys_for_user(&user.id).unwrap();
+        assert_eq!(keys.len(), 1);
+        state
+            .repo
+            .delete_api_key(&keys[0].id, &user.id)
+            .unwrap();
         assert!(state.authenticate(&key).await.is_err());
     }
 

@@ -2,6 +2,7 @@ use crate::domain::{
     ApiKey, Download, DownloadFolder, DownloadStatus, Protocol, Role, Settings, User,
 };
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,9 +20,33 @@ pub struct NewApiKey {
     pub created_at: String,
 }
 
+#[derive(Debug)]
+pub enum InsertUserError {
+    UsernameConflict,
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for InsertUserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InsertUserError::UsernameConflict => write!(f, "Username already exists"),
+            InsertUserError::Other(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for InsertUserError {}
+
 impl Repository {
     pub fn new(db: Arc<crate::db::Database>) -> Self {
         Self { db }
+    }
+
+    fn is_unique_constraint_error(e: &rusqlite::Error) -> bool {
+        if let rusqlite::Error::SqliteFailure(err, _) = e {
+            return err.extended_code == 2067;
+        }
+        false
     }
 
     pub fn insert_download(&self, download: &Download) -> anyhow::Result<()> {
@@ -262,9 +287,9 @@ impl Repository {
         Ok(())
     }
 
-    pub fn insert_user(&self, user: &User) -> anyhow::Result<()> {
+    pub fn insert_user(&self, user: &User) -> Result<(), InsertUserError> {
         let conn = self.db.conn.lock().unwrap();
-        conn.execute(
+        match conn.execute(
             "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 user.id,
@@ -273,8 +298,17 @@ impl Repository {
                 user.role.as_str(),
                 user.created_at.to_rfc3339(),
             ],
-        )?;
-        Ok(())
+        ) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // SQLite UNIQUE constraint violation
+                if Self::is_unique_constraint_error(&e) {
+                    Err(InsertUserError::UsernameConflict)
+                } else {
+                    Err(InsertUserError::Other(e.into()))
+                }
+            }
+        }
     }
 
     /// Atomically insert the first user only if no users exist yet.
@@ -299,7 +333,8 @@ impl Repository {
     pub fn get_user_by_username(&self, username: &str) -> anyhow::Result<Option<User>> {
         let conn = self.db.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?1",
+            "SELECT id, username, password_hash, role, created_at, token_version
+             FROM users WHERE username = ?1",
         )?;
         let mut rows = stmt.query(params![username])?;
 
@@ -312,37 +347,20 @@ impl Repository {
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
                     .map(|d| d.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
+                token_version: row.get(5)?,
             }))
         } else {
             Ok(None)
         }
     }
 
-    pub fn get_user_by_id(&self, id: &str) -> anyhow::Result<Option<User>> {
-        let conn = self.db.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(params![id])?;
-
-        if let Some(row) = rows.next()? {
-            Ok(Some(User {
-                id: row.get(0)?,
-                username: row.get(1)?,
-                password_hash: row.get(2)?,
-                role: Role::parse(&row.get::<_, String>(3)?),
-                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
-                    .map(|d| d.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-            }))
-        } else {
-            Ok(None)
-        }
-    }
 
     pub fn get_all_users(&self) -> anyhow::Result<Vec<User>> {
         let conn = self.db.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, username, password_hash, role, created_at FROM users ORDER BY created_at ASC")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, username, password_hash, role, created_at, token_version
+             FROM users ORDER BY created_at ASC",
+        )?;
         let users = stmt
             .query_map([], |row| {
                 Ok(User {
@@ -353,28 +371,74 @@ impl Repository {
                     created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
                         .map(|d| d.with_timezone(&chrono::Utc))
                         .unwrap_or_else(|_| chrono::Utc::now()),
+                    token_version: row.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(users)
     }
 
-    pub fn update_user_password(&self, username: &str, password_hash: &str) -> anyhow::Result<()> {
+    pub fn update_user_password_and_bump_version(
+        &self,
+        username: &str,
+        password_hash: &str,
+    ) -> anyhow::Result<i64> {
         let conn = self.db.conn.lock().unwrap();
         let rows = conn.execute(
-            "UPDATE users SET password_hash = ?1 WHERE username = ?2",
+            "UPDATE users SET password_hash = ?1, token_version = token_version + 1 WHERE username = ?2",
             params![password_hash, username],
         )?;
         if rows == 0 {
             anyhow::bail!("User not found");
         }
-        Ok(())
+        let new_version: i64 = conn.query_row(
+            "SELECT token_version FROM users WHERE username = ?1",
+            params![username],
+            |row| row.get(0),
+        )?;
+        Ok(new_version)
     }
 
-    pub fn delete_user(&self, id: &str) -> anyhow::Result<()> {
+    pub fn delete_user_guard_last_admin(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<Option<String>>> {
         let conn = self.db.conn.lock().unwrap();
+
+        let target: Option<(String, String, Role)> = conn
+            .query_row(
+                "SELECT id, username, role FROM users WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        Role::parse(&row.get::<_, String>(2)?),
+                    ))
+                },
+            )
+            .optional()?;
+
+        let target = match target {
+            Some(t) => t,
+            None => return Ok(Some(None)),
+        };
+
+        if target.2 == Role::Admin {
+            let other_admins: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE role = 'ADMIN' AND id != ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            if other_admins == 0 {
+                return Ok(None);
+            }
+        }
+
         conn.execute("DELETE FROM users WHERE id = ?1", params![id])?;
-        Ok(())
+        conn.execute("DELETE FROM api_keys WHERE user_id = ?1", params![id])?;
+
+        Ok(Some(Some(target.1)))
     }
 
     // ─── API keys ───────────────────────────────────────
@@ -382,7 +446,7 @@ impl Repository {
     pub fn get_user_by_api_key_hash(&self, key_hash: &str) -> anyhow::Result<Option<User>> {
         let conn = self.db.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT u.id, u.username, u.password_hash, u.role, u.created_at
+            "SELECT u.id, u.username, u.password_hash, u.role, u.created_at, u.token_version
              FROM users u JOIN api_keys k ON k.user_id = u.id
              WHERE k.key_hash = ?1",
         )?;
@@ -396,6 +460,7 @@ impl Repository {
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
                     .map(|d| d.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
+                token_version: row.get(5)?,
             }))
         } else {
             Ok(None)
@@ -469,12 +534,6 @@ impl Repository {
             params![id, user_id],
         )?;
         Ok(rows > 0)
-    }
-
-    pub fn delete_api_keys_for_user(&self, user_id: &str) -> anyhow::Result<()> {
-        let conn = self.db.conn.lock().unwrap();
-        conn.execute("DELETE FROM api_keys WHERE user_id = ?1", params![user_id])?;
-        Ok(())
     }
 
     // ─── History ────────────────────────────────────────

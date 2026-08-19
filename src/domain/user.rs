@@ -30,6 +30,8 @@ pub struct User {
     pub password_hash: String,
     pub role: Role,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub token_version: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +39,8 @@ pub struct Claims {
     pub sub: String,
     pub role: String,
     pub exp: usize,
+    #[serde(default)]
+    pub ver: i64,
 }
 
 /// A user's API key as returned when listing (no hash/secret — that's never

@@ -79,8 +79,19 @@ async fn auth_status(State(state): State<SharedState>) -> Json<serde_json::Value
 
 async fn register(
     State(state): State<SharedState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<RegisterRequest>,
 ) -> Json<serde_json::Value> {
+    if let Some(ip) = crate::manager::extract_client_ip(&headers, Some(peer)) {
+        if !state.login_limiter.try_consume(ip).await {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Too many attempts. Try again later."
+            }));
+        }
+    }
+
     if payload.password.len() < 4 {
         return Json(serde_json::json!({
             "success": false,
@@ -92,6 +103,16 @@ async fn register(
         return Json(serde_json::json!({
             "success": false,
             "error": "Username must be 1-64 characters"
+        }));
+    }
+
+    let has_users = state
+        .repo_blocking(|repo| repo.get_all_users().map(|u| !u.is_empty()).unwrap_or(true))
+        .await;
+    if has_users {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "Registration is closed. Ask an admin to create your account."
         }));
     }
 
@@ -112,6 +133,7 @@ async fn register(
         password_hash,
         role: Role::Admin,
         created_at: chrono::Utc::now(),
+        token_version: 0,
     };
 
     let user_to_insert = user.clone();
@@ -140,6 +162,7 @@ async fn register(
         sub: user.username.clone(),
         role: user.role.as_str().to_string(),
         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+        ver: user.token_version,
     };
 
     let token = match jsonwebtoken::encode(
@@ -222,6 +245,7 @@ async fn login(
         sub: user.username.clone(),
         role: user.role.as_str().to_string(),
         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+        ver: user.token_version,
     };
 
     let token = match jsonwebtoken::encode(
@@ -389,18 +413,28 @@ async fn create_user(
         password_hash,
         role,
         created_at: chrono::Utc::now(),
+        token_version: 0,
     };
 
     let user_to_insert = user.clone();
-    if let Err(e) = state
+    match state
         .repo_blocking(move |repo| repo.insert_user(&user_to_insert))
         .await
     {
-        tracing::error!("Failed to create user: {}", e);
-        return Json(serde_json::json!({
-            "success": false,
-            "error": "Failed to create user"
-        }));
+        Ok(()) => {}
+        Err(crate::db::repository::InsertUserError::UsernameConflict) => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Username already exists"
+            }));
+        }
+        Err(e) => {
+            tracing::error!("Failed to create user: {}", e);
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Failed to create user"
+            }));
+        }
     }
 
     Json(serde_json::json!({
@@ -457,10 +491,12 @@ async fn change_password(
     };
 
     let sub_update = user.username.clone();
-    if let Err(e) = state
-        .repo_blocking(move |repo| repo.update_user_password(&sub_update, &new_hash))
-        .await
-    {
+    let result = state
+        .repo_blocking(move |repo| {
+            repo.update_user_password_and_bump_version(&sub_update, &new_hash)
+        })
+        .await;
+    if let Err(e) = result {
         tracing::error!("Failed to update password: {}", e);
         return Json(serde_json::json!({
             "success": false,
@@ -505,52 +541,31 @@ async fn delete_user(
         }
     };
 
-    // Prevent self-deletion and last-admin deletion
-    let id_lookup = id.clone();
-    let target_user = state
-        .repo_blocking(move |repo| repo.get_user_by_id(&id_lookup))
-        .await
-        .ok()
-        .flatten();
-    if let Some(target_user) = target_user {
-        if target_user.username == actor.username {
-            return Json(serde_json::json!({
-                "success": false,
-                "error": "You cannot delete your own account"
-            }));
-        }
-        if target_user.role == Role::Admin {
-            let admin_count = state
-                .repo_blocking(|repo| {
-                    repo.get_all_users()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter(|u| u.role == Role::Admin)
-                        .count()
-                })
-                .await;
-            if admin_count <= 1 {
-                return Json(serde_json::json!({
-                    "success": false,
-                    "error": "Cannot delete the last admin account"
-                }));
-            }
-        }
+    if id == actor.id {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "You cannot delete your own account"
+        }));
     }
 
-    // Capture the username and delete inside a single blocking closure so a
-    // concurrent re-insert of the same id cannot race between lookup and delete.
     let id_for_delete = id.clone();
-    let deleted_username = match state
-        .repo_blocking(move |repo| -> anyhow::Result<Option<String>> {
-            let username = repo.get_user_by_id(&id_for_delete)?.map(|u| u.username);
-            repo.delete_user(&id_for_delete)?;
-            repo.delete_api_keys_for_user(&id_for_delete)?;
-            Ok(username)
-        })
+    let outcome = match state
+        .repo_blocking(move |repo| repo.delete_user_guard_last_admin(&id_for_delete))
         .await
     {
-        Ok(u) => u,
+        Ok(Some(Some(username))) => username,
+        Ok(Some(None)) => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "User not found"
+            }));
+        }
+        Ok(None) => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Cannot delete the last admin account"
+            }));
+        }
         Err(e) => {
             tracing::error!("Failed to delete user: {}", e);
             return Json(serde_json::json!({
@@ -559,9 +574,7 @@ async fn delete_user(
             }));
         }
     };
-    if let Some(username) = deleted_username {
-        state.sessions.remove_by_username(&username).await;
-    }
+    state.sessions.remove_by_username(&outcome).await;
     state.basic_auth_cache.invalidate_all().await;
 
     Json(serde_json::json!({

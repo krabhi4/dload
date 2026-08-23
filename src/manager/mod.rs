@@ -394,13 +394,19 @@ impl ManagerState {
             .unwrap_or(6881);
 
         let opts = librqbit::SessionOptions {
-            enable_upnp_port_forwarding: true,
-            listen_port_range: Some(bt_port..bt_port + 1),
+            listen: Some(librqbit::ListenerOptions {
+                listen_addr: ([0, 0, 0, 0], bt_port).into(),
+                enable_upnp_port_forwarding: true,
+                ..Default::default()
+            }),
             fastresume: true,
             concurrent_init_limit: Some(5),
-            peer_opts: Some(librqbit::PeerConnectionOptions {
-                connect_timeout: Some(std::time::Duration::from_secs(5)),
-                read_write_timeout: Some(std::time::Duration::from_secs(10)),
+            connect: Some(librqbit::ConnectionOptions {
+                peer_opts: Some(librqbit::PeerConnectionOptions {
+                    connect_timeout: Some(std::time::Duration::from_secs(5)),
+                    read_write_timeout: Some(std::time::Duration::from_secs(10)),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             trackers: [
@@ -535,7 +541,7 @@ impl ManagerState {
         download_dir: &str,
         category: Option<String>,
     ) -> Option<Download> {
-        let meta = match librqbit::torrent_from_bytes::<librqbit::ByteBufOwned>(&bytes) {
+        let meta = match librqbit::torrent_from_bytes(&bytes) {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!("rejecting invalid .torrent upload: {}", e);
@@ -544,6 +550,7 @@ impl ManagerState {
         };
         let raw_name = meta
             .info
+            .data
             .name
             .as_ref()
             .map(|n| n.to_string())
@@ -1326,10 +1333,7 @@ impl ManagerState {
                             let raw_name = librqbit::torrent_from_bytes(&torrent_bytes)
                                 .ok()
                                 .and_then(|meta| {
-                                    meta.info
-                                        .name
-                                        .as_ref()
-                                        .map(|n: &librqbit::ByteBufOwned| n.to_string())
+                                    meta.info.data.name.as_ref().map(|n| n.to_string())
                                 })
                                 .unwrap_or_else(|| "torrent-download".to_string());
                             let name = crate::domain::sanitize_filename(&raw_name);
@@ -2058,8 +2062,8 @@ impl ManagerState {
                         download.speed = (live.download_speed.mbps * 1_048_576.0) as u64;
                         download.upload_speed = (live.upload_speed.mbps * 1_048_576.0) as u64;
                         let ps = &live.snapshot.peer_stats;
-                        download.peers = ps.live as u32;
-                        download.seeds = ps.seen as u32;
+                        download.peers = ps.live;
+                        download.seeds = ps.seen;
                         download.eta = live.time_remaining.as_ref().map(|t| format!("{}", t));
                     }
 

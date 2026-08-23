@@ -354,7 +354,6 @@ impl Repository {
         }
     }
 
-
     pub fn get_all_users(&self) -> anyhow::Result<Vec<User>> {
         let conn = self.db.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -399,10 +398,7 @@ impl Repository {
         Ok(new_version)
     }
 
-    pub fn delete_user_guard_last_admin(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<Option<Option<String>>> {
+    pub fn delete_user_guard_last_admin(&self, id: &str) -> anyhow::Result<Option<Option<String>>> {
         let conn = self.db.conn.lock().unwrap();
 
         let target: Option<(String, String, Role)> = conn

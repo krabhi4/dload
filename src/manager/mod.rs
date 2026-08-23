@@ -1333,11 +1333,7 @@ impl ManagerState {
                             let raw_name = librqbit::torrent_from_bytes(&torrent_bytes)
                                 .ok()
                                 .and_then(|meta| {
-                                    meta.info
-                                        .data
-                                        .name
-                                        .as_ref()
-                                        .map(|n| n.to_string())
+                                    meta.info.data.name.as_ref().map(|n| n.to_string())
                                 })
                                 .unwrap_or_else(|| "torrent-download".to_string());
                             let name = crate::domain::sanitize_filename(&raw_name);

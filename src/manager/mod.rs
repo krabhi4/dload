@@ -2398,7 +2398,10 @@ mod tests {
 
     #[test]
     fn returns_none_when_nothing_available() {
-        assert_eq!(extract_client_ip_inner(&HeaderMap::new(), None, false), None);
+        assert_eq!(
+            extract_client_ip_inner(&HeaderMap::new(), None, false),
+            None
+        );
     }
 
     #[test]
@@ -2640,10 +2643,7 @@ mod tests {
         // Revoke the real key → it stops authenticating immediately.
         let keys = state.repo.list_api_keys_for_user(&user.id).unwrap();
         assert_eq!(keys.len(), 1);
-        state
-            .repo
-            .delete_api_key(&keys[0].id, &user.id)
-            .unwrap();
+        state.repo.delete_api_key(&keys[0].id, &user.id).unwrap();
         assert!(state.authenticate(&key).await.is_err());
     }
 

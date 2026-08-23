@@ -105,11 +105,11 @@ pub(crate) async fn resolve_host_to_public_ip(host: &str, port: u16) -> anyhow::
     )
 }
 
-pub(crate) async fn ssrf_safe_client_builder(
-    url: &str,
-) -> anyhow::Result<reqwest::ClientBuilder> {
+pub(crate) async fn ssrf_safe_client_builder(url: &str) -> anyhow::Result<reqwest::ClientBuilder> {
     let parsed = url::Url::parse(url)?;
-    let host = parsed.host_str().ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
     let port = parsed.port_or_known_default().unwrap_or(80);
 
     let ip = resolve_host_to_public_ip(host, port).await?;
@@ -385,7 +385,9 @@ mod tests {
     async fn resolve_rejects_literal_private_ip() {
         assert!(resolve_host_to_public_ip("127.0.0.1", 80).await.is_err());
         assert!(resolve_host_to_public_ip("10.0.0.1", 80).await.is_err());
-        assert!(resolve_host_to_public_ip("169.254.169.254", 80).await.is_err());
+        assert!(resolve_host_to_public_ip("169.254.169.254", 80)
+            .await
+            .is_err());
         assert!(resolve_host_to_public_ip("::1", 80).await.is_err());
     }
 
@@ -397,11 +399,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_rejects_nonexistent_host() {
-        assert!(resolve_host_to_public_ip(
-            "nonexistent.invalid.example",
-            80
-        )
-        .await
-        .is_err());
+        assert!(resolve_host_to_public_ip("nonexistent.invalid.example", 80)
+            .await
+            .is_err());
     }
 }

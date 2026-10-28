@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - Unreleased
+
+A redesign of the web UI and the browser extension's pages. No API, database or configuration changes so far; upgrading is a drop-in image swap.
+
+### Changed
+- **New web UI design.** A graphite theme, with a matching light theme that follows the OS setting, replaces the Nord terminal look. Host Grotesk sets the text and Atkinson Hyperlegible Mono sets only measured values (sizes, speeds, ETAs, paths, times). Amber marks the primary action and the active tab; blue marks speeds and progress.
+- **Downloads.** The add bar leads, and the queue is one panel with the filters and bulk actions in its top strip. Statuses read as words (Downloading, Seeding, Paused, Done, Failed) instead of glyph codes.
+- **History** groups entries in one panel per day, with native checkboxes and a Select all / Deselect all toggle.
+- **Settings** sets each option as a row with its description beside the field; user management sits in its own panel.
+- **Profile** shows the account details as text, with Change password and API keys side by side.
+- **Sign-in** shows the logo and plain Username and Password labels.
+- **Scroll position.** The page scrollbar is hidden and a thin line at the top of the header shows scroll progress. Browsers without CSS scroll timelines (Firefox for now) keep a thin themed scrollbar. Page width no longer shifts when switching tabs.
+- **Phones.** Queue rows keep size, speed and progress readable, and long names wrap to two lines.
+- **Accessibility.** Visible focus rings on every control, field edges at 3:1 contrast, reduced-motion support, and the closed mobile drawer no longer takes keyboard focus.
+- Labels and buttons use sentence case without terminal glyphs.
+
+### Added
+- Self-hosted fonts served from `/ui/fonts/` (about 37 KB, SIL Open Font License), so the UI makes no third-party requests and works under the existing Content Security Policy.
+
+### Extension
+- send-to-dload 0.2.0 restyles the popup and options pages to match (see `extensions/send-to-dload/CHANGELOG.md`).
+
 ## [0.4.7] - 2026-08-19
 
 ### Security

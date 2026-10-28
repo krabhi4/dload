@@ -399,31 +399,29 @@ function showDownloads() {
     '<div class="toolbar">' +
     '<form id="add-download-form" class="add-form">' +
     '<label for="download-url" class="sr-only">Download URL</label>' +
-    '<span class="add-prompt" aria-hidden="true">❯</span>' +
-    '<input type="text" id="download-url" placeholder="paste a URL, magnet link, or attach a .torrent">' +
+    '<input type="text" id="download-url" placeholder="Paste a URL or magnet link, or attach a .torrent">' +
     '<select id="download-folder" class="folder-select" title="Download folder" style="display:none"></select>' +
     '<input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" multiple hidden>' +
-    '<button type="button" id="attach-torrent-btn" class="btn-ghost" title="Attach .torrent file" aria-label="Attach .torrent file">↑ .torrent</button>' +
-    '<button type="submit" class="btn-primary">+ add</button>' +
+    '<button type="button" id="attach-torrent-btn" class="btn-secondary" title="Attach .torrent file">Attach .torrent</button>' +
+    '<button type="submit" class="btn-primary">Add</button>' +
     "</form>" +
+    '<div id="torrent-file-chips" class="file-chips" hidden></div>' +
+    "</div>" +
+    '<section class="panel queue" aria-label="Downloads">' +
     '<div class="toolbar-actions">' +
     '<div class="dl-filters">' +
     ["all", "active", "queued", "paused", "completed"].map(function (f) {
       return '<button class="filter-chip' + (f === currentFilter ? " active" : "") + '" data-filter="' + f + '" onclick="setFilter(\'' + f + '\')">' + f + "</button>";
     }).join("") +
-    '<span class="live-indicator"><span class="live-glyph" aria-hidden="true">●</span> live</span>' +
+    '<span class="live-indicator">Live</span>' +
     "</div>" +
     '<div class="toolbar-buttons">' +
-    '<button id="resume-all-btn" class="btn-ghost btn-small" style="display:none" onclick="resumeAllDownloads()">▶ resume all</button>' +
-    '<button id="clear-completed-btn" class="btn-ghost btn-small" style="display:none" onclick="clearCompletedDownloads()">✕ clear completed</button>' +
+    '<button id="resume-all-btn" class="btn-ghost btn-small" style="display:none" onclick="resumeAllDownloads()">Resume all</button>' +
+    '<button id="clear-completed-btn" class="btn-ghost btn-small" style="display:none" onclick="clearCompletedDownloads()">Clear completed</button>' +
     "</div>" +
     "</div>" +
-    '<div id="torrent-file-chips" class="file-chips" hidden></div>' +
-    "</div>" +
-    '<section class="panel">' +
-    '<span class="box-label">downloads</span>' +
     '<div class="dl-head">' +
-    "<span></span><span>NAME</span><span class=\"ta-r\">SIZE</span><span class=\"ta-r\">↓ SPEED</span><span>PROGRESS</span><span class=\"ta-r\">ETA</span><span>STATUS</span><span></span>" +
+    "<span></span><span>Name</span><span class=\"ta-r\">Size</span><span class=\"ta-r\">Speed</span><span>Progress</span><span class=\"ta-r\">ETA</span><span>Status</span><span></span>" +
     "</div>" +
     '<div id="downloads-list">' + renderSkeletons() + "</div>" +
     "</section>"
@@ -490,7 +488,7 @@ function updateSelectAllChip() {
   if (!chip) return;
   var vis = visibleHistoryItems();
   var allSelected = vis.length > 0 && vis.every(function (h) { return selectedHistoryIds.has(h.id); });
-  chip.textContent = (allSelected ? "[x]" : "[ ]") + " select all";
+  chip.textContent = allSelected ? "Deselect all" : "Select all";
   chip.classList.toggle("is-all", allSelected);
 }
 
@@ -514,20 +512,19 @@ function showArchive() {
     '<p class="archive-hint">Entries remain after you clear them from Downloads; files on disk are untouched.</p>' +
     "</div>" +
     '<div class="history-actions" id="history-actions">' +
-    '<button class="btn-danger-outline btn-small" id="delete-selected-btn" style="display:none" onclick="deleteSelectedHistory()">✕ delete selected</button>' +
-    '<button class="btn-ghost btn-small" onclick="clearAllHistory()">✕ clear all</button>' +
+    '<button class="btn-danger-outline btn-small" id="delete-selected-btn" style="display:none" onclick="deleteSelectedHistory()">Delete selected</button>' +
+    '<button class="btn-ghost btn-small" onclick="clearAllHistory()">Clear all</button>' +
     "</div>" +
     "</div>" +
     '<div class="history-toolbar">' +
     '<div class="hist-search">' +
-    '<span class="hist-search-prompt" aria-hidden="true">/</span>' +
-    '<input type="text" id="history-search" placeholder="search history..." aria-label="Search history" oninput="setHistorySearch(this.value)">' +
+    '<input type="search" id="history-search" placeholder="Search history" aria-label="Search history" oninput="setHistorySearch(this.value)">' +
     "</div>" +
     '<div class="hist-filters">' +
     ["all", "completed", "failed"].map(function (f) {
       return '<button class="filter-chip' + (f === historyFilter ? " active" : "") + '" data-hfilter="' + f + '" onclick="setHistoryFilter(\'' + f + '\')">' + f + "</button>";
     }).join("") +
-    '<button class="filter-chip hist-select-all" id="history-select-all" onclick="toggleSelectAllHistory()">[ ] select all</button>' +
+    '<button class="filter-chip hist-select-all" id="history-select-all" onclick="toggleSelectAllHistory()">Select all</button>' +
     "</div>" +
     "</div>" +
     '<div id="history-list" class="archive-list"></div>'
@@ -540,40 +537,40 @@ function showSettings() {
     "<h1>Settings</h1>" +
     "</div>" +
     '<section class="panel">' +
-    '<span class="box-label">configuration</span>' +
+    "<h2>Configuration</h2>" +
     '<form id="settings-form" class="settings-grid">' +
-    '<div class="form-field">' +
-    "<label>Download Folders</label>" +
+    '<div class="form-field folders-field">' +
+    "<label>Download folders</label>" +
     '<div id="folder-list" class="folder-list"></div>' +
-    '<button type="button" class="btn-ghost btn-small" id="add-folder-btn" onclick="addFolderRow()">+ add folder</button>' +
+    '<button type="button" class="btn-ghost btn-small" id="add-folder-btn" onclick="addFolderRow()">Add folder</button>' +
     '<span class="hint">Configure where files are saved. One folder must be the default.</span>' +
     "</div>" +
     '<div class="form-row">' +
     '<div class="form-field-half">' +
-    '<label for="settings-max-concurrent">Max Concurrent Downloads</label>' +
+    '<label for="settings-max-concurrent">Max concurrent downloads</label>' +
     '<input type="number" id="settings-max-concurrent" value="3" min="1" max="10">' +
     '<span class="hint">Additional downloads are queued and start automatically</span>' +
     "</div>" +
     '<div class="form-field-half">' +
-    '<label for="settings-connections">Max Connections Per File</label>' +
+    '<label for="settings-connections">Max connections per file</label>' +
     '<input type="number" id="settings-connections" value="4" min="1" max="16">' +
     '<span class="hint">More connections can improve speed for HTTP downloads</span>' +
     "</div>" +
     "</div>" +
     '<div class="form-row">' +
     '<div class="form-field-half">' +
-    '<label for="settings-min-split">Min Split Size (MB)</label>' +
+    '<label for="settings-min-split">Min split size (MB)</label>' +
     '<input type="number" id="settings-min-split" value="20" min="1" max="1024">' +
     '<span class="hint">Smallest chunk before a file is split across connections</span>' +
     "</div>" +
     '<div class="form-field-half">' +
-    '<label for="settings-port">Listen Port</label>' +
+    '<label for="settings-port">Listen port</label>' +
     '<input type="number" id="settings-port" value="8080" min="1" max="65535">' +
     '<span class="hint">Restart required for a port change to take effect</span>' +
     "</div>" +
     "</div>" +
     '<div class="settings-actions">' +
-    '<button type="button" class="btn-primary" id="save-settings-btn">✓ save settings</button>' +
+    '<button type="button" class="btn-primary" id="save-settings-btn">Save settings</button>' +
     "</div>" +
     "</form>" +
     "</section>" +
@@ -587,8 +584,8 @@ function showProfile() {
     "<h1>Profile</h1>" +
     "</div>" +
     '<section class="panel profile-section">' +
-    '<span class="box-label">account</span>' +
-    '<div class="form-row">' +
+    "<h2>Account</h2>" +
+    '<div class="form-row account-facts">' +
     '<div class="form-field-half">' +
     "<label>Username</label>" +
     '<input type="text" id="profile-username" readonly>' +
@@ -597,33 +594,38 @@ function showProfile() {
     "<label>Role</label>" +
     '<input type="text" id="profile-role" readonly>' +
     "</div>" +
-    "</div>" +
-    '<div class="form-field">' +
-    "<label>Member Since</label>" +
+    '<div class="form-field-half">' +
+    "<label>Member since</label>" +
     '<input type="text" id="profile-created" readonly>' +
     "</div>" +
+    "</div>" +
     "<hr>" +
-    "<h2>Change Password</h2>" +
+    '<div class="profile-columns">' +
+    "<div>" +
+    "<h2>Change password</h2>" +
     '<form id="change-password-form">' +
     '<div class="form-field">' +
-    '<label for="current-password">Current Password</label>' +
+    '<label for="current-password">Current password</label>' +
     '<input type="password" id="current-password" required autocomplete="current-password">' +
     "</div>" +
     '<div class="form-field">' +
-    '<label for="new-password">New Password</label>' +
+    '<label for="new-password">New password</label>' +
     '<input type="password" id="new-password" required autocomplete="new-password">' +
     "</div>" +
     '<div class="form-field">' +
-    '<label for="confirm-password">Confirm New Password</label>' +
+    '<label for="confirm-password">Confirm new password</label>' +
     '<input type="password" id="confirm-password" required autocomplete="new-password">' +
     "</div>" +
-    '<button type="submit" class="btn-primary">✓ update password</button>' +
+    '<button type="submit" class="btn-primary">Update password</button>' +
     "</form>" +
-    "<hr>" +
-    "<h2>API Keys</h2>" +
+    "</div>" +
+    "<div>" +
+    "<h2>API keys</h2>" +
     '<p class="hint">Long-lived keys for the browser extension and other clients. A key acts as your account on the download API; revoke any you no longer use.</p>' +
-    '<button type="button" class="btn-primary" onclick="createApiKey()">+ generate key</button>' +
+    '<button type="button" class="btn-secondary" onclick="createApiKey()">Generate key</button>' +
     '<div id="api-keys-list" class="api-keys-list"></div>' +
+    "</div>" +
+    "</div>" +
     "</section>"
   );
 }
@@ -702,14 +704,14 @@ function toggleDetail(id, event) {
 
 function statusGlyph(status) {
   switch ((status || "").toLowerCase()) {
-    case "downloading": return "▶ DL";
-    case "fetching": return "▶ FETCH";
-    case "seeding": return "↑ SEED";
-    case "queued": return "○ QUEUED";
-    case "paused": return "⏸ PAUSED";
-    case "completed": return "✓ DONE";
-    case "failed": return "✗ FAILED";
-    case "stopped": return "■ STOPPED";
+    case "downloading": return "Downloading";
+    case "fetching": return "Fetching";
+    case "seeding": return "Seeding";
+    case "queued": return "Queued";
+    case "paused": return "Paused";
+    case "completed": return "Done";
+    case "failed": return "Failed";
+    case "stopped": return "Stopped";
     default: return status;
   }
 }
@@ -754,7 +756,7 @@ function buildDownloadItem(d, index) {
     ? formatSpeed(d.speed)
     : isSeeding
       ? "\u2191 " + formatSpeed(d.upload_speed)
-      : "--";
+      : "";
 
   // ETA display
   var etaDisplay = isActive && d.eta ? escapeHtml(d.eta) : "";
@@ -875,7 +877,7 @@ function buildDownloadItem(d, index) {
     + '<span class="drag-handle"' + (isCompleted ? ' aria-hidden="true"' : ' title="Drag to reorder"') + '>' + (isCompleted ? '' : '⠿') + '</span>'
     + '<div class="download-info">'
     + '<span class="download-name">' + safeName + '</span>'
-    + '<span class="proto-tag">' + (isTorrent ? '·torrent' : '·http') + '</span>'
+    + '<span class="proto-tag">' + (isTorrent ? 'Torrent' : 'HTTP') + '</span>'
     + tagsHtml
     + '<span class="download-url" title="' + safeUrl + '">' + safeUrl + '</span>'
     + '</div>'
@@ -899,13 +901,13 @@ function buildDownloadItem(d, index) {
       + '</button>'
       + '<div class="more-menu" id="more-menu-' + safeId + '" role="menu">'
       + '<button role="menuitem" onclick="copyMagnet(event, \'' + safeId + '\')">'
-      + 'Copy Magnet'
+      + 'Copy magnet link'
       + '</button>'
       + '<button role="menuitem" onclick="downloadTorrent(event, \'' + safeId + '\')">'
       + 'Download .torrent'
       + '</button>'
       + (canMirror ? '<button role="menuitem" onclick="showMirrorForm(event, \'' + safeId + '\')">'
-      + 'Add HTTP Mirror'
+      + 'Add HTTP mirror'
       + '</button>' : '')
       + '</div>'
       + '</div>'
@@ -1209,7 +1211,7 @@ function renderDownloads(downloads) {
     var msg = filtering ? "No " + currentFilter + " downloads." : "Ready when you are.";
     var sub = filtering
       ? "Nothing matches this filter right now."
-      : "Paste an HTTP, FTP, SFTP, or magnet link above &mdash; or attach a .torrent file.";
+      : "Paste an HTTP, FTP, SFTP or magnet link above, or attach a .torrent file.";
     renderHtml(container, '<div class="empty-state"><p>' + msg + '</p><span>' + sub + '</span></div>');
     lastDownloads = filtered;
     return;
@@ -1302,7 +1304,7 @@ function renderDownloads(downloads) {
       var speedEl = el.querySelector('.speed');
       if (speedEl) {
         var isSeeding = d.status === 'Seeding';
-        speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '--';
+        speedEl.textContent = isActive ? formatSpeed(d.speed) : isSeeding ? ('\u2191 ' + formatSpeed(d.upload_speed)) : '';
       }
 
       // Update ETA
@@ -1444,7 +1446,8 @@ async function loadProfile() {
 
     if (result.success) {
       document.getElementById("profile-username").value = result.user.username;
-      document.getElementById("profile-role").value = result.user.role;
+      var role = result.user.role || "";
+      document.getElementById("profile-role").value = role.charAt(0) + role.slice(1).toLowerCase();
       document.getElementById("profile-created").value = new Date(
         result.user.created_at,
       ).toLocaleDateString();
@@ -1557,7 +1560,7 @@ function renderApiKeys(keys) {
       "<td>" + (k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never") + "</td>" +
       '<td><button class="btn-danger btn-small" onclick="revokeApiKey(\'' +
       escapeHtml(k.id) +
-      "')\">revoke</button></td>" +
+      "')\">Revoke</button></td>" +
       "</tr>";
   });
   html += "</tbody></table>";
@@ -1568,7 +1571,7 @@ async function createApiKey() {
   var name;
   try {
     name = await showPrompt({
-      title: "→ new api key",
+      title: "New API key",
       label: "Name",
       placeholder: "browser extension",
       confirmLabel: "Generate",
@@ -1595,8 +1598,7 @@ async function createApiKey() {
     await loadApiKeys();
     var key = result.key;
     showDialog({
-      eyebrow: "copy it now — shown only once",
-      title: "→ api key created",
+      title: "Your new API key, shown only once",
       message: key,
       actions: [
         { label: "Done", variant: "ghost", value: false },
@@ -1617,7 +1619,7 @@ async function createApiKey() {
 
 async function revokeApiKey(id) {
   var ok = await showConfirm({
-    title: "→ revoke api key?",
+    title: "Revoke this API key?",
     message: "Any client using this key will immediately stop working.",
     danger: true,
     confirmLabel: "Revoke",
@@ -1760,9 +1762,9 @@ async function loadUserManagement() {
 
     var userTable =
       '<div class="user-management">' +
-      "<h2>User Management</h2>" +
+      "<h2>User management</h2>" +
       '<div class="form-field">' +
-      "<h3>Create New User</h3>" +
+      "<h3>Create new user</h3>" +
       '<form id="create-user-form">' +
       '<div class="form-row">' +
       '<div class="form-field-half">' +
@@ -1781,11 +1783,11 @@ async function loadUserManagement() {
       '<option value="ADMIN">Admin</option>' +
       "</select>" +
       "</div>" +
-      '<button type="submit" class="btn-primary">Create User</button>' +
+      '<button type="submit" class="btn-secondary">Create user</button>' +
       "</form>" +
       "</div>" +
       '<div class="form-field">' +
-      "<h3>Existing Users</h3>" +
+      "<h3>Existing users</h3>" +
       '<div class="table-scroll-wrapper">' +
       '<table class="user-table">' +
       "<thead>" +
@@ -1818,7 +1820,7 @@ async function loadUserManagement() {
             ? '<button class="btn-danger btn-small" onclick="deleteUser(\'' +
             escapeHtml(user.id) +
             "')\">Delete</button>"
-            : "Current User") +
+            : "Current user") +
           "</td>" +
           "</tr>";
       });
@@ -1898,7 +1900,6 @@ async function createUser() {
 
 async function deleteUser(id) {
   var ok = await showConfirm({
-    eyebrow: "User management",
     title: "Delete this user?",
     message: "Their account will be removed immediately. Any active sessions for them will keep working until their token expires.",
     danger: true,
@@ -2083,7 +2084,7 @@ function updateSelectedBtn() {
   if (btn) {
     if (selectedHistoryIds.size > 0) {
       btn.style.display = "inline-flex";
-      btn.textContent = "Delete Selected (" + selectedHistoryIds.size + ")";
+      btn.textContent = "Delete selected (" + selectedHistoryIds.size + ")";
     } else {
       btn.style.display = "none";
     }
@@ -2126,9 +2127,8 @@ async function deleteSelectedHistory() {
 
 async function clearAllHistory() {
   var ok = await showConfirm({
-    eyebrow: "History",
     title: "Clear all history?",
-    message: "Every entry in the completed archive will be removed. Files on disk are not touched — only the record of what was downloaded.",
+    message: "Every entry in the completed archive will be removed. Files on disk are not touched, only the record of what was downloaded.",
     danger: true,
     confirmLabel: "Clear history",
   });
@@ -2223,7 +2223,7 @@ async function addDownload(url) {
   } catch (e) {
     showToast("error", "Failed to add download", e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "+ add"; }
+    if (btn) { btn.disabled = false; btn.textContent = "Add"; }
   }
 }
 
@@ -2251,7 +2251,7 @@ async function addTorrentFiles(files, optionalUrl) {
   } catch (e) {
     showToast("error", "Failed to upload torrent", e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "+ add"; }
+    if (btn) { btn.disabled = false; btn.textContent = "Add"; }
   }
 }
 
@@ -2358,7 +2358,7 @@ async function copyMagnet(event, id) {
   } else if (d && d.info_hash) {
     magnetUri = 'magnet:?xt=urn:btih:' + d.info_hash + '&dn=' + encodeURIComponent(d.filename || '');
   } else {
-    showToast('error', 'No magnet link', 'Magnet URI not yet available \u2014 torrent metadata still resolving');
+    showToast('error', 'No magnet link', 'Magnet URI not available yet: torrent metadata is still resolving.');
     return;
   }
 
@@ -2526,7 +2526,7 @@ async function resumeAllDownloads() {
     resumeAllInProgress = false;
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "Resume All";
+      btn.textContent = "Resume all";
     }
   }
 }
@@ -2565,7 +2565,7 @@ function showFolderBrowser(path) {
   var header = document.createElement("div");
   header.className = "folder-browser-header";
   var h2 = document.createElement("h2");
-  h2.textContent = "Select Folder";
+  h2.textContent = "Select folder";
   var pathDiv = document.createElement("div");
   pathDiv.className = "folder-browser-path";
   pathDiv.id = "browser-path";
@@ -2580,7 +2580,7 @@ function showFolderBrowser(path) {
   actions.className = "folder-browser-actions";
   var newBtn = document.createElement("button");
   newBtn.className = "btn-ghost btn-small";
-  newBtn.textContent = "New Folder";
+  newBtn.textContent = "New folder";
   newBtn.onclick = browserCreateFolder;
   var spacer = document.createElement("div");
   spacer.style.flex = "1";
@@ -2649,7 +2649,7 @@ async function loadBrowserDir(path) {
   listEl.textContent = "";
   var loading = document.createElement("div");
   loading.className = "folder-browser-loading";
-  loading.textContent = "Loading...";
+  loading.textContent = "Loading\u2026";
   listEl.appendChild(loading);
 
   try {
@@ -2700,7 +2700,6 @@ async function browserCreateFolder() {
   var currentPath = pathEl ? pathEl.getAttribute("data-path") : "/";
 
   var name = await showPrompt({
-    eyebrow: "New folder",
     title: "Name this folder",
     message: "It will be created inside " + currentPath,
     label: "Folder name",
@@ -2947,14 +2946,14 @@ function logout() {
     loginForm.reset();
     var btn = loginForm.querySelector('button[type="submit"]');
     if (btn) {
-      btn.textContent = "Sign In";
+      btn.textContent = "Sign in";
       delete btn.dataset.mode;
     }
   }
   var hint = document.getElementById("login-hint");
   if (hint) { hint.textContent = ""; hint.style.color = ""; }
   var subtitle = document.querySelector(".login-subtitle");
-  if (subtitle) subtitle.textContent = "sign in to your download server";
+  if (subtitle) subtitle.textContent = "Sign in to your download server";
 
   document.getElementById("login-modal").style.display = "flex";
   document.getElementById("login-username").focus();
@@ -2992,12 +2991,12 @@ function showLoginScreen() {
       var subtitle = document.querySelector(".login-subtitle");
       if (subtitle) subtitle.textContent = "Set up your download manager";
       if (btn) {
-        btn.textContent = "Create Account";
+        btn.textContent = "Create account";
         btn.dataset.mode = "register";
       }
     } else if (btn && btn.dataset.mode === "register") {
       // Accounts exist now — fall back to Sign In mode.
-      btn.textContent = "Sign In";
+      btn.textContent = "Sign in";
       delete btn.dataset.mode;
     }
   });

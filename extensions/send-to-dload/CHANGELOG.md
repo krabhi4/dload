@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > The extension is versioned independently of the dload server.
 
+## [0.2.0] — Unreleased
+
+### Changed
+- Popup and options pages restyled to match the dload 1.0 web UI: shared tokens in `src/shared/tokens.css`, bundled Host Grotesk and Atkinson Hyperlegible Mono fonts, light and dark themes that follow the OS setting, and visible focus rings.
+- Options page: "Save settings" is the one primary button; "Test connection" is secondary.
+
 ## [0.1.0] — 2026-06-17
 
 ### Added

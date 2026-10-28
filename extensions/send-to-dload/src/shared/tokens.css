@@ -1,0 +1,92 @@
+/* Hallmark · shape: app screen · genre: modern-minimal · theme: Console (deal 3/3, seed self-hosted-download-queue-homelab-4b9a·be3c00ea·2026-10-28·r0) · redesign: full
+ * nav: kept, popup header and options page · signature: kept, the send button and the activity log · states: unconfigured, sending, sent, failed · console: graphite, paper under prefers-color-scheme: light
+ * axes: dark/grotesk-sans/chromatic-amber · posture: restrained · contrast: pass · modes: light+dark · v2.0.0 */
+/* Hallmark · pre-emit critique: P4 H4 E4 S3 R5 V3 · weakest: S, the popup is a button and a log; it shares the web UI's tokens so the two read as one product */
+
+@font-face {
+  font-family: "Host Grotesk";
+  src: url("fonts/host-grotesk.woff2") format("woff2");
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  src: url("fonts/atkinson-hyperlegible-mono.woff2") format("woff2");
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark light;
+  --space-3xs: 2px; --space-2xs: 4px; --space-xs: 8px; --space-sm: 12px; --space-md: 16px; --space-lg: 24px; --space-xl: 40px; --space-2xl: 64px; --space-3xl: 96px;
+  --text-xs: 0.75rem; --text-sm: 0.875rem; --text-md: 1rem; --text-lg: 1.2rem; --text-display: 1.728rem; --text-section: 1.2rem;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --dur-micro: 120ms; --dur-short: 220ms;
+  --control: 40px; --control-sm: 32px;
+
+  --color-paper: oklch(17% 0.008 250); --color-paper-2: oklch(21% 0.009 250); --color-paper-3: oklch(13.5% 0.007 250);
+  --color-ink: oklch(95% 0.005 250); --color-ink-2: oklch(83% 0.008 250); --color-muted: oklch(71% 0.01 250);
+  --color-rule: oklch(31% 0.01 250); --color-rule-2: oklch(42% 0.012 250); --color-field-edge: oklch(52% 0.012 250);
+  --color-accent: oklch(82% 0.15 80); --color-accent-ink: oklch(18% 0.04 75); --color-accent-soft: oklch(29% 0.05 80); --color-focus: oklch(82% 0.15 80);
+  --color-cool: oklch(77% 0.12 245); --color-cool-soft: oklch(29% 0.05 245);
+  --color-ok: oklch(76% 0.15 150); --color-ok-soft: oklch(24.5% 0.03 150); --color-bad: oklch(70% 0.17 25); --color-bad-soft: oklch(24.5% 0.035 25);
+
+  --font-display: "Host Grotesk", ui-sans-serif, system-ui, sans-serif; --font-body: var(--font-display);
+  --font-outlier: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  --radius-card: 10px; --radius-pill: 6px; --radius-chip: 4px; --rule-hair: 1px;
+  --tracking-display: -0.03em; --display-weight: 500;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-paper: oklch(98% 0.006 85); --color-paper-2: oklch(95.5% 0.007 85); --color-paper-3: oklch(99.5% 0.003 85);
+    --color-ink: oklch(19% 0.01 60); --color-ink-2: oklch(33% 0.01 60); --color-muted: oklch(47% 0.012 60);
+    --color-rule: oklch(88% 0.008 70); --color-rule-2: oklch(78% 0.01 70); --color-field-edge: oklch(62% 0.01 70);
+    --color-accent: oklch(52% 0.13 70); --color-accent-ink: oklch(99% 0.004 85); --color-accent-soft: oklch(95% 0.035 80); --color-focus: oklch(52% 0.13 70);
+    --color-cool: oklch(50% 0.14 250); --color-cool-soft: oklch(94% 0.025 245);
+    --color-ok: oklch(50% 0.13 150); --color-ok-soft: oklch(95% 0.035 150); --color-bad: oklch(52% 0.17 25); --color-bad-soft: oklch(95% 0.03 25);
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { overflow-x: clip; }
+html { scrollbar-color: var(--color-rule-2) var(--color-paper); }
+body { margin: 0; background: var(--color-paper); color: var(--color-ink); font-family: var(--font-body); font-size: var(--text-sm); line-height: 1.5; -webkit-font-smoothing: antialiased; caret-color: var(--color-accent); }
+::selection { background: color-mix(in oklab, var(--color-accent) 25%, transparent); }
+:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+h1, h2 { margin: 0; font-family: var(--font-display); font-weight: var(--display-weight); font-synthesis: none; letter-spacing: var(--tracking-display); line-height: 1.15; overflow-wrap: break-word; min-width: 0; text-wrap: balance; }
+p { margin: 0; text-wrap: pretty; }
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+code { font-family: var(--font-outlier); font-size: 0.95em; }
+
+a { color: var(--color-ink); text-decoration: underline; text-decoration-color: var(--color-rule-2); text-decoration-thickness: 1px; text-underline-offset: 0.16em; transition: color var(--dur-short) var(--ease-out); }
+a:hover { color: var(--color-accent); }
+a:active { color: var(--color-ink-2); }
+
+button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: var(--control); padding-inline: var(--space-md);
+  border: var(--rule-hair) solid var(--color-rule-2); border-radius: var(--radius-pill);
+  background: var(--color-paper-2); color: var(--color-ink);
+  font-family: var(--font-body); font-size: var(--text-sm); font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer;
+  transition: background-color var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out), transform var(--dur-micro) var(--ease-out);
+}
+button:hover { border-color: var(--color-field-edge); background: var(--color-paper); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+button.primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); }
+button.primary:hover { background: color-mix(in oklab, var(--color-accent), var(--color-ink) 14%); }
+
+.result { font-size: var(--text-sm); color: var(--color-muted); }
+.result.ok { color: var(--color-ok); }
+.result.err { color: var(--color-bad); }
+.decision-sent { color: var(--color-ok); }
+.decision-skip { color: var(--color-muted); }
+.decision-err { color: var(--color-bad); }
+.decision-queue { color: var(--color-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}

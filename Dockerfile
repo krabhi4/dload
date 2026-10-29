@@ -1,30 +1,25 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1.99-slim-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.99-alpine3.24 AS chef
 WORKDIR /app
 
 FROM chef AS planner
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY src src
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-COPY . .
+RUN cargo chef cook --release --locked --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY src src
 RUN cargo build --release --locked
 
-FROM debian:bookworm-slim
+FROM alpine:3.24
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    gosu \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
+RUN apk add --no-cache ca-certificates su-exec \
+    && mkdir -p /data /downloads
 
 COPY --from=builder /app/target/release/dload /usr/local/bin/
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-RUN mkdir -p /data /downloads
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/
 
 EXPOSE 8080
 

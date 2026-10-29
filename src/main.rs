@@ -15,6 +15,9 @@ mod domain;
 mod manager;
 mod worker;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // Embed all UI assets at compile time — single binary, no external files needed
 static INDEX_HTML: &str = include_str!("ui/index.html");
 static STYLE_CSS: &str = include_str!("ui/style.css");

@@ -1,7 +1,5 @@
-.git
-target
-*.md
-!README.md
-.DS_Store
-docs/
-rust-toolchain.toml
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!docker-entrypoint.sh

@@ -101,3 +101,54 @@ async fn positions_increase_monotonically_for_serial_adds() {
         assert_eq!(*p, i as i32, "positions should be 0..n");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn promoted_queued_download_actually_starts() {
+    let state = build_state(1);
+    let first = Download::new("https://example.com/a.iso".into(), "/tmp");
+    let first_id = first.id.clone();
+    assert_eq!(
+        state.claim_or_queue_for_test(first).await,
+        DownloadStatus::Downloading
+    );
+    let queued = Download::new("http://127.0.0.1/b.iso".into(), "/tmp");
+    let queued_id = queued.id.clone();
+    assert_eq!(
+        state.claim_or_queue_for_test(queued).await,
+        DownloadStatus::Queued
+    );
+
+    state
+        .downloads
+        .write()
+        .await
+        .get_mut(&first_id)
+        .unwrap()
+        .status = DownloadStatus::Completed;
+    state.try_start_queued().await;
+
+    for _ in 0..50 {
+        let status = state.downloads.read().await[&queued_id].status.clone();
+        if status == DownloadStatus::Failed {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("promoted download never ran its worker");
+}
+
+#[tokio::test]
+async fn seeding_torrents_do_not_hold_download_slots() {
+    let state = build_state(1);
+    let mut seeding = Download::new(
+        "magnet:?xt=urn:btih:0000000000000000000000000000000000000000".into(),
+        "/tmp",
+    );
+    seeding.status = DownloadStatus::Seeding;
+    state.add_download(seeding).await;
+    let next = Download::new("https://example.com/next.iso".into(), "/tmp");
+    assert_eq!(
+        state.claim_or_queue_for_test(next).await,
+        DownloadStatus::Downloading
+    );
+}

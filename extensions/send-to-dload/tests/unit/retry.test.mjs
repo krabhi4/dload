@@ -17,10 +17,18 @@ function makeStorage(initial = {}) {
 }
 
 function makeAlarms() {
-  return {
-    get: async () => null,
-    create: async () => {},
+  const alarms = {
+    current: null,
+    get: async () => alarms.current,
+    create: async (name, info) => {
+      alarms.current = { name, ...info };
+    },
+    clear: async () => {
+      alarms.current = null;
+      return true;
+    },
   };
+  return alarms;
 }
 
 /**
@@ -102,6 +110,49 @@ describe("retry queue", () => {
     });
     expect(stats.failed).toBe(1);
     expect(await retry.size()).toBe(0);
+  });
+
+  it("tick drops a permanent failure at once and reports it", async () => {
+    await retry.enqueue({ url: "https://x" }, null);
+    retry.__test_storage._data.retryQueue[0].nextAttemptAt = 0;
+    const onGiveUp = vi.fn();
+
+    await retry.tick(async () => {
+      throw Object.assign(new Error("dload 409: duplicate"), { permanent: true });
+    }, onGiveUp);
+    expect(await retry.size()).toBe(0);
+    expect(onGiveUp).toHaveBeenCalledWith({ url: "https://x" }, "dload 409: duplicate");
+  });
+
+  it("tick reports items it gives up on after MAX_ATTEMPTS", async () => {
+    await retry.enqueue({ url: "https://x" }, null);
+    const data = retry.__test_storage._data;
+    data.retryQueue[0].attempts = 10;
+    data.retryQueue[0].nextAttemptAt = 0;
+    const onGiveUp = vi.fn();
+
+    await retry.tick(async () => {
+      throw new Error("nope");
+    }, onGiveUp);
+    expect(onGiveUp).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the alarm only while the queue has items", async () => {
+    await retry.enqueue({ url: "https://x" }, null);
+    expect(retry.__test_alarms.current).not.toBeNull();
+
+    retry.__test_storage._data.retryQueue[0].nextAttemptAt = 0;
+    await retry.tick(async () => "ok");
+    expect(retry.__test_alarms.current).toBeNull();
+  });
+
+  it("ensureAlarm creates the alarm for a non-empty queue and clears it for an empty one", async () => {
+    await retry.ensureAlarm();
+    expect(retry.__test_alarms.current).toBeNull();
+
+    retry.__test_storage._data.retryQueue = [{ id: "a", payload: { url: "https://x" }, attempts: 1, nextAttemptAt: 0 }];
+    await retry.ensureAlarm();
+    expect(retry.__test_alarms.current).toMatchObject({ name: "send-to-dload-retry" });
   });
 
   it("remove() drops by id", async () => {

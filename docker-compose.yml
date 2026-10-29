@@ -17,7 +17,9 @@ services:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - RUST_LOG=info
-      - DLOAD_JWT_SECRET=changeme-generate-a-random-secret
+      # Optional: leave unset to use a random secret saved in ./data/jwt_secret.
+      # If you set it, use at least 32 random characters (e.g. `openssl rand -hex 32`).
+      # - DLOAD_JWT_SECRET=
       # BitTorrent listen port (must match the published port above).
       - DLOAD_BT_PORT=6881
       # - DLOAD_CORS_ORIGIN=https://your-domain.com

@@ -67,14 +67,20 @@ pub fn router(manager: SharedState, sessions: Arc<SessionStore>) -> Router {
             "/api/v2/torrents/createCategory",
             post(torrents::create_category),
         )
-        .route("/api/v2/torrents/add", post(torrents::add))
+        .route(
+            "/api/v2/torrents/add",
+            post(torrents::add).layer(axum::extract::DefaultBodyLimit::max(110 * 1024 * 1024)),
+        )
         .route("/api/v2/torrents/delete", post(torrents::delete))
         .route("/api/v2/torrents/pause", post(torrents::pause))
         .route("/api/v2/torrents/resume", post(torrents::resume))
         .route("/api/v2/torrents/start", post(torrents::resume))
         .route("/api/v2/torrents/stop", post(torrents::pause))
         .route("/api/v2/torrents/setCategory", post(torrents::set_category))
-        .route("/api/v2/torrents/setShareLimits", post(torrents::noop))
+        .route(
+            "/api/v2/torrents/setShareLimits",
+            post(torrents::set_share_limits),
+        )
         .route("/api/v2/torrents/topPrio", post(torrents::noop))
         .route("/api/v2/torrents/setForceStart", post(torrents::noop))
         .route("/api/v2/torrents/bottomPrio", post(torrents::noop))
@@ -174,6 +180,12 @@ async fn require_session(
 
                 if let Ok(decoded) = base64_decode(encoded) {
                     if let Some((username, password)) = decoded.split_once(':') {
+                        let client_ip = crate::manager::extract_client_ip(&headers, Some(peer));
+                        if let Some(ip) = client_ip {
+                            if state.manager.login_limiter.is_limited(ip).await {
+                                return (StatusCode::TOO_MANY_REQUESTS, "Fails.").into_response();
+                            }
+                        }
                         let state_clone = state.clone();
                         let username = username.to_string();
                         let password = password.to_string();
@@ -186,11 +198,8 @@ async fn require_session(
                             state.manager.basic_auth_cache.insert(encoded).await;
                             return next.run(request).await.into_response();
                         }
-                        // Bad credentials → consume a rate-limit slot to slow brute force.
-                        if let Some(ip) = crate::manager::extract_client_ip(&headers, Some(peer)) {
-                            if !state.manager.login_limiter.try_consume(ip).await {
-                                return (StatusCode::TOO_MANY_REQUESTS, "Fails.").into_response();
-                            }
+                        if let Some(ip) = client_ip {
+                            state.manager.login_limiter.try_consume(ip).await;
                         }
                     }
                 }
@@ -217,10 +226,9 @@ fn base64_decode(input: &str) -> Result<String, ()> {
 
 fn validate_credentials(state: &QbitState, username: &str, password: &str) -> bool {
     // Always run bcrypt to prevent timing oracle on username existence
-    const DUMMY_HASH: &str = "$2b$12$000000000000000000000uGKWMKFz95uGKWMKFz95uGKWMKFz9.";
     let (hash, is_admin) = match state.manager.repo.get_user_by_username(username) {
         Ok(Some(u)) => (u.password_hash, u.role == crate::domain::Role::Admin),
-        _ => (DUMMY_HASH.to_string(), false),
+        _ => (crate::domain::dummy_password_hash().to_string(), false),
     };
     bcrypt::verify(password, &hash).unwrap_or(false) && is_admin
 }

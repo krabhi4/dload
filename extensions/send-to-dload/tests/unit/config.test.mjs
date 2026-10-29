@@ -84,6 +84,12 @@ describe("config / log storage separation", () => {
     expect(data.log).toHaveLength(1);
   });
 
+  it("truncates long URLs in log entries", async () => {
+    const { logActivity } = await import("../../src/shared/config.js");
+    await logActivity({ url: "magnet:?xt=urn:btih:abc&tr=" + "a".repeat(600 * 1024), decision: "sent" });
+    expect(data.log[0].url).toHaveLength(2000);
+  });
+
   it("interleaved log writes do not revert a concurrent settings save", async () => {
     const { saveConfig, logActivity, loadConfig } = await import("../../src/shared/config.js");
     await saveConfig({ serverUrl: "http://a", apiKey: "t1" });

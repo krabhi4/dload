@@ -82,10 +82,27 @@ pub fn sanitize_filename(name: &str) -> String {
     }
 
     if RE_RESERVED.is_match(&s) {
-        return format!("_{}", s);
+        return truncate_filename(format!("_{}", s));
     }
 
-    s
+    truncate_filename(s)
+}
+
+const MAX_FILENAME_BYTES: usize = 240;
+
+fn truncate_filename(s: String) -> String {
+    if s.len() <= MAX_FILENAME_BYTES {
+        return s;
+    }
+    let (stem, ext) = match s.rfind('.') {
+        Some(i) if i > 0 && s.len() - i <= 16 => s.split_at(i),
+        _ => (s.as_str(), ""),
+    };
+    let mut cut = MAX_FILENAME_BYTES - ext.len();
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{}", stem[..cut].trim_end(), ext)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -147,6 +164,12 @@ pub struct Download {
     /// Ordering position for drag-and-drop reordering. Lower = higher priority.
     #[serde(default)]
     pub position: i32,
+    #[serde(default)]
+    pub uploaded_size: u64,
+    #[serde(default)]
+    pub ratio_limit: Option<f64>,
+    #[serde(default)]
+    pub seeding_time_limit: Option<i64>,
 }
 
 impl Download {
@@ -183,6 +206,9 @@ impl Download {
             http_mirror_url: None,
             restart_resume: false,
             position: 0,
+            uploaded_size: 0,
+            ratio_limit: None,
+            seeding_time_limit: None,
         }
     }
 
@@ -222,6 +248,21 @@ mod tests {
         assert_eq!(sanitize_filename("..\\..\\windows\\cmd.exe"), "cmd.exe");
         assert_eq!(sanitize_filename("foo/bar/baz.mkv"), "baz.mkv");
         assert_eq!(sanitize_filename("C:\\Users\\foo.txt"), "foo.txt");
+    }
+
+    #[test]
+    fn sanitize_caps_length_and_keeps_extension() {
+        let long = format!("{}.mkv", "a".repeat(400));
+        let out = sanitize_filename(&long);
+        assert!(out.len() <= 240);
+        assert!(out.ends_with("aaa.mkv"));
+
+        let multibyte = format!("{}.txt", "é".repeat(300));
+        let out = sanitize_filename(&multibyte);
+        assert!(out.len() <= 240);
+        assert!(out.ends_with("é.txt"));
+
+        assert_eq!(sanitize_filename("short.iso"), "short.iso");
     }
 
     #[test]

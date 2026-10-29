@@ -15,12 +15,17 @@ mod domain;
 mod manager;
 mod worker;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 // Embed all UI assets at compile time — single binary, no external files needed
 static INDEX_HTML: &str = include_str!("ui/index.html");
 static STYLE_CSS: &str = include_str!("ui/style.css");
 static APP_JS: &str = include_str!("ui/app.js");
 static FAVICON_SVG: &str = include_str!("ui/favicon.svg");
 static MANIFEST_JSON: &str = include_str!("ui/manifest.json");
+static FONT_HOST_GROTESK: &[u8] = include_bytes!("ui/fonts/host-grotesk.woff2");
+static FONT_ATKINSON_MONO: &[u8] = include_bytes!("ui/fonts/atkinson-hyperlegible-mono.woff2");
 
 #[tokio::main]
 async fn main() {
@@ -49,10 +54,10 @@ async fn main() {
     let manager: manager::SharedState = Arc::new(manager_state);
     let sessions = manager.sessions.clone();
 
-    // Auto-resume torrents that were active before shutdown
+    // Auto-resume downloads that were active before shutdown
     if !auto_resume_ids.is_empty() {
         tracing::info!(
-            "{} torrents will auto-resume after startup",
+            "{} downloads will auto-resume after startup",
             auto_resume_ids.len()
         );
         let mgr = manager.clone();
@@ -97,9 +102,17 @@ async fn main() {
         .route("/ui/style.css", get(style_css))
         .route("/ui/app.js", get(app_js))
         .route("/ui/favicon.svg", get(favicon_svg))
+        .route(
+            "/ui/fonts/host-grotesk.woff2",
+            get(|| font_woff2(FONT_HOST_GROTESK)),
+        )
+        .route(
+            "/ui/fonts/atkinson-hyperlegible-mono.woff2",
+            get(|| font_woff2(FONT_ATKINSON_MONO)),
+        )
         .route("/manifest.json", get(manifest_json))
         .merge(api::router(manager.clone()))
-        .merge(api::qbit_compat::router(manager, sessions))
+        .merge(api::qbit_compat::router(manager.clone(), sessions))
         .layer(security_headers);
 
     if let Some(cors) = cors {
@@ -114,8 +127,20 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .unwrap();
+    manager.shutdown().await;
+}
+
+async fn shutdown_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("Failed to install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+    }
+    tracing::info!("Shutting down");
 }
 
 async fn index() -> impl IntoResponse {
@@ -156,6 +181,17 @@ async fn favicon_svg() -> impl IntoResponse {
         StatusCode::OK,
         [(header::CONTENT_TYPE, "image/svg+xml")],
         FAVICON_SVG,
+    )
+}
+
+async fn font_woff2(bytes: &'static [u8]) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "font/woff2"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        bytes,
     )
 }
 

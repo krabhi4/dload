@@ -1,10 +1,22 @@
 use crate::domain::{sanitize_filename, Download, DownloadStatus};
 use futures::stream::StreamExt;
+use reqwest::header::{
+    CONTENT_DISPOSITION, CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE,
+};
+use reqwest::StatusCode;
+use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
+
+const WRITE_CHUNK: usize = 1 << 20;
+const MIN_STEAL: u64 = 4 << 20;
+const MAX_RETRIES: u32 = 5;
+const SAVE_EVERY: Duration = Duration::from_secs(5);
+pub const MAX_TORRENT_FILE_BYTES: usize = 10 * 1024 * 1024;
 
 pub struct HttpDownloadResult {
     pub download: Download,
@@ -16,10 +28,10 @@ pub struct HttpDownloader {
     max_connections: usize,
     min_split_size: u64,
     cancel_token: CancellationToken,
-    // Shared progress — manager reads these from monitor loop
     pub downloaded: Arc<AtomicU64>,
     pub active_conns: Arc<AtomicU32>,
     pub total_size: Arc<AtomicU64>,
+    pub save_path: Arc<Mutex<Option<String>>>,
 }
 
 impl HttpDownloader {
@@ -37,401 +49,656 @@ impl HttpDownloader {
             downloaded: Arc::new(AtomicU64::new(0)),
             active_conns: Arc::new(AtomicU32::new(0)),
             total_size: Arc::new(AtomicU64::new(0)),
+            save_path: Arc::new(Mutex::new(None)),
         }
     }
 
     pub async fn run(&mut self) -> anyhow::Result<HttpDownloadResult> {
-        let client = crate::worker::ssrf_safe_client_builder(&self.download.url)
-            .await?
-            .pool_max_idle_per_host(self.max_connections + 2)
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(30))
-            .build()?;
+        crate::worker::check_target(&self.download.url)?;
+        let client = crate::worker::http_client()?;
+        let probe = tokio::select! {
+            r = probe(&client, &self.download.url) => r?,
+            _ = self.cancel_token.cancelled() => anyhow::bail!("Download cancelled"),
+        };
+        self.total_size
+            .store(probe.total.unwrap_or(0), Ordering::Relaxed);
 
-        // HEAD request to get content-length and check range support
-        let head_resp = client.head(&self.download.url).send().await?;
-        let headers = head_resp.headers().clone();
-
-        let content_length: u64 = headers
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
-        let accepts_ranges = headers
-            .get("accept-ranges")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.contains("bytes"))
-            .unwrap_or(false);
-
-        // Extract filename from Content-Disposition
-        if let Some(disposition) = headers.get("content-disposition") {
-            if let Ok(val) = disposition.to_str() {
-                if let Some(raw_fname) = extract_filename_from_disposition(val) {
-                    let fname = sanitize_filename(&raw_fname);
-                    self.download.filename = fname.clone();
-                    let dir = std::path::Path::new(&self.download.save_path)
-                        .parent()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "/data".to_string());
-                    self.download.save_path = format!("{}/{}", dir, fname);
-                }
+        let current = PathBuf::from(&self.download.save_path);
+        let (path, file, resume) = match read_state(&sidecar_path(&current))
+            .await
+            .filter(|state| state.owner == self.download.id)
+        {
+            Some(state) => {
+                let len = tokio::fs::metadata(&current).await.map(|m| m.len()).ok();
+                let resume = (probe.ranged
+                    && probe.total == Some(state.total)
+                    && probe.validator == state.validator
+                    && len == Some(state.total))
+                .then_some(state.remaining);
+                let file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(resume.is_none())
+                    .open(&current)
+                    .await?;
+                (current, file, resume)
             }
-        }
-
-        // Detect torrent from content-type
-        let content_type = headers
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let is_torrent_from_header = content_type.contains("application/x-bittorrent");
-
-        self.download.total_size = content_length;
-        self.total_size.store(content_length, Ordering::Relaxed);
-
-        // Decide number of connections
-        let min_chunk = self.min_split_size.max(1024 * 1024); // floor at 1MB
-        let num_conns = if accepts_ranges && content_length > min_chunk {
-            let possible = (content_length / min_chunk) as usize;
-            possible.min(self.max_connections).max(1)
-        } else {
-            1
+            None => {
+                let wanted = match &probe.filename {
+                    Some(name) => current.with_file_name(name),
+                    None => current,
+                };
+                let (path, file) = create_unique(&wanted).await?;
+                (path, file, None)
+            }
         };
 
-        if num_conns <= 1 || content_length == 0 {
-            // Single-connection download
-            self.download_single(&client).await?;
-        } else {
-            // Multi-connection download
-            self.download_multi(&client, content_length, num_conns)
-                .await?;
-        }
+        self.download.save_path = path.to_string_lossy().into_owned();
+        self.download.filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        *self.save_path.lock().unwrap() = Some(self.download.save_path.clone());
 
+        let is_torrent_from_header = probe.content_type.contains("application/x-bittorrent");
+        let known_total = probe.total;
+
+        let transfer = Transfer {
+            client,
+            url: self.download.url.clone(),
+            max_conns: self.max_connections,
+            min_split: self.min_split_size,
+            downloaded: Arc::clone(&self.downloaded),
+            active_conns: Arc::clone(&self.active_conns),
+            cancel: self.cancel_token.clone(),
+        };
+        transfer
+            .run(
+                file.into_std().await,
+                probe,
+                resume,
+                Some((sidecar_path(&path), self.download.id.clone())),
+            )
+            .await?;
+
+        let downloaded = self.downloaded.load(Ordering::Relaxed);
         self.download.status = DownloadStatus::Completed;
         self.download.speed = 0;
-        self.download.downloaded_size = self.downloaded.load(Ordering::Relaxed);
+        self.download.downloaded_size = downloaded;
+        self.download.total_size = known_total.unwrap_or(downloaded);
 
-        // Detect torrent file
-        let is_torrent = is_torrent_from_header
-            || self.download.filename.ends_with(".torrent")
-            || self.download.save_path.ends_with(".torrent");
-
-        let is_torrent = if !is_torrent {
-            check_torrent_magic(&self.download.save_path).await
-        } else {
-            true
-        };
+        let is_torrent = downloaded <= MAX_TORRENT_FILE_BYTES as u64
+            && (is_torrent_from_header
+                || self.download.filename.ends_with(".torrent")
+                || check_torrent_magic(&self.download.save_path).await);
 
         Ok(HttpDownloadResult {
             download: self.download.clone(),
             is_torrent_file: is_torrent,
         })
     }
+}
 
-    async fn download_single(&mut self, client: &reqwest::Client) -> anyhow::Result<()> {
-        let response = client.get(&self.download.url).send().await?;
+pub struct Probe {
+    pub total: Option<u64>,
+    pub ranged: bool,
+    pub filename: Option<String>,
+    pub content_type: String,
+    validator: Option<String>,
+    response: Option<reqwest::Response>,
+}
 
-        // Update filename/size from GET response if HEAD didn't provide them
-        if self.download.total_size == 0 {
-            if let Some(len) = response.headers().get("content-length") {
-                if let Ok(s) = len.to_str() {
-                    if let Ok(v) = s.parse::<u64>() {
-                        self.download.total_size = v;
-                        self.total_size.store(v, Ordering::Relaxed);
-                    }
-                }
-            }
-        }
-        if let Some(disposition) = response.headers().get("content-disposition") {
-            if let Ok(val) = disposition.to_str() {
-                if let Some(raw_fname) = extract_filename_from_disposition(val) {
-                    let fname = sanitize_filename(&raw_fname);
-                    self.download.filename = fname.clone();
-                    let dir = std::path::Path::new(&self.download.save_path)
-                        .parent()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "/data".to_string());
-                    self.download.save_path = format!("{}/{}", dir, fname);
-                }
-            }
-        }
-
-        self.active_conns.store(1, Ordering::Relaxed);
-        let file = tokio::fs::File::create(&self.download.save_path).await?;
-        let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file);
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            if self.cancel_token.is_cancelled() {
-                let _ = writer.flush().await;
-                self.active_conns.store(0, Ordering::Relaxed);
-                return Err(anyhow::anyhow!("Download cancelled"));
-            }
-            let chunk = chunk?;
-            writer.write_all(&chunk).await?;
-            self.downloaded
-                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
-        }
-
-        writer.flush().await?;
-        self.active_conns.store(0, Ordering::Relaxed);
-        Ok(())
+pub async fn probe(client: &reqwest::Client, url: &str) -> anyhow::Result<Probe> {
+    let mut resp = client.get(url).header(RANGE, "bytes=0-").send().await?;
+    let ranged_total = (resp.status() == StatusCode::PARTIAL_CONTENT)
+        .then(|| {
+            resp.headers()
+                .get(CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_range)
+        })
+        .flatten()
+        .filter(|(start, _)| *start == 0)
+        .and_then(|(_, total)| total);
+    if resp.status() == StatusCode::RANGE_NOT_SATISFIABLE
+        || (resp.status() == StatusCode::PARTIAL_CONTENT && ranged_total.is_none())
+    {
+        resp = client.get(url).send().await?;
+    }
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("server returned HTTP {}", status);
     }
 
-    async fn download_multi(
-        &mut self,
-        client: &reqwest::Client,
-        total_size: u64,
-        num_conns: usize,
-    ) -> anyhow::Result<()> {
-        // Pre-allocate file
-        let file = tokio::fs::OpenOptions::new()
+    let headers = resp.headers();
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    let filename = header(CONTENT_DISPOSITION)
+        .and_then(extract_filename_from_disposition)
+        .or_else(|| {
+            resp.url()
+                .path_segments()
+                .and_then(|mut s| s.next_back())
+                .filter(|s| s.contains('.'))
+                .map(str::to_string)
+        })
+        .map(|n| sanitize_filename(&n));
+    let content_type = header(CONTENT_TYPE).unwrap_or("").to_lowercase();
+    let validator = header(ETAG).or(header(LAST_MODIFIED)).map(str::to_string);
+
+    let (total, ranged) = match ranged_total {
+        Some(total) if status == StatusCode::PARTIAL_CONTENT => (Some(total), true),
+        _ => (resp.content_length(), false),
+    };
+
+    Ok(Probe {
+        total,
+        ranged,
+        filename,
+        content_type,
+        validator,
+        response: Some(resp),
+    })
+}
+
+fn parse_content_range(value: &str) -> Option<(u64, Option<u64>)> {
+    let (range, total) = value.trim().strip_prefix("bytes ")?.split_once('/')?;
+    let start = range.split_once('-')?.0.trim().parse().ok()?;
+    Some((start, total.trim().parse().ok()))
+}
+
+pub fn sidecar_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".dload");
+    PathBuf::from(s)
+}
+
+async fn create_unique(path: &Path) -> anyhow::Result<(PathBuf, tokio::fs::File)> {
+    let mut stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    if let Some(base) = stem.strip_suffix(".tar") {
+        ext = format!(".tar{}", ext);
+        stem = base.to_string();
+    }
+    for n in 0..1000 {
+        let candidate = if n == 0 {
+            path.to_path_buf()
+        } else {
+            path.with_file_name(format!("{} ({}){}", stem, n, ext))
+        };
+        match tokio::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&self.download.save_path)
-            .await?;
-        file.set_len(total_size).await?;
-        drop(file);
+            .create_new(true)
+            .open(&candidate)
+            .await
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    anyhow::bail!("no free filename for {}", path.display())
+}
 
-        let chunk_size = total_size / num_conns as u64;
-        let mut join_set = tokio::task::JoinSet::new();
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ResumeState {
+    owner: String,
+    total: u64,
+    validator: Option<String>,
+    remaining: Vec<(u64, u64)>,
+}
 
-        for i in 0..num_conns {
-            let start = i as u64 * chunk_size;
-            let end = if i == num_conns - 1 {
-                total_size - 1
-            } else {
-                start + chunk_size - 1
-            };
+async fn read_state(sidecar: &Path) -> Option<ResumeState> {
+    serde_json::from_slice(&tokio::fs::read(sidecar).await.ok()?).ok()
+}
 
-            let client = client.clone();
-            let url = self.download.url.clone();
-            let path = self.download.save_path.clone();
-            let downloaded = Arc::clone(&self.downloaded);
-            let active_conns = Arc::clone(&self.active_conns);
-            let cancel_token = self.cancel_token.clone();
+async fn write_state(sidecar: &Path, state: &ResumeState) -> std::io::Result<()> {
+    let mut tmp = sidecar.as_os_str().to_owned();
+    tmp.push(".tmp");
+    tokio::fs::write(&tmp, serde_json::to_vec(state)?).await?;
+    tokio::fs::rename(&tmp, sidecar).await
+}
 
-            join_set.spawn(async move {
-                active_conns.fetch_add(1, Ordering::Relaxed);
-                let result =
-                    download_range(&client, &url, &path, start, end, &downloaded, &cancel_token)
-                        .await;
-                active_conns.fetch_sub(1, Ordering::Relaxed);
-                result
-            });
+struct Seg {
+    pos: u64,
+    end: u64,
+    done: u64,
+    owned: bool,
+}
+
+impl Seg {
+    fn new(start: u64, end: u64) -> Self {
+        Self {
+            pos: start,
+            end,
+            done: start,
+            owned: false,
+        }
+    }
+}
+
+fn next_work(segs: &mut Vec<Seg>) -> Option<usize> {
+    if let Some(i) = segs.iter().position(|s| !s.owned && s.pos < s.end) {
+        segs[i].owned = true;
+        return Some(i);
+    }
+    let (i, rem) = segs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.owned)
+        .map(|(i, s)| (i, s.end - s.pos))
+        .max_by_key(|&(_, rem)| rem)?;
+    if rem < MIN_STEAL {
+        return None;
+    }
+    let mid = segs[i].pos + rem / 2;
+    let end = std::mem::replace(&mut segs[i].end, mid);
+    let mut seg = Seg::new(mid, end);
+    seg.owned = true;
+    segs.push(seg);
+    Some(segs.len() - 1)
+}
+
+enum SegError {
+    Retry(anyhow::Error),
+    Fatal(anyhow::Error),
+}
+
+impl SegError {
+    fn into_inner(self) -> anyhow::Error {
+        match self {
+            SegError::Retry(e) | SegError::Fatal(e) => e,
+        }
+    }
+}
+
+struct Ctx {
+    client: reqwest::Client,
+    url: String,
+    file: std::fs::File,
+    total: u64,
+    segs: Mutex<Vec<Seg>>,
+    downloaded: Arc<AtomicU64>,
+    cancel: CancellationToken,
+}
+
+impl Ctx {
+    fn range(&self, idx: usize) -> (u64, u64) {
+        let segs = self.segs.lock().unwrap();
+        (segs[idx].pos, segs[idx].end)
+    }
+
+    fn claim(&self, idx: usize, len: usize) -> (usize, bool) {
+        let mut segs = self.segs.lock().unwrap();
+        let seg = &mut segs[idx];
+        let take = (seg.end - seg.pos).min(len as u64);
+        seg.pos += take;
+        (take as usize, seg.pos >= seg.end)
+    }
+
+    fn remaining(&self) -> Vec<(u64, u64)> {
+        self.segs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.done < s.end)
+            .map(|s| (s.done, s.end))
+            .collect()
+    }
+}
+
+pub struct Transfer {
+    pub client: reqwest::Client,
+    pub url: String,
+    pub max_conns: usize,
+    pub min_split: u64,
+    pub downloaded: Arc<AtomicU64>,
+    pub active_conns: Arc<AtomicU32>,
+    pub cancel: CancellationToken,
+}
+
+impl Transfer {
+    pub async fn run(
+        &self,
+        file: std::fs::File,
+        mut probe: Probe,
+        resume: Option<Vec<(u64, u64)>>,
+        sidecar: Option<(PathBuf, String)>,
+    ) -> anyhow::Result<()> {
+        let total = probe.total.unwrap_or(0);
+        let save = |remaining: Vec<(u64, u64)>| {
+            let sidecar = sidecar.clone();
+            let validator = probe.validator.clone();
+            async move {
+                if let Some((sidecar, owner)) = sidecar {
+                    let state = ResumeState {
+                        owner,
+                        total,
+                        validator,
+                        remaining,
+                    };
+                    if let Err(e) = write_state(&sidecar, &state).await {
+                        tracing::warn!("Failed to save resume state {}: {}", sidecar.display(), e);
+                    }
+                }
+            }
+        };
+        let resuming = resume.is_some();
+        let segs = match resume {
+            Some(remaining) => remaining
+                .into_iter()
+                .map(|(start, end)| Seg::new(start, end))
+                .collect(),
+            None if probe.ranged => {
+                file.set_len(total)?;
+                let n =
+                    (total / self.min_split.max(1 << 20)).clamp(1, self.max_conns.max(1) as u64);
+                (0..n)
+                    .map(|i| Seg::new(total * i / n, total * (i + 1) / n))
+                    .collect()
+            }
+            None => vec![Seg::new(0, probe.total.unwrap_or(u64::MAX))],
+        };
+        let left: u64 = segs.iter().map(|s| s.end - s.pos).sum();
+        if probe.ranged {
+            self.downloaded.store(total - left, Ordering::Relaxed);
+        }
+        if !resuming {
+            save(vec![(0, total)]).await;
         }
 
-        // Wait for all tasks — don't abort others if one fails
-        let mut first_error: Option<anyhow::Error> = None;
-        while let Some(result) = join_set.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    if first_error.is_none() {
-                        first_error = Some(e);
+        let ctx = Arc::new(Ctx {
+            client: self.client.clone(),
+            url: self.url.clone(),
+            file,
+            total,
+            segs: Mutex::new(segs),
+            downloaded: Arc::clone(&self.downloaded),
+            cancel: self.cancel.child_token(),
+        });
+
+        if !probe.ranged {
+            let resp = probe
+                .response
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("missing response body"))?;
+            ctx.segs.lock().unwrap()[0].owned = true;
+            self.active_conns.store(1, Ordering::Relaxed);
+            let result = stream_into(&ctx, 0, resp).await;
+            self.active_conns.store(0, Ordering::Relaxed);
+            result.map_err(SegError::into_inner)?;
+            let got = ctx.range(0).0;
+            if probe.total.is_some_and(|t| got < t) {
+                anyhow::bail!("connection closed after {} of {} bytes", got, total);
+            }
+            remove_sidecar(sidecar.as_ref()).await;
+            return Ok(());
+        }
+
+        let n = (left / self.min_split.max(1 << 20)).clamp(1, self.max_conns.max(1) as u64);
+        let mut set = JoinSet::new();
+        let mut first = probe.response.take();
+        for _ in 0..n {
+            let Some(idx) = next_work(&mut ctx.segs.lock().unwrap()) else {
+                break;
+            };
+            let resp = if ctx.range(idx).0 == 0 {
+                first.take()
+            } else {
+                None
+            };
+            spawn_segment(&mut set, &ctx, idx, resp);
+        }
+        drop(first);
+        self.active_conns.store(set.len() as u32, Ordering::Relaxed);
+
+        let mut tick = tokio::time::interval(SAVE_EVERY);
+        tick.tick().await;
+        let mut failure: Option<anyhow::Error> = None;
+        loop {
+            let joined = tokio::select! {
+                j = set.join_next() => j,
+                _ = tick.tick() => {
+                    save(ctx.remaining()).await;
+                    continue;
+                }
+            };
+            let Some(joined) = joined else { break };
+            match joined {
+                Ok((_, Ok(()))) => {
+                    if !ctx.cancel.is_cancelled() {
+                        if let Some(idx) = next_work(&mut ctx.segs.lock().unwrap()) {
+                            spawn_segment(&mut set, &ctx, idx, None);
+                        }
                     }
+                }
+                Ok((idx, Err(SegError::Retry(e)))) => {
+                    tracing::warn!("Connection gave up on {}: {:#}", self.url, e);
+                    ctx.segs.lock().unwrap()[idx].owned = false;
+                    failure = Some(e);
+                }
+                Ok((_, Err(SegError::Fatal(e)))) => {
+                    ctx.cancel.cancel();
+                    failure.get_or_insert(e);
                 }
                 Err(e) => {
-                    if first_error.is_none() {
-                        first_error = Some(anyhow::anyhow!("Task panicked: {}", e));
-                    }
+                    ctx.cancel.cancel();
+                    failure.get_or_insert(anyhow::anyhow!("download task panicked: {}", e));
                 }
             }
+            self.active_conns.store(set.len() as u32, Ordering::Relaxed);
         }
-        self.active_conns.store(0, Ordering::Relaxed);
 
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
+        let remaining = ctx.remaining();
+        if remaining.is_empty() {
+            remove_sidecar(sidecar.as_ref()).await;
+            return Ok(());
         }
+        save(remaining).await;
+        if self.cancel.is_cancelled() {
+            anyhow::bail!("Download cancelled");
+        }
+        Err(failure.unwrap_or_else(|| anyhow::anyhow!("download incomplete")))
     }
 }
 
-async fn download_range(
-    client: &reqwest::Client,
-    url: &str,
-    path: &str,
-    start: u64,
-    end: u64,
-    downloaded: &Arc<AtomicU64>,
-    cancel_token: &CancellationToken,
-) -> anyhow::Result<()> {
-    let max_retries = 5;
-    let mut attempt = 0;
-    let mut current_start = start;
+async fn remove_sidecar(sidecar: Option<&(PathBuf, String)>) {
+    if let Some((sidecar, _)) = sidecar {
+        let _ = tokio::fs::remove_file(sidecar).await;
+    }
+}
 
+fn spawn_segment(
+    set: &mut JoinSet<(usize, Result<(), SegError>)>,
+    ctx: &Arc<Ctx>,
+    idx: usize,
+    first: Option<reqwest::Response>,
+) {
+    let ctx = Arc::clone(ctx);
+    set.spawn(async move { (idx, fetch_segment(&ctx, idx, first).await) });
+}
+
+async fn fetch_segment(
+    ctx: &Arc<Ctx>,
+    idx: usize,
+    mut first: Option<reqwest::Response>,
+) -> Result<(), SegError> {
+    let mut failures = 0u32;
     loop {
-        attempt += 1;
-        match download_range_inner(
-            client,
-            url,
-            path,
-            current_start,
-            end,
-            downloaded,
-            cancel_token,
-        )
-        .await
-        {
-            Ok(()) => return Ok(()),
-            Err((e, _)) if cancel_token.is_cancelled() => return Err(e),
-            Err((e, bytes_written)) => {
-                // Advance past successfully written bytes so retry resumes
-                current_start += bytes_written;
-                if current_start > end {
-                    return Ok(()); // Already got everything despite the error
-                }
-                if attempt >= max_retries {
-                    return Err(anyhow::anyhow!(
-                        "Range {}-{} failed after {} attempts: {}",
-                        start,
-                        end,
-                        max_retries,
-                        e
-                    ));
-                }
-                let backoff = Duration::from_secs(2u64.pow(attempt as u32 - 1).min(30));
-                tracing::warn!(
-                    "Range {}-{} attempt {}/{} failed at byte {}: {}, retrying in {:?}...",
-                    start,
-                    end,
-                    attempt,
-                    max_retries,
-                    current_start,
-                    e,
-                    backoff,
-                );
-                tokio::time::sleep(backoff).await;
+        let (pos, end) = ctx.range(idx);
+        if pos >= end {
+            return Ok(());
+        }
+        let outcome = match first.take() {
+            Some(resp) => stream_into(ctx, idx, resp).await,
+            None => match request_range(ctx, pos, end).await {
+                Ok(resp) => stream_into(ctx, idx, resp).await,
+                Err(e) => Err(e),
+            },
+        };
+        let err = match outcome {
+            Err(SegError::Fatal(e)) => return Err(SegError::Fatal(e)),
+            _ if ctx.range(idx).0 > pos => {
+                failures = 0;
+                continue;
             }
+            Err(SegError::Retry(e)) => e,
+            Ok(()) => anyhow::anyhow!("server closed the connection at byte {}", pos),
+        };
+        failures += 1;
+        if failures >= MAX_RETRIES {
+            return Err(SegError::Retry(err));
+        }
+        let backoff = Duration::from_secs(1 << (failures - 1));
+        tracing::debug!(
+            "Range {}-{} retry {} in {:?}: {:#}",
+            pos,
+            end,
+            failures,
+            backoff,
+            err
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => {}
+            _ = ctx.cancel.cancelled() => return Err(SegError::Fatal(anyhow::anyhow!("Download cancelled"))),
         }
     }
 }
 
-/// Returns Ok(()) on success, or Err((error, bytes_successfully_written)) on failure.
-/// Bytes written are NOT subtracted from `downloaded` — the caller handles resume logic.
-async fn download_range_inner(
-    client: &reqwest::Client,
-    url: &str,
-    path: &str,
-    start: u64,
-    end: u64,
-    downloaded: &Arc<AtomicU64>,
-    cancel_token: &CancellationToken,
-) -> Result<(), (anyhow::Error, u64)> {
-    let resp = client
-        .get(url)
-        .header("Range", format!("bytes={}-{}", start, end))
-        .send()
-        .await
-        .map_err(|e| (e.into(), 0u64))?;
-
+async fn request_range(ctx: &Ctx, pos: u64, end: u64) -> Result<reqwest::Response, SegError> {
+    let send = ctx
+        .client
+        .get(&ctx.url)
+        .header(RANGE, format!("bytes={}-{}", pos, end - 1))
+        .send();
+    let resp = tokio::select! {
+        r = send => r.map_err(|e| SegError::Retry(e.into()))?,
+        _ = ctx.cancel.cancelled() => return Err(SegError::Fatal(anyhow::anyhow!("Download cancelled"))),
+    };
     let status = resp.status();
-    if status == reqwest::StatusCode::OK && start > 0 {
-        return Err((
-            anyhow::anyhow!(
-                "Server ignored Range header (returned 200 instead of 206 for bytes {}-{})",
-                start,
-                end
-            ),
-            0,
-        ));
+    if status == StatusCode::OK && pos == 0 {
+        return Ok(resp);
     }
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-    {
-        return Err((
-            anyhow::anyhow!("Server throttling: {} for range {}-{}", status, start, end),
-            0,
-        ));
+    if status != StatusCode::PARTIAL_CONTENT {
+        return Err(SegError::Retry(anyhow::anyhow!(
+            "server returned HTTP {} for bytes {}-{}",
+            status,
+            pos,
+            end - 1
+        )));
     }
-    if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
-        return Err((
-            anyhow::anyhow!("Unexpected status {} for range request", status),
-            0,
-        ));
-    }
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .await
-        .map_err(|e| (e.into(), 0u64))?;
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(|e| (e.into(), 0u64))?;
-    let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, file);
-
-    let expected = match (end - start).checked_add(1) {
-        Some(v) => v,
-        None => {
-            return Err((
-                anyhow::anyhow!("Range length overflow: end={}, start={}", end, start),
-                0u64,
-            ));
+    let content_range = resp
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_content_range);
+    if let Some((start, total)) = content_range {
+        if start != pos || total.is_some_and(|t| t != ctx.total) {
+            return Err(SegError::Fatal(anyhow::anyhow!(
+                "server returned a different byte range than requested; the remote file may have changed"
+            )));
         }
-    };
-    let mut bytes_written: u64 = 0;
+    }
+    Ok(resp)
+}
+
+async fn stream_into(ctx: &Arc<Ctx>, idx: usize, resp: reqwest::Response) -> Result<(), SegError> {
     let mut stream = resp.bytes_stream();
-
-    let loop_result: Result<(), anyhow::Error> = loop {
-        let chunk_result = tokio::time::timeout(Duration::from_secs(60), stream.next()).await;
-        match chunk_result {
-            Ok(Some(chunk)) => {
-                if cancel_token.is_cancelled() {
-                    let _ = writer.flush().await;
-                    break Err(anyhow::anyhow!("Download cancelled"));
-                }
-                let chunk = match chunk {
-                    Ok(c) => c,
-                    Err(e) => break Err(e.into()),
-                };
-                if let Err(e) = writer.write_all(&chunk).await {
-                    break Err(e.into());
-                }
-                let len = chunk.len() as u64;
-                bytes_written += len;
-                downloaded.fetch_add(len, Ordering::Relaxed);
-            }
-            Ok(None) => break Ok(()), // Stream ended
-            Err(_) => {
-                let _ = writer.flush().await;
-                break Err(anyhow::anyhow!(
-                    "Stalled for 60s after {} of {} bytes",
-                    bytes_written,
-                    expected
-                ));
+    let mut buf = Vec::with_capacity(WRITE_CHUNK);
+    let mut at = ctx.range(idx).0;
+    let mut pending = None;
+    let result = loop {
+        let next = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => break Err(SegError::Fatal(anyhow::anyhow!("Download cancelled"))),
+            next = stream.next() => next,
+        };
+        let chunk = match next {
+            None => break Ok(()),
+            Some(Err(e)) => break Err(SegError::Retry(e.into())),
+            Some(Ok(chunk)) => chunk,
+        };
+        let (take, finished) = ctx.claim(idx, chunk.len());
+        buf.extend_from_slice(&chunk[..take]);
+        ctx.downloaded.fetch_add(take as u64, Ordering::Relaxed);
+        if buf.len() >= WRITE_CHUNK {
+            if let Err(e) = write_behind(ctx, idx, &mut pending, &mut buf, &mut at).await {
+                return Err(SegError::Fatal(e));
             }
         }
+        if finished {
+            break Ok(());
+        }
     };
-
-    if let Err(e) = loop_result {
-        // Flush what we have — caller will resume from bytes_written offset
-        let _ = writer.flush().await;
-        return Err((e, bytes_written));
+    let flushed = match write_behind(ctx, idx, &mut pending, &mut buf, &mut at).await {
+        Ok(()) => settle(ctx, idx, &mut pending).await,
+        Err(e) => Err(e),
+    };
+    match flushed {
+        Ok(()) => result,
+        Err(e) => Err(SegError::Fatal(e)),
     }
+}
 
-    if let Err(e) = writer.flush().await {
-        return Err((e.into(), bytes_written));
+async fn write_behind(
+    ctx: &Arc<Ctx>,
+    idx: usize,
+    pending: &mut Option<JoinHandle<std::io::Result<u64>>>,
+    buf: &mut Vec<u8>,
+    at: &mut u64,
+) -> anyhow::Result<()> {
+    settle(ctx, idx, pending).await?;
+    if buf.is_empty() {
+        return Ok(());
     }
-
-    // Allow slight overshoot (some servers send extra bytes) but catch short reads
-    if bytes_written < expected {
-        return Err((
-            anyhow::anyhow!(
-                "Range {}-{}: expected {} bytes, got {}",
-                start,
-                end,
-                expected,
-                bytes_written
-            ),
-            bytes_written,
-        ));
-    }
-
+    let data = std::mem::replace(buf, Vec::with_capacity(WRITE_CHUNK));
+    let offset = *at;
+    *at += data.len() as u64;
+    let ctx = Arc::clone(ctx);
+    *pending = Some(tokio::task::spawn_blocking(move || {
+        ctx.file
+            .write_all_at(&data, offset)
+            .map(|()| offset + data.len() as u64)
+    }));
     Ok(())
+}
+
+async fn settle(
+    ctx: &Ctx,
+    idx: usize,
+    pending: &mut Option<JoinHandle<std::io::Result<u64>>>,
+) -> anyhow::Result<()> {
+    if let Some(handle) = pending.take() {
+        let done = handle.await??;
+        ctx.segs.lock().unwrap()[idx].done = done;
+    }
+    Ok(())
+}
+
+pub async fn fetch_small(url: &str, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    crate::worker::check_target(url)?;
+    let resp = crate::worker::http_client()?
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?;
+    if resp.content_length().is_some_and(|n| n > max_bytes as u64) {
+        anyhow::bail!("response larger than {} bytes", max_bytes);
+    }
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        body.extend_from_slice(&chunk?);
+        if body.len() > max_bytes {
+            anyhow::bail!("response larger than {} bytes", max_bytes);
+        }
+    }
+    Ok(body)
 }
 
 fn extract_filename_from_disposition(header: &str) -> Option<String> {
@@ -508,21 +775,168 @@ fn unescape_quoted_pairs(s: &str) -> String {
 }
 
 async fn check_torrent_magic(path: &str) -> bool {
-    if let Ok(bytes) = tokio::fs::read(path).await {
-        if bytes.len() > 2 {
-            return bytes[0] == b'd'
-                && (bytes.starts_with(b"d8:announce")
-                    || bytes.starts_with(b"d13:")
-                    || bytes.starts_with(b"d7:comment")
-                    || bytes.starts_with(b"d4:info"));
-        }
+    use tokio::io::AsyncReadExt;
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let mut head = [0u8; 11];
+    if file.read_exact(&mut head).await.is_err() {
+        return false;
     }
-    false
+    head.starts_with(b"d8:announce")
+        || head.starts_with(b"d13:")
+        || head.starts_with(b"d7:comment")
+        || head.starts_with(b"d4:info")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── segmented transfer ──────────────────────────────────────────────
+
+    fn sample_bytes(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 31 % 251) as u8).collect()
+    }
+
+    async fn serve(dir: &Path) -> String {
+        let app = axum::Router::new()
+            .route(
+                "/norange.bin",
+                axum::routing::get(|| async { sample_bytes(3 << 20) }),
+            )
+            .fallback_service(tower_http::services::ServeDir::new(dir));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{}", addr)
+    }
+
+    fn transfer_for(url: String, max_conns: usize) -> Transfer {
+        Transfer {
+            client: reqwest::Client::builder().http1_only().build().unwrap(),
+            url,
+            max_conns,
+            min_split: 1 << 20,
+            downloaded: Arc::new(AtomicU64::new(0)),
+            active_conns: Arc::new(AtomicU32::new(0)),
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_connection_download_is_byte_exact() {
+        let src = tempfile::tempdir().unwrap();
+        let data = sample_bytes(30 * 1024 * 1024 + 123);
+        std::fs::write(src.path().join("big.bin"), &data).unwrap();
+        let base = serve(src.path()).await;
+
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("big.bin");
+        let sidecar = sidecar_path(&path);
+        let t = transfer_for(format!("{}/big.bin", base), 8);
+        let probe = probe(&t.client, &t.url).await.unwrap();
+        assert!(probe.ranged);
+        assert_eq!(probe.total, Some(data.len() as u64));
+        let file = std::fs::File::create(&path).unwrap();
+        t.run(file, probe, None, Some((sidecar.clone(), "id".to_string())))
+            .await
+            .unwrap();
+
+        assert!(std::fs::read(&path).unwrap() == data);
+        assert_eq!(t.downloaded.load(Ordering::Relaxed), data.len() as u64);
+        assert!(!sidecar.exists());
+    }
+
+    #[tokio::test]
+    async fn resume_fetches_only_remaining_ranges() {
+        let src = tempfile::tempdir().unwrap();
+        let data = sample_bytes(8 * 1024 * 1024);
+        std::fs::write(src.path().join("r.bin"), &data).unwrap();
+        let base = serve(src.path()).await;
+
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("r.bin");
+        let mut partial = data.clone();
+        partial[1_000_000..3_000_000].fill(0);
+        partial[6_000_000..].fill(0);
+        std::fs::write(&path, &partial).unwrap();
+
+        let t = transfer_for(format!("{}/r.bin", base), 4);
+        let probe = probe(&t.client, &t.url).await.unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let remaining = vec![(1_000_000, 3_000_000), (6_000_000, data.len() as u64)];
+        t.run(file, probe, Some(remaining), None).await.unwrap();
+
+        assert!(std::fs::read(&path).unwrap() == data);
+    }
+
+    #[tokio::test]
+    async fn server_without_range_support_streams_once() {
+        let src = tempfile::tempdir().unwrap();
+        let base = serve(src.path()).await;
+        let out = tempfile::tempdir().unwrap();
+        let path = out.path().join("n.bin");
+
+        let t = transfer_for(format!("{}/norange.bin", base), 8);
+        let probe = probe(&t.client, &t.url).await.unwrap();
+        assert!(!probe.ranged);
+        let file = std::fs::File::create(&path).unwrap();
+        t.run(file, probe, None, None).await.unwrap();
+
+        assert!(std::fs::read(&path).unwrap() == sample_bytes(3 << 20));
+    }
+
+    #[tokio::test]
+    async fn probe_reports_http_errors() {
+        let src = tempfile::tempdir().unwrap();
+        let base = serve(src.path()).await;
+        let client = reqwest::Client::new();
+        let err = probe(&client, &format!("{}/missing.bin", base))
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("404"));
+    }
+
+    #[test]
+    fn next_work_adopts_orphans_then_splits_largest() {
+        let mut segs = vec![Seg::new(0, 100 << 20), Seg::new(100 << 20, 120 << 20)];
+        segs[0].owned = true;
+        assert_eq!(next_work(&mut segs), Some(1));
+        assert_eq!(next_work(&mut segs), Some(2));
+        assert_eq!(segs[0].end, 50 << 20);
+        assert_eq!((segs[2].pos, segs[2].end), (50 << 20, 100 << 20));
+
+        let mut tiny = vec![Seg::new(0, 1 << 20)];
+        tiny[0].owned = true;
+        assert_eq!(next_work(&mut tiny), None);
+    }
+
+    #[test]
+    fn content_range_parsing() {
+        assert_eq!(
+            parse_content_range("bytes 0-99/1000"),
+            Some((0, Some(1000)))
+        );
+        assert_eq!(parse_content_range("bytes 5-9/*"), Some((5, None)));
+        assert_eq!(parse_content_range("items 0-1/2"), None);
+    }
+
+    #[tokio::test]
+    async fn create_unique_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let wanted = dir.path().join("file.zip");
+        std::fs::write(&wanted, b"keep").unwrap();
+        let (path, _) = create_unique(&wanted).await.unwrap();
+        assert_eq!(path, dir.path().join("file (1).zip"));
+        assert_eq!(std::fs::read(&wanted).unwrap(), b"keep");
+
+        let tarball = dir.path().join("src.tar.gz");
+        std::fs::write(&tarball, b"keep").unwrap();
+        let (path, _) = create_unique(&tarball).await.unwrap();
+        assert_eq!(path, dir.path().join("src (1).tar.gz"));
+    }
 
     // ─── rfc5987_percent_decode ──────────────────────────────────────────
 

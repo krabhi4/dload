@@ -4,7 +4,7 @@
 
 (function () {
   const SEL = [
-    'a[href^="magnet:"]',
+    'a[href^="magnet:" i]',
     'a[href$=".torrent" i]',
     'a[href*=".torrent?" i]',
     'a[href*=".torrent#" i]',
@@ -16,6 +16,7 @@
     a.addEventListener(
       "click",
       (e) => {
+        if (!e.isTrusted) return;
         if (e.defaultPrevented) return;
         if (e.button !== 0) return; // only left click
         if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;

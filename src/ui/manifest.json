@@ -3,6 +3,6 @@
   "short_name": "DLoad",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0c0c0a",
+  "background_color": "#0d1013",
   "theme_color": "#d4a24e"
 }

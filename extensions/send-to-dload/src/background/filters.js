@@ -92,6 +92,12 @@ export function applyHostFilter(item, rules, basicResult) {
   return basicResult;
 }
 
+export function downloadSize(item) {
+  if (item.totalBytes > 0) return item.totalBytes;
+  if (item.fileSize > 0) return item.fileSize;
+  return undefined;
+}
+
 /** classify + shouldCapture + applyHostFilter in one call. */
 export function evaluate(input, rules) {
   const item = { ...input, ...classify(input) };

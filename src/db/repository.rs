@@ -55,8 +55,8 @@ impl Repository {
              "INSERT INTO downloads (id, url, filename, save_path, total_size, downloaded_size,
               speed, progress, status, protocol, connections, created_at, completed_at, error_message,
               info_hash, category, content_path, http_mirror_status, http_mirror_url, restart_resume, position,
-              download_folder, tags)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+              download_folder, tags, uploaded_size, ratio_limit, seeding_time_limit)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 download.id,
                 download.url,
@@ -81,6 +81,9 @@ impl Repository {
                 download.position,
                 download.download_folder,
                 download.tags_to_string(),
+                download.uploaded_size as i64,
+                download.ratio_limit,
+                download.seeding_time_limit,
             ],
         )?;
         Ok(())
@@ -92,8 +95,9 @@ impl Repository {
              "UPDATE downloads SET filename=?1, save_path=?2, total_size=?3, downloaded_size=?4,
               speed=?5, progress=?6, status=?7, completed_at=?8, error_message=?9, connections=?10,
               info_hash=?11, category=?12, content_path=?13, http_mirror_status=?14, http_mirror_url=?15,
-              restart_resume=?16, position=?17, download_folder=?18, tags=?19
-              WHERE id=?20",
+              restart_resume=?16, position=?17, download_folder=?18, tags=?19, protocol=?20,
+              uploaded_size=?21, ratio_limit=?22, seeding_time_limit=?23
+              WHERE id=?24",
             params![
                 download.filename,
                 download.save_path,
@@ -114,6 +118,10 @@ impl Repository {
                 download.position,
                 download.download_folder,
                 download.tags_to_string(),
+                format!("{:?}", download.protocol),
+                download.uploaded_size as i64,
+                download.ratio_limit,
+                download.seeding_time_limit,
                 download.id,
             ],
         )?;
@@ -126,7 +134,7 @@ impl Repository {
              "SELECT id, url, filename, save_path, total_size, downloaded_size, speed,
               progress, status, protocol, connections, created_at, completed_at, error_message,
               info_hash, category, content_path, http_mirror_status, http_mirror_url, restart_resume,
-              position, download_folder, tags
+              position, download_folder, tags, uploaded_size, ratio_limit, seeding_time_limit
               FROM downloads ORDER BY position ASC, created_at ASC",
         )?;
 
@@ -172,6 +180,9 @@ impl Repository {
                     restart_resume: row.get::<_, i32>(19).unwrap_or(0) != 0,
                     position: row.get::<_, i32>(20).unwrap_or(0),
                     download_folder: row.get::<_, Option<String>>(21)?.unwrap_or_default(),
+                    uploaded_size: row.get::<_, Option<i64>>(23)?.unwrap_or(0) as u64,
+                    ratio_limit: row.get(24)?,
+                    seeding_time_limit: row.get(25)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -290,13 +301,14 @@ impl Repository {
     pub fn insert_user(&self, user: &User) -> Result<(), InsertUserError> {
         let conn = self.db.conn.lock().unwrap();
         match conn.execute(
-            "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO users (id, username, password_hash, role, created_at, token_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 user.id,
                 user.username,
                 user.password_hash,
                 user.role.as_str(),
                 user.created_at.to_rfc3339(),
+                user.token_version,
             ],
         ) {
             Ok(_) => Ok(()),
@@ -316,8 +328,8 @@ impl Repository {
     pub fn insert_first_user(&self, user: &User) -> anyhow::Result<bool> {
         let conn = self.db.conn.lock().unwrap();
         let rows = conn.execute(
-            "INSERT INTO users (id, username, password_hash, role, created_at)
-             SELECT ?1, ?2, ?3, ?4, ?5
+            "INSERT INTO users (id, username, password_hash, role, created_at, token_version)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6
              WHERE NOT EXISTS (SELECT 1 FROM users)",
             params![
                 user.id,
@@ -325,6 +337,7 @@ impl Repository {
                 user.password_hash,
                 user.role.as_str(),
                 user.created_at.to_rfc3339(),
+                user.token_version,
             ],
         )?;
         Ok(rows > 0)

@@ -39,7 +39,6 @@ pub async fn login(
 
     // Always run bcrypt to prevent timing oracle on username existence.
     // Run DB lookup + bcrypt off the async runtime to avoid blocking the executor.
-    const DUMMY_HASH: &str = "$2b$12$000000000000000000000uGKWMKFz95uGKWMKFz95uGKWMKFz9.";
     let repo = state.manager.repo.clone();
     let username_owned = username.to_string();
     let password_owned = password.to_string();
@@ -49,7 +48,7 @@ pub async fn login(
                 let h = u.password_hash.clone();
                 (Some(u), h)
             }
-            _ => (None, DUMMY_HASH.to_string()),
+            _ => (None, crate::domain::dummy_password_hash().to_string()),
         };
         let valid = bcrypt::verify(&password_owned, &hash).unwrap_or(false) && user.is_some();
         if valid {
@@ -62,8 +61,8 @@ pub async fn login(
     .unwrap_or(None);
 
     let user = match auth_result {
-        Some(u) => u,
-        None => return (StatusCode::FORBIDDEN, "Fails.").into_response(),
+        Some(u) if u.role == crate::domain::Role::Admin => u,
+        _ => return (StatusCode::FORBIDDEN, "Fails.").into_response(),
     };
 
     let sid = state

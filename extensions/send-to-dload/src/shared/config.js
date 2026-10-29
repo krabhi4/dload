@@ -8,6 +8,7 @@ import { runExclusive } from "./lock.js";
 const STORAGE_KEY = "cfg";
 const LOG_KEY = "log";
 const LOG_MAX = 200;
+const LOG_URL_MAX = 2000;
 
 export const DEFAULT_CONFIG = Object.freeze({
   serverUrl: "",
@@ -92,6 +93,7 @@ export async function logActivity(entry) {
     log.push({
       ts: Date.now(),
       ...entry,
+      url: typeof entry.url === "string" ? entry.url.slice(0, LOG_URL_MAX) : entry.url,
     });
     while (log.length > LOG_MAX) log.shift();
     await browser.storage.local.set({ [LOG_KEY]: log });

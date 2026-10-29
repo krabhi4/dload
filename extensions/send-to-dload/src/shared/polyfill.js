@@ -46,7 +46,7 @@
   promisifyNamespace(chrome.storage?.sync, ["get", "set", "remove"]);
   promisifyNamespace(chrome.permissions, ["contains", "request", "remove"]);
   promisifyNamespace(chrome.notifications, ["create", "clear", "getAll"]);
-  promisifyNamespace(chrome.downloads, ["download", "search", "cancel"]);
+  promisifyNamespace(chrome.downloads, ["download", "search", "cancel", "erase"]);
   promisifyNamespace(chrome.tabs, ["query", "create", "sendMessage"]);
   promisifyNamespace(chrome.scripting, ["executeScript", "registerContentScripts"]);
 

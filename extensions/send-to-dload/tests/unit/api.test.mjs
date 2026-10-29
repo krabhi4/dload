@@ -2,7 +2,7 @@
 // Guards the dload server contract: /api/auth/verify deserializes Json<String>,
 // so the token must be posted as a bare JSON string, NOT { token }.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 describe("verifyToken()", () => {
   let calls;
@@ -37,6 +37,17 @@ describe("verifyToken()", () => {
     expect(calls[0].opts.body).toBe(JSON.stringify("tok123"));
     expect(JSON.parse(calls[0].opts.body)).toBe("tok123");
     expect(r.valid).toBe(true);
+  });
+
+  it("checks host permission with a port-less origin pattern", async () => {
+    const asked = [];
+    globalThis.browser.permissions.contains = async (q) => {
+      asked.push(q);
+      return true;
+    };
+    const { verifyToken } = await import("../../src/background/api.js");
+    await verifyToken("http://x:8080/", "tok");
+    expect(asked).toEqual([{ origins: ["http://x/*"] }]);
   });
 
   it("throws a clear error (not a raw fetch) when host permission is not granted", async () => {
@@ -90,6 +101,32 @@ describe("sendToDload() error classification", () => {
     fetchImpl = async () => ({ ok: false, status: 503, text: async () => "down" });
     const err = await send().catch((e) => e);
     expect(err.permanent).toBeFalsy();
+  });
+
+  it("marks config and permission errors permanent so they are not queued", async () => {
+    fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({}) });
+    globalThis.browser.permissions.contains = async () => false;
+    let err = await send().catch((e) => e);
+    expect(err.message).toMatch(/Host permission denied/);
+    expect(err.permanent).toBe(true);
+
+    globalThis.browser.storage.local.get = async () => ({ cfg: { serverUrl: "http://x:8080" } });
+    err = await send().catch((e) => e);
+    expect(err.message).toMatch(/API key not configured/);
+    expect(err.permanent).toBe(true);
+  });
+
+  it("aborts the request after 15s and treats the timeout as transient", async () => {
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    fetchImpl = async (_url, opts) => {
+      expect(opts.signal).toBeInstanceOf(AbortSignal);
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    };
+    const err = await send().catch((e) => e);
+    expect(timeout).toHaveBeenCalledWith(15000);
+    expect(err.permanent).toBeFalsy();
+    expect(err.message).toMatch(/Network error/);
+    timeout.mockRestore();
   });
 
   it("treats a network error as transient", async () => {

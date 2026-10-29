@@ -14,6 +14,42 @@ use tokio::sync::RwLock;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Default)]
+struct SpeedMeter {
+    samples: std::collections::VecDeque<(Instant, u64)>,
+}
+
+impl SpeedMeter {
+    fn sample(&mut self, bytes: u64) -> u64 {
+        let now = Instant::now();
+        if self.samples.back().is_some_and(|&(_, last)| bytes < last) {
+            self.samples.clear();
+        }
+        self.samples.push_back((now, bytes));
+        if self.samples.len() > 5 {
+            self.samples.pop_front();
+        }
+        let (start, start_bytes) = self.samples[0];
+        let secs = now.duration_since(start).as_secs_f64();
+        if secs > 0.0 {
+            (bytes.saturating_sub(start_bytes) as f64 / secs) as u64
+        } else {
+            0
+        }
+    }
+}
+
+fn format_eta(secs: u64) -> String {
+    let (hours, mins, secs) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if hours > 0 {
+        format!("{}h{}m{}s", hours, mins, secs)
+    } else if mins > 0 {
+        format!("{}m{}s", mins, secs)
+    } else {
+        format!("{}s", secs)
+    }
+}
+
 /// Per-IP token-bucket-ish limiter for login endpoints. Rejects after
 /// `max_attempts` in a rolling `window`. Shared across native + qbit login paths.
 struct LimiterInner {
@@ -75,6 +111,13 @@ impl LoginRateLimiter {
         }
     }
 
+    pub async fn is_limited(&self, ip: IpAddr) -> bool {
+        let inner = self.inner.lock().await;
+        inner.entries.get(&ip).is_some_and(|(count, since)| {
+            Instant::now().duration_since(*since) < self.window && *count >= self.max_attempts
+        })
+    }
+
     /// Returns `true` if the attempt is allowed and consumes one slot.
     pub async fn try_consume(&self, ip: IpAddr) -> bool {
         let now = Instant::now();
@@ -120,8 +163,8 @@ fn extract_client_ip_inner(
 ) -> Option<IpAddr> {
     if trust_proxy {
         if let Some(v) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            if let Some(first) = v.split(',').next() {
-                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+            if let Some(last) = v.split(',').next_back() {
+                if let Ok(ip) = last.trim().parse::<IpAddr>() {
                     return Some(ip);
                 }
             }
@@ -154,10 +197,11 @@ pub struct ManagerState {
     pub login_limiter: Arc<LoginRateLimiter>,
     pub sessions: Arc<SessionStore>,
     pub basic_auth_cache: Arc<BasicAuthCache>,
+    http_runs: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl ManagerState {
-    /// Returns `(Self, auto_resume_ids)` where `auto_resume_ids` are torrent download IDs
+    /// Returns `(Self, auto_resume_ids)` where `auto_resume_ids` are torrent and HTTP download IDs
     /// that were actively downloading or seeding before shutdown and should be auto-resumed.
     pub fn new(settings: Settings, repo: Arc<Repository>) -> (Self, Vec<String>) {
         let mut auto_resume_ids = Vec::new();
@@ -167,8 +211,15 @@ impl ManagerState {
             Ok(dl_list) => {
                 let mut map = HashMap::new();
                 for mut dl in dl_list {
-                    // Collect torrent downloads with restart_resume flag for auto-resume
-                    if dl.restart_resume && dl.protocol == Protocol::Torrent {
+                    if dl.protocol == Protocol::Http {
+                        dl.protocol = crate::worker::detect_protocol(&dl.url);
+                    }
+                    // Collect torrent and HTTP downloads with restart_resume flag for auto-resume
+                    if dl.restart_resume
+                        && dl.status != DownloadStatus::Queued
+                        && dl.status != DownloadStatus::Failed
+                        && matches!(dl.protocol, Protocol::Torrent | Protocol::Http)
+                    {
                         auto_resume_ids.push(dl.id.clone());
                     }
 
@@ -239,6 +290,7 @@ impl ManagerState {
                 basic_auth_cache: Arc::new(BasicAuthCache::new(std::time::Duration::from_secs(
                     300,
                 ))),
+                http_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             },
             auto_resume_ids,
         )
@@ -366,16 +418,10 @@ impl ManagerState {
         let mut guard = self.torrent_session.write().await;
         let dir = self.download_dir().await;
 
-        // Return existing session if download_dir hasn't changed
-        if let Some((ref existing_dir, ref session)) = *guard {
-            if *existing_dir == dir {
-                return Ok(session.clone());
-            }
-            tracing::info!(
-                "Download directory changed from {} to {}, recreating torrent session",
-                existing_dir,
-                dir
-            );
+        // Every add passes an explicit output folder, so one session serves all download
+        // folders. Recreating it would leave the old one holding the BitTorrent port.
+        if let Some((_, ref session)) = *guard {
+            return Ok(session.clone());
         }
 
         // Ensure the directory exists before initializing librqbit so DHT persistence succeeds
@@ -456,14 +502,21 @@ impl ManagerState {
     }
 
     /// Count downloads that are actively running (Downloading or Seeding).
+    pub async fn has_torrent(&self, info_hash: &str) -> bool {
+        self.downloads.read().await.values().any(|d| {
+            d.status != DownloadStatus::Failed
+                && d.info_hash
+                    .as_deref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(info_hash))
+        })
+    }
+
     pub async fn active_download_count(&self) -> usize {
         let downloads = self.downloads.read().await;
         downloads
             .values()
             .filter(|d| {
-                d.status == DownloadStatus::Downloading
-                    || d.status == DownloadStatus::Fetching
-                    || d.status == DownloadStatus::Seeding
+                d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Fetching
             })
             .count()
     }
@@ -531,7 +584,7 @@ impl ManagerState {
     }
 
     /// Materialize a `Download` from raw `.torrent` bytes and either start it
-    /// immediately or queue it, persisting the bytes under `<download_dir>/.torrents`
+    /// immediately or queue it, persisting the bytes under `<data_dir>/torrents`
     /// so queued downloads can be resumed after restart. Used by both the native
     /// and qBittorrent-compat multipart endpoints. Returns `None` if the bytes
     /// are not a valid `.torrent` file.
@@ -548,6 +601,10 @@ impl ManagerState {
                 return None;
             }
         };
+        if self.has_torrent(&meta.info_hash.as_string()).await {
+            tracing::info!("skipping .torrent upload already in downloads");
+            return None;
+        }
         let raw_name = meta
             .info
             .data
@@ -561,6 +618,7 @@ impl ManagerState {
         download.filename = name.clone();
         download.save_path = format!("{}/{}", download.download_folder, name);
         download.category = category;
+        download.info_hash = Some(meta.info_hash.as_string());
         // Don't pre-set content_path — session_add_and_wait writes the authoritative value
         // once librqbit has the metadata. Pre-metadata status is Queued/Fetching → *arr
         // treats it as non-completed and won't try to import.
@@ -588,12 +646,7 @@ impl ManagerState {
         };
 
         if queued {
-            let torrents_dir = std::path::Path::new(download_dir).join(".torrents");
-            if let Err(e) = tokio::fs::create_dir_all(&torrents_dir).await {
-                tracing::warn!("Failed to create .torrents dir: {}", e);
-            }
-            let torrent_file = torrents_dir.join(format!("{}.torrent", download.id));
-            if let Err(e) = tokio::fs::write(&torrent_file, &bytes).await {
+            if let Err(e) = write_persisted_torrent(&download.id, &bytes).await {
                 tracing::warn!("Failed to persist .torrent file: {}", e);
             }
         } else {
@@ -641,10 +694,12 @@ impl ManagerState {
         for id in promote_ids {
             tracing::info!("Promoting queued download: {}", id);
             let state = Arc::clone(self);
-            // Use resume_download (not start_download) so displaced torrents
+            // Use launch (not start_download) so displaced torrents
             // with live paused handles get properly unpaused via the fast path.
             tokio::spawn(async move {
-                state.resume_download(&id).await;
+                if let Some(d) = state.get_download(&id).await {
+                    state.launch(&id, d).await;
+                }
             });
         }
     }
@@ -689,8 +744,8 @@ impl ManagerState {
     }
 
     /// Reorder downloads by assigning positions from the given ordered ID list.
-    /// Downloads in the top `max_concurrent` positions are started/resumed;
-    /// downloads pushed below are queued.
+    /// Queued downloads among the top `max_concurrent` active or queued positions are started;
+    /// active downloads pushed below are queued. Paused, stopped and failed ones keep their status.
     pub async fn reorder_downloads(self: &Arc<Self>, ordered_ids: Vec<String>) {
         let max_concurrent = self.settings.read().await.max_concurrent as usize;
 
@@ -717,30 +772,32 @@ impl ManagerState {
             let mut start_ids: Vec<String> = Vec::new();
             let mut queue_ids: Vec<String> = Vec::new();
 
+            let mut runnable_rank = 0usize;
             for (i, id) in full_ordered.iter().enumerate() {
                 if let Some(d) = downloads.get_mut(id) {
                     d.position = i as i32;
                     pos_map.push((id.clone(), i as i32));
-                    let in_top_n = i < max_concurrent;
 
                     match d.status {
                         DownloadStatus::Downloading | DownloadStatus::Fetching => {
-                            if !in_top_n {
+                            if runnable_rank >= max_concurrent {
                                 queue_ids.push(id.clone());
                             }
+                            runnable_rank += 1;
+                        }
+                        DownloadStatus::Queued => {
+                            if runnable_rank < max_concurrent {
+                                start_ids.push(id.clone());
+                            }
+                            runnable_rank += 1;
                         }
                         DownloadStatus::Seeding => {
                             // Never demote Seeding — arr stack needs pausedUP to import/delete
                         }
-                        DownloadStatus::Queued
-                        | DownloadStatus::Paused
+                        DownloadStatus::Paused
                         | DownloadStatus::Failed
-                        | DownloadStatus::Stopped => {
-                            if in_top_n {
-                                start_ids.push(id.clone());
-                            }
-                        }
-                        DownloadStatus::Completed => {}
+                        | DownloadStatus::Stopped
+                        | DownloadStatus::Completed => {}
                     }
                 }
             }
@@ -840,14 +897,51 @@ impl ManagerState {
 
     /// Delete the `.torrents/<id>.torrent` sidecar if it exists; best-effort.
     async fn cleanup_persisted_torrent(&self, id: &str) {
-        let download_dir = self.download_dir().await;
-        let path = std::path::Path::new(&download_dir)
-            .join(".torrents")
-            .join(format!("{}.torrent", id));
-        if path.exists() {
-            if let Err(e) = tokio::fs::remove_file(&path).await {
-                tracing::warn!("Failed to delete persisted .torrent {:?}: {}", path, e);
+        let mut paths = vec![
+            persisted_torrent_path(id),
+            self.legacy_torrent_path(id).await,
+        ];
+        if let Some(d) = self
+            .get_download(id)
+            .await
+            .filter(|d| !d.download_folder.is_empty())
+        {
+            paths.push(
+                std::path::Path::new(&d.download_folder)
+                    .join(".torrents")
+                    .join(format!("{}.torrent", id)),
+            );
+        }
+        for path in paths {
+            if path.exists() {
+                if let Err(e) = tokio::fs::remove_file(&path).await {
+                    tracing::warn!("Failed to delete persisted .torrent {:?}: {}", path, e);
+                }
             }
+        }
+    }
+
+    async fn legacy_torrent_path(&self, id: &str) -> std::path::PathBuf {
+        std::path::Path::new(&self.download_dir().await)
+            .join(".torrents")
+            .join(format!("{}.torrent", id))
+    }
+
+    async fn read_persisted_torrent(&self, id: &str) -> std::io::Result<Vec<u8>> {
+        match tokio::fs::read(persisted_torrent_path(id)).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let folder = self.get_download(id).await.map(|d| d.download_folder);
+                if let Some(folder) = folder.filter(|f| !f.is_empty()) {
+                    let in_folder = std::path::Path::new(&folder)
+                        .join(".torrents")
+                        .join(format!("{}.torrent", id));
+                    if let Ok(bytes) = tokio::fs::read(in_folder).await {
+                        return Ok(bytes);
+                    }
+                }
+                tokio::fs::read(self.legacy_torrent_path(id).await).await
+            }
+            other => other,
         }
     }
 
@@ -864,11 +958,20 @@ impl ManagerState {
             handles.remove(id)
         };
 
+        let shared = match &download {
+            Some(d) => self.downloads.read().await.values().any(|other| {
+                other.id != d.id
+                    && (other.save_path == d.save_path
+                        || (other.content_path.is_some() && other.content_path == d.content_path))
+            }),
+            None => false,
+        };
+
         // For torrents: tell librqbit to delete torrent + files. This stops the torrent
         // internally so file handles are released before manual cleanup.
         if let Some(tid) = torrent_id {
             if let Ok(session) = self.get_torrent_session().await {
-                if let Err(e) = session.delete(TorrentIdOrHash::Id(tid), true).await {
+                if let Err(e) = session.delete(TorrentIdOrHash::Id(tid), !shared).await {
                     tracing::warn!("librqbit delete failed: {}", e);
                 }
             }
@@ -876,7 +979,11 @@ impl ManagerState {
 
         // Now cancel the monitor loop (it will see the token and exit;
         // the torrent is already deleted from the session so its delete call is a no-op).
+        // Then wait for an HTTP transfer to finish its final writes before deleting files.
         self.cancel_download(id).await;
+        let run_lock = self.http_run_lock(id);
+        drop(run_lock.lock().await);
+        self.http_runs.lock().unwrap().remove(id);
 
         // Clean up the persisted .torrent sidecar too.
         self.cleanup_persisted_torrent(id).await;
@@ -893,19 +1000,18 @@ impl ManagerState {
                 let download_dir = &settings.download_dir;
                 match path.canonicalize() {
                     Ok(canonical) => {
-                        canonical.starts_with(download_dir)
-                            || folders.iter().any(|f| canonical.starts_with(&f.path))
+                        strictly_inside(&canonical, download_dir)
+                            || folders.iter().any(|f| strictly_inside(&canonical, &f.path))
                     }
-                    Err(_) => {
-                        let save = std::path::Path::new(&d.save_path);
-                        (save.starts_with(download_dir)
-                            || folders.iter().any(|f| save.starts_with(&f.path)))
-                            && !d.save_path.contains("..")
-                    }
+                    Err(_) => false,
                 }
             };
 
-            if safe && path.exists() {
+            let owns_files = !shared
+                && (d.content_path.is_some()
+                    || d.downloaded_size > 0
+                    || d.status == DownloadStatus::Completed);
+            if safe && owns_files && path.exists() {
                 if path.is_dir() {
                     if let Err(e) = tokio::fs::remove_dir_all(path).await {
                         tracing::warn!("Failed to delete directory {}: {}", d.save_path, e);
@@ -913,6 +1019,7 @@ impl ManagerState {
                 } else if let Err(e) = tokio::fs::remove_file(path).await {
                     tracing::warn!("Failed to delete file {}: {}", d.save_path, e);
                 }
+                let _ = tokio::fs::remove_file(crate::worker::http::sidecar_path(path)).await;
             } else if !safe {
                 tracing::warn!(
                     "Refusing to delete file outside download directory: {}",
@@ -973,7 +1080,13 @@ impl ManagerState {
         let download = {
             let mut downloads = self.downloads.write().await;
             if let Some(d) = downloads.get_mut(id) {
-                if d.status == DownloadStatus::Downloading || d.status == DownloadStatus::Seeding {
+                if matches!(
+                    d.status,
+                    DownloadStatus::Downloading
+                        | DownloadStatus::Seeding
+                        | DownloadStatus::Fetching
+                        | DownloadStatus::Queued
+                ) {
                     d.status = DownloadStatus::Paused;
                     d.speed = 0;
                     d.upload_speed = 0;
@@ -1011,8 +1124,20 @@ impl ManagerState {
 
         // Serialize capacity check + displacement + slot claim with the rest of
         // the queue-management paths so max_concurrent cannot be exceeded.
-        let displaced_id = {
+        let (displaced_id, can_start) = {
             let _slot = self.slot_lock.lock().await;
+            let still_resumable = self.downloads.read().await.get(id).is_some_and(|d| {
+                matches!(
+                    d.status,
+                    DownloadStatus::Paused
+                        | DownloadStatus::Failed
+                        | DownloadStatus::Stopped
+                        | DownloadStatus::Queued
+                )
+            });
+            if !still_resumable {
+                return;
+            }
             let max_concurrent = self.settings.read().await.max_concurrent as usize;
             let active = self.active_download_count().await;
             let displaced = if active >= max_concurrent {
@@ -1041,8 +1166,22 @@ impl ManagerState {
             } else {
                 None
             };
-            displaced
+            let can_start = active < max_concurrent || displaced.is_some();
+            if let Some(item) = self.downloads.write().await.get_mut(id) {
+                item.status = if can_start {
+                    DownloadStatus::Downloading
+                } else {
+                    DownloadStatus::Queued
+                };
+            }
+            (displaced, can_start)
         };
+        if !can_start {
+            if let Some(queued) = self.get_download(id).await {
+                self.update_download(&queued).await;
+            }
+            return;
+        }
         if let Some(oldest_id) = displaced_id {
             tracing::info!(
                 "Queue full: displacing lowest-priority active download {} to make room for {}",
@@ -1063,6 +1202,10 @@ impl ManagerState {
             }
         }
 
+        self.launch(id, d).await;
+    }
+
+    async fn launch(self: &Arc<Self>, id: &str, d: Download) {
         // Try native librqbit unpause first (torrent was paused, not removed)
         let torrent_id = {
             let handles = self.torrent_handles.read().await;
@@ -1157,7 +1300,17 @@ impl ManagerState {
             download.status = DownloadStatus::Downloading;
             download.restart_resume = true;
 
-            state.update_download(&download).await;
+            let started = download.clone();
+            if let Some(current) = state
+                .patch_download(&download.id, |d| {
+                    d.protocol = started.protocol.clone();
+                    d.status = DownloadStatus::Downloading;
+                    d.restart_resume = true;
+                })
+                .await
+            {
+                download = current;
+            }
 
             match protocol {
                 Protocol::Http => {
@@ -1195,6 +1348,9 @@ impl ManagerState {
             )
         };
 
+        let run_lock = self.http_run_lock(&download.id);
+        let _run = run_lock.lock().await;
+
         let worker = HttpDownloader::new(
             download.clone(),
             max_conns,
@@ -1204,50 +1360,60 @@ impl ManagerState {
         let downloaded_atomic = Arc::clone(&worker.downloaded);
         let active_conns_atomic = Arc::clone(&worker.active_conns);
         let total_size_atomic = Arc::clone(&worker.total_size);
+        let save_path_slot = Arc::clone(&worker.save_path);
         let download_id = download.id.clone();
 
-        // Spawn the actual download on a separate task
-        let download_task = tokio::spawn(async move {
+        let mut download_task = tokio::spawn(async move {
             let mut worker = worker;
             worker.run().await
         });
 
-        // Monitor loop — poll atomics every second, persist to DB less often
-        let mut last_downloaded: u64 = 0;
-        let mut last_time = std::time::Instant::now();
+        let apply_save_path = |d: &mut Download| {
+            if let Some(path) = save_path_slot.lock().unwrap().clone() {
+                d.filename = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                d.save_path = path;
+            }
+        };
+
+        let mut meter = SpeedMeter::default();
         let mut db_tick: u32 = 0;
+        let mut path_saved = false;
 
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-            if download_task.is_finished() {
-                break;
+        let joined = loop {
+            tokio::select! {
+                r = &mut download_task => break r,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
             }
 
             if cancel_token.is_cancelled() {
-                download_task.abort();
-                break;
+                match tokio::time::timeout(std::time::Duration::from_secs(10), &mut download_task)
+                    .await
+                {
+                    Ok(r) => break r,
+                    Err(_) => {
+                        download_task.abort();
+                        break Ok(Err(anyhow::anyhow!("Download cancelled")));
+                    }
+                }
             }
 
             let current_downloaded = downloaded_atomic.load(std::sync::atomic::Ordering::Relaxed);
             let current_conns = active_conns_atomic.load(std::sync::atomic::Ordering::Relaxed);
             let current_total = total_size_atomic.load(std::sync::atomic::Ordering::Relaxed);
-            let now = std::time::Instant::now();
-            let elapsed = now.duration_since(last_time).as_secs_f64();
-
-            let speed = if elapsed > 0.0 {
-                (current_downloaded.saturating_sub(last_downloaded) as f64 / elapsed) as u64
-            } else {
+            let speed = if current_conns == 0 {
+                meter = SpeedMeter::default();
                 0
+            } else {
+                meter.sample(current_downloaded)
             };
 
-            last_downloaded = current_downloaded;
-            last_time = now;
-
-            // Update in-memory state (quick — just a HashMap write)
             let snapshot = {
                 let mut downloads = self.downloads.write().await;
                 if let Some(d) = downloads.get_mut(&download_id) {
+                    apply_save_path(d);
                     d.downloaded_size = current_downloaded;
                     d.connections = current_conns;
                     d.speed = speed;
@@ -1256,34 +1422,22 @@ impl ManagerState {
                     }
                     if d.total_size > 0 {
                         d.progress = (current_downloaded as f64 / d.total_size as f64) * 100.0;
-                        if let Some(eta_secs) = d
+                        d.eta = d
                             .total_size
                             .saturating_sub(current_downloaded)
                             .checked_div(speed)
-                        {
-                            let hours = eta_secs / 3600;
-                            let mins = (eta_secs % 3600) / 60;
-                            let secs = eta_secs % 60;
-                            d.eta = if hours > 0 {
-                                Some(format!("{}h{}m{}s", hours, mins, secs))
-                            } else if mins > 0 {
-                                Some(format!("{}m{}s", mins, secs))
-                            } else {
-                                Some(format!("{}s", secs))
-                            };
-                        } else {
-                            d.eta = None;
-                        }
+                            .map(format_eta);
                     }
                     Some(d.clone())
                 } else {
                     None
                 }
-            }; // write lock released here
+            };
 
-            // Persist to DB every 5 seconds (not every second)
+            let persist_path = !path_saved && save_path_slot.lock().unwrap().is_some();
+            path_saved |= persist_path;
             db_tick += 1;
-            if db_tick >= 5 {
+            if db_tick >= 5 || persist_path {
                 db_tick = 0;
                 if let Some(snap) = snapshot {
                     let repo = Arc::clone(&self.repo);
@@ -1292,27 +1446,46 @@ impl ManagerState {
                     });
                 }
             }
+        };
+
+        if cancel_token.is_cancelled() && !matches!(joined, Ok(Ok(_))) {
+            let downloaded = downloaded_atomic.load(std::sync::atomic::Ordering::Relaxed);
+            self.patch_download(&download_id, |d| {
+                apply_save_path(d);
+                d.downloaded_size = downloaded;
+                if d.total_size > 0 {
+                    d.progress = (downloaded as f64 / d.total_size as f64) * 100.0;
+                }
+                d.speed = 0;
+                d.connections = 0;
+                d.eta = None;
+            })
+            .await;
+            return;
         }
 
-        // Collect the result
-        match download_task.await {
+        match joined {
             Ok(Ok(result)) => {
-                if cancel_token.is_cancelled() {
+                let done = result.download;
+                let Some(completed) = self
+                    .patch_download(&download_id, |d| {
+                        d.filename = done.filename.clone();
+                        d.save_path = done.save_path.clone();
+                        d.status = DownloadStatus::Completed;
+                        d.progress = 100.0;
+                        d.total_size = done.total_size;
+                        d.downloaded_size = done.total_size;
+                        d.speed = 0;
+                        d.connections = 0;
+                        d.eta = None;
+                        d.error_message = None;
+                        d.completed_at = Some(chrono::Utc::now());
+                        d.restart_resume = false;
+                    })
+                    .await
+                else {
                     return;
-                }
-
-                let mut completed = result.download;
-                completed.status = DownloadStatus::Completed;
-                completed.progress = 100.0;
-                if completed.total_size > 0 {
-                    completed.downloaded_size = completed.total_size;
-                }
-                completed.speed = 0;
-                completed.connections = 0;
-                completed.eta = None;
-                completed.completed_at = Some(chrono::Utc::now());
-                completed.restart_resume = false;
-                self.update_download(&completed).await;
+                };
 
                 // If the downloaded file is a .torrent, auto-start it
                 if result.is_torrent_file {
@@ -1326,65 +1499,29 @@ impl ManagerState {
 
                     match tokio::fs::read(&torrent_path).await {
                         Ok(torrent_bytes) => {
-                            let settings = self.settings.read().await;
-                            let dir = settings.download_dir.clone();
-                            drop(settings);
-
-                            let raw_name = librqbit::torrent_from_bytes(&torrent_bytes)
-                                .ok()
-                                .and_then(|meta| {
-                                    meta.info.data.name.as_ref().map(|n| n.to_string())
-                                })
-                                .unwrap_or_else(|| "torrent-download".to_string());
-                            let name = crate::domain::sanitize_filename(&raw_name);
-
-                            let mut torrent_download =
-                                Download::new(format!("torrent://{}", name), &dir);
-                            torrent_download.filename = name;
-                            torrent_download.protocol = Protocol::Torrent;
-                            torrent_download.status = DownloadStatus::Downloading;
-                            torrent_download.restart_resume = true;
-
-                            let torrent_cancel =
-                                self.register_cancel_token(&torrent_download.id).await;
-                            self.add_download(torrent_download.clone()).await;
-
-                            let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
-                            if let Err(e) = session_add_and_wait(
-                                &self,
-                                add,
-                                &mut torrent_download,
-                                &torrent_cancel,
-                            )
-                            .await
-                            {
-                                let current_status = {
-                                    let downloads = self.downloads.read().await;
-                                    downloads
-                                        .get(&torrent_download.id)
-                                        .map(|d| d.status.clone())
-                                };
-                                match current_status {
-                                    Some(DownloadStatus::Paused)
-                                    | Some(DownloadStatus::Stopped)
-                                    | Some(DownloadStatus::Completed)
-                                    | Some(DownloadStatus::Seeding) => {}
-                                    _ => {
-                                        torrent_download.status = DownloadStatus::Failed;
-                                        torrent_download.error_message =
-                                            Some(format!("Torrent failed: {}", e));
-                                        self.update_download(&torrent_download).await;
-                                    }
+                            let folder = if completed.download_folder.is_empty() {
+                                self.download_dir().await
+                            } else {
+                                completed.download_folder.clone()
+                            };
+                            let added = self
+                                .add_torrent_from_bytes(
+                                    torrent_bytes,
+                                    &folder,
+                                    completed.category.clone(),
+                                )
+                                .await;
+                            if added.is_some() {
+                                if let Err(e) = tokio::fs::remove_file(&torrent_path).await {
+                                    tracing::warn!("Failed to delete .torrent file: {}", e);
                                 }
+                                self.remove(&original_id).await;
+                            } else {
+                                tracing::warn!(
+                                    "Downloaded .torrent {} is invalid or already in downloads",
+                                    torrent_path
+                                );
                             }
-
-                            // Clean up the .torrent file
-                            if let Err(e) = tokio::fs::remove_file(&torrent_path).await {
-                                tracing::warn!("Failed to delete .torrent file: {}", e);
-                            }
-
-                            // Remove the original HTTP download entry
-                            self.remove(&original_id).await;
                         }
                         Err(e) => {
                             tracing::error!("Failed to read .torrent file: {}", e);
@@ -1393,29 +1530,89 @@ impl ManagerState {
                 }
             }
             Ok(Err(e)) => {
-                if !cancel_token.is_cancelled() {
-                    let mut failed = download;
-                    failed.status = DownloadStatus::Failed;
-                    failed.restart_resume = false;
-                    failed.error_message = Some(e.to_string());
-                    failed.speed = 0;
-                    failed.connections = 0;
-                    self.update_download(&failed).await;
-                }
+                let message = format!("{:#}", e);
+                self.mark_http_failed(&download_id, message).await;
             }
             Err(_) => {
-                // Task was aborted (cancelled)
-                if !cancel_token.is_cancelled() {
-                    let mut failed = download;
-                    failed.status = DownloadStatus::Failed;
-                    failed.restart_resume = false;
-                    failed.error_message = Some("Download task aborted".to_string());
-                    failed.speed = 0;
-                    failed.connections = 0;
-                    self.update_download(&failed).await;
-                }
+                self.mark_http_failed(&download_id, "Download task aborted".to_string())
+                    .await;
             }
         }
+    }
+
+    pub async fn shutdown(&self) {
+        let ids: Vec<String> = self
+            .downloads
+            .read()
+            .await
+            .values()
+            .filter(|d| d.protocol == Protocol::Http && d.status == DownloadStatus::Downloading)
+            .map(|d| d.id.clone())
+            .collect();
+        for id in &ids {
+            self.cancel_download(id).await;
+        }
+        let drained = async {
+            for id in &ids {
+                drop(self.http_run_lock(id).lock().await);
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(8), drained)
+            .await
+            .is_err()
+        {
+            tracing::warn!("Some HTTP downloads did not stop within 8s");
+        }
+    }
+
+    fn http_run_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(
+            self.http_runs
+                .lock()
+                .unwrap()
+                .entry(id.to_string())
+                .or_default(),
+        )
+    }
+
+    pub async fn set_share_limits(
+        &self,
+        id: &str,
+        ratio_limit: Option<Option<f64>>,
+        seeding_time_limit: Option<Option<i64>>,
+    ) {
+        self.patch_download(id, |d| {
+            if let Some(limit) = ratio_limit {
+                d.ratio_limit = limit;
+            }
+            if let Some(limit) = seeding_time_limit {
+                d.seeding_time_limit = limit;
+            }
+        })
+        .await;
+    }
+
+    async fn mark_http_failed(&self, id: &str, message: String) {
+        self.patch_download(id, |d| {
+            d.status = DownloadStatus::Failed;
+            d.restart_resume = false;
+            d.error_message = Some(message);
+            d.speed = 0;
+            d.connections = 0;
+            d.eta = None;
+        })
+        .await;
+    }
+
+    async fn patch_download(&self, id: &str, f: impl FnOnce(&mut Download)) -> Option<Download> {
+        let snapshot = {
+            let mut downloads = self.downloads.write().await;
+            let d = downloads.get_mut(id)?;
+            f(d);
+            d.clone()
+        };
+        self.update_download(&snapshot).await;
+        Some(snapshot)
     }
 
     /// Start a torrent download from raw .torrent file bytes.
@@ -1434,17 +1631,20 @@ impl ManagerState {
             download.restart_resume = true;
 
             // Persist the torrent file first so it survives restarts
-            let download_dir = state.download_dir().await;
-            let torrents_dir = std::path::Path::new(&download_dir).join(".torrents");
-            if let Err(e) = tokio::fs::create_dir_all(&torrents_dir).await {
-                tracing::warn!("Failed to create .torrents dir: {}", e);
-            }
-            let torrent_file = torrents_dir.join(format!("{}.torrent", download.id));
-            if let Err(e) = tokio::fs::write(&torrent_file, &torrent_bytes).await {
+            if let Err(e) = write_persisted_torrent(&download.id, &torrent_bytes).await {
                 tracing::warn!("Failed to persist .torrent file: {}", e);
             }
 
-            state.update_download(&download).await;
+            if let Some(current) = state
+                .patch_download(&download.id, |d| {
+                    d.protocol = Protocol::Torrent;
+                    d.status = DownloadStatus::Downloading;
+                    d.restart_resume = true;
+                })
+                .await
+            {
+                download = current;
+            }
 
             let add = librqbit::AddTorrent::from_bytes(torrent_bytes);
             if let Err(e) = session_add_and_wait(&state, add, &mut download, &cancel_token).await {
@@ -1458,9 +1658,14 @@ impl ManagerState {
                     | Some(DownloadStatus::Completed)
                     | Some(DownloadStatus::Seeding) => {}
                     _ => {
-                        download.status = DownloadStatus::Failed;
-                        download.error_message = Some(format!("Torrent failed: {}", e));
-                        state.update_download(&download).await;
+                        let message = format!("Torrent failed: {}", e);
+                        state
+                            .patch_download(&download.id, |d| {
+                                d.status = DownloadStatus::Failed;
+                                d.restart_resume = false;
+                                d.error_message = Some(message);
+                            })
+                            .await;
                     }
                 }
             }
@@ -1490,12 +1695,7 @@ impl ManagerState {
         }
 
         // If not live, check persisted .torrents directory
-        let download_dir = self.download_dir().await;
-        let torrent_file = std::path::Path::new(&download_dir)
-            .join(".torrents")
-            .join(format!("{}.torrent", id));
-
-        tokio::fs::read(&torrent_file)
+        self.read_persisted_torrent(id)
             .await
             .ok()
             .map(bytes::Bytes::from)
@@ -1611,12 +1811,47 @@ impl ManagerState {
             let mut handles = self.torrent_handles.write().await;
             handles.remove(&id)
         };
+        let mut readd_dir = output_dir.clone();
         if let Some(tid) = torrent_id {
             if let Ok(session) = self.get_torrent_session().await {
                 if let Some(handle) = session.get(TorrentIdOrHash::Id(tid)) {
+                    let layout = handle.with_metadata(|m| {
+                        crate::domain::classify_layout(
+                            m.file_infos
+                                .iter()
+                                .filter(|f| !f.attrs.padding)
+                                .map(|f| f.relative_filename.clone()),
+                        )
+                    });
+                    let folder = self
+                        .get_download(&id)
+                        .await
+                        .map(|d| d.download_folder)
+                        .filter(|f| !f.is_empty())
+                        .unwrap_or_else(|| output_dir.clone());
+                    if let Ok(layout) = layout {
+                        readd_dir = crate::domain::compute_torrent_paths(
+                            &folder,
+                            &snapshot_filename,
+                            &layout,
+                        )
+                        .output_folder;
+                    }
                     let _ = session.pause(&handle).await;
                 }
                 let _ = session.delete(TorrentIdOrHash::Id(tid), false).await;
+            }
+        }
+        if readd_dir == output_dir {
+            if let Some(d) = self
+                .get_download(&id)
+                .await
+                .filter(|d| !d.download_folder.is_empty())
+            {
+                match self.listed_output_folder(&d).await {
+                    Ok(folder) => readd_dir = folder,
+                    Err(e) => tracing::warn!("Could not read torrent layout for mirror: {}", e),
+                }
             }
         }
 
@@ -1644,8 +1879,7 @@ impl ManagerState {
         let download_task = tokio::spawn(async move { downloader.run().await });
 
         // 8. Monitor loop
-        let mut last_downloaded: u64 = 0;
-        let mut last_time = std::time::Instant::now();
+        let mut meter = SpeedMeter::default();
         let mut db_tick: u32 = 0;
 
         loop {
@@ -1662,17 +1896,7 @@ impl ManagerState {
 
             let current_downloaded = downloaded_atomic.load(std::sync::atomic::Ordering::Relaxed);
             let current_total = total_size_atomic.load(std::sync::atomic::Ordering::Relaxed);
-            let now = std::time::Instant::now();
-            let elapsed = now.duration_since(last_time).as_secs_f64();
-
-            let speed = if elapsed > 0.0 {
-                (current_downloaded.saturating_sub(last_downloaded) as f64 / elapsed) as u64
-            } else {
-                0
-            };
-
-            last_downloaded = current_downloaded;
-            last_time = now;
+            let speed = meter.sample(current_downloaded);
 
             {
                 let mut downloads = self.downloads.write().await;
@@ -1683,23 +1907,10 @@ impl ManagerState {
                     if current_total > 0 {
                         d.total_size = current_total;
                         d.progress = (current_downloaded as f64 / current_total as f64) * 100.0;
-                        if let Some(eta_secs) = current_total
+                        d.eta = current_total
                             .saturating_sub(current_downloaded)
                             .checked_div(speed)
-                        {
-                            let hours = eta_secs / 3600;
-                            let mins = (eta_secs % 3600) / 60;
-                            let secs = eta_secs % 60;
-                            d.eta = if hours > 0 {
-                                Some(format!("{}h{}m{}s", hours, mins, secs))
-                            } else if mins > 0 {
-                                Some(format!("{}m{}s", mins, secs))
-                            } else {
-                                Some(format!("{}s", secs))
-                            };
-                        } else {
-                            d.eta = None;
-                        }
+                            .map(format_eta);
                     }
                 }
             }
@@ -1745,7 +1956,7 @@ impl ManagerState {
                 let tmp_zip_path = format!("{}/{}.zip", tmp_dir, id);
                 let _ = tokio::fs::rename(&tmp_download_path, &tmp_zip_path).await;
 
-                let extract_target = output_dir.clone();
+                let extract_target = readd_dir.clone();
                 let zip_path = tmp_zip_path.clone();
                 match tokio::task::spawn_blocking(move || {
                     extract_zip_safe(&zip_path, &extract_target)
@@ -1776,6 +1987,7 @@ impl ManagerState {
         }
         // Clean up temp file if it still exists
         let _ = tokio::fs::remove_file(&tmp_download_path).await;
+        let _ = tokio::fs::remove_dir(&tmp_dir).await;
 
         // 11. Set rechecking status
         {
@@ -1792,9 +2004,7 @@ impl ManagerState {
             .await
             .ok_or_else(|| anyhow::anyhow!("Download disappeared during mirror"))?;
 
-        let torrent_id = self
-            .mirror_readd_torrent(&mut download, &output_dir)
-            .await?;
+        let torrent_id = self.mirror_readd_torrent(&mut download, &readd_dir).await?;
 
         // 13. Restore snapshotted fields
         download.save_path = snapshot_save_path;
@@ -1821,22 +2031,29 @@ impl ManagerState {
 
         // 15. Register new cancel token and start monitoring
         let monitor_cancel = self.register_cancel_token(&id).await;
-        let state = Arc::clone(self);
-        state
-            .monitor_torrent(id.clone(), torrent_id, monitor_cancel)
-            .await;
+        let mut monitor =
+            tokio::spawn(Arc::clone(self).monitor_torrent(id.clone(), torrent_id, monitor_cancel));
 
-        // 16. After monitoring: handle keep_seeding preference
+        // 16. Stop seeding once the recheck completes when keep_seeding is off
         if !keep_seeding {
-            let latest = self.get_download(&id).await;
-            if let Some(d) = latest {
+            loop {
+                tokio::select! {
+                    _ = &mut monitor => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                }
+                let Some(d) = self.get_download(&id).await else {
+                    break;
+                };
                 if d.status == DownloadStatus::Seeding {
                     self.cancel_download(&id).await;
-                    let mut stopped = d;
-                    stopped.status = DownloadStatus::Completed;
-                    stopped.upload_speed = 0;
-                    stopped.speed = 0;
-                    self.update_download(&stopped).await;
+                    let _ = (&mut monitor).await;
+                    self.patch_download(&id, |d| {
+                        d.status = DownloadStatus::Completed;
+                        d.upload_speed = 0;
+                        d.speed = 0;
+                    })
+                    .await;
+                    break;
                 }
             }
         }
@@ -1858,12 +2075,7 @@ impl ManagerState {
         let add = if is_magnet {
             librqbit::AddTorrent::from_url(&url)
         } else if url.starts_with("torrent://") {
-            let download_dir = self.download_dir().await;
-            let torrent_file = std::path::Path::new(&download_dir)
-                .join(".torrents")
-                .join(format!("{}.torrent", download.id));
-
-            match tokio::fs::read(&torrent_file).await {
+            match self.read_persisted_torrent(&download.id).await {
                 Ok(bytes) => librqbit::AddTorrent::from_bytes(bytes),
                 Err(e) => {
                     download.status = DownloadStatus::Failed;
@@ -1875,22 +2087,17 @@ impl ManagerState {
                 }
             }
         } else {
-            match reqwest::get(&url).await {
-                Ok(resp) => {
-                    let bytes = match resp.bytes().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            download.status = DownloadStatus::Failed;
-                            download.error_message = Some(e.to_string());
-                            self.update_download(&download).await;
-                            return;
-                        }
-                    };
-                    librqbit::AddTorrent::from_bytes(bytes)
-                }
+            let fetched = tokio::select! {
+                r = crate::worker::http::fetch_small(&url, crate::worker::http::MAX_TORRENT_FILE_BYTES) => r,
+                _ = cancel_token.cancelled() => return,
+            };
+            match fetched {
+                Ok(bytes) => librqbit::AddTorrent::from_bytes(bytes),
                 Err(e) => {
                     download.status = DownloadStatus::Failed;
-                    download.error_message = Some(e.to_string());
+                    download.restart_resume = false;
+                    download.error_message =
+                        Some(format!("Failed to fetch .torrent file: {:#}", e));
                     self.update_download(&download).await;
                     return;
                 }
@@ -1911,10 +2118,13 @@ impl ManagerState {
                     // Already handled by monitor_torrent
                 }
                 _ => {
-                    download.status = DownloadStatus::Failed;
-                    download.restart_resume = false;
-                    download.error_message = Some(format!("Torrent failed: {}", e));
-                    self.update_download(&download).await;
+                    let message = format!("Torrent failed: {}", e);
+                    self.patch_download(&download.id, |d| {
+                        d.status = DownloadStatus::Failed;
+                        d.restart_resume = false;
+                        d.error_message = Some(message);
+                    })
+                    .await;
                 }
             }
         }
@@ -1969,6 +2179,7 @@ impl ManagerState {
                     let mut downloads = self.downloads.write().await;
                     if let Some(d) = downloads.get_mut(&download_id) {
                         d.status = DownloadStatus::Failed;
+                        d.restart_resume = false;
                         d.error_message = Some("Torrent handle lost".to_string());
                         Some(d.clone())
                     } else {
@@ -1985,11 +2196,23 @@ impl ManagerState {
             }
         };
 
+        let mut down_meter = SpeedMeter::default();
+        let mut up_meter = SpeedMeter::default();
+        let mut last_uploaded: Option<u64> = None;
         let mut db_tick: u32 = 0;
 
         loop {
             // Check if cancelled (stop/remove)
             if cancel_token.is_cancelled() {
+                let superseded = self
+                    .cancel_tokens
+                    .read()
+                    .await
+                    .get(&download_id)
+                    .is_some_and(|t| !t.is_cancelled());
+                if superseded {
+                    return;
+                }
                 let current_status = {
                     let downloads = self.downloads.read().await;
                     downloads.get(&download_id).map(|d| d.status.clone())
@@ -2047,6 +2270,62 @@ impl ManagerState {
             }
 
             let stats = handle.stats();
+            let uploaded_delta = match last_uploaded {
+                Some(prev) if stats.uploaded_bytes >= prev => stats.uploaded_bytes - prev,
+                Some(_) => stats.uploaded_bytes,
+                None => 0,
+            };
+            last_uploaded = Some(stats.uploaded_bytes);
+            let (global_ratio_limit, global_time_limit) = {
+                let settings = self.settings.read().await;
+                (settings.seed_ratio_limit, settings.seed_time_limit)
+            };
+            let mut stop_seeding = false;
+
+            if matches!(stats.state, librqbit::TorrentStatsState::Paused) && !handle.is_paused() {
+                let wants_run = {
+                    let downloads = self.downloads.read().await;
+                    downloads.get(&download_id).is_some_and(|d| {
+                        matches!(
+                            d.status,
+                            DownloadStatus::Downloading
+                                | DownloadStatus::Fetching
+                                | DownloadStatus::Seeding
+                        )
+                    })
+                };
+                if wants_run {
+                    if let Err(e) = session.unpause(&handle).await {
+                        tracing::warn!("Failed to restart stalled torrent {}: {}", download_id, e);
+                    }
+                }
+            }
+
+            if let Some(error) = stats.error.clone() {
+                let _ = session.delete(handle.id().into(), false).await;
+                {
+                    let mut handles = self.torrent_handles.write().await;
+                    if handles.get(&download_id) == Some(&torrent_id) {
+                        handles.remove(&download_id);
+                    }
+                }
+                let snap = {
+                    let mut downloads = self.downloads.write().await;
+                    downloads.get_mut(&download_id).map(|d| {
+                        d.status = DownloadStatus::Failed;
+                        d.restart_resume = false;
+                        d.error_message = Some(format!("Torrent error: {}", error));
+                        d.speed = 0;
+                        d.upload_speed = 0;
+                        d.eta = None;
+                        d.clone()
+                    })
+                };
+                if let Some(snap) = snap {
+                    self.update_download(&snap).await;
+                }
+                return;
+            }
 
             let snapshot = {
                 let mut downloads = self.downloads.write().await;
@@ -2059,17 +2338,24 @@ impl ManagerState {
                     }
 
                     if let Some(live) = &stats.live {
-                        download.speed = (live.download_speed.mbps * 1_048_576.0) as u64;
-                        download.upload_speed = (live.upload_speed.mbps * 1_048_576.0) as u64;
+                        download.speed = down_meter.sample(live.snapshot.fetched_bytes);
+                        download.upload_speed = up_meter.sample(stats.uploaded_bytes);
                         let ps = &live.snapshot.peer_stats;
                         download.peers = ps.live;
                         download.seeds = ps.seen;
-                        download.eta = live.time_remaining.as_ref().map(|t| format!("{}", t));
+                        download.eta = stats
+                            .total_bytes
+                            .saturating_sub(stats.progress_bytes)
+                            .checked_div(download.speed)
+                            .filter(|_| !stats.finished)
+                            .map(format_eta);
                     }
 
                     if download.status == DownloadStatus::Fetching && stats.total_bytes > 0 {
                         download.status = DownloadStatus::Downloading;
                     }
+
+                    download.uploaded_size += uploaded_delta;
 
                     if stats.finished && download.status != DownloadStatus::Seeding {
                         download.status = DownloadStatus::Seeding;
@@ -2079,11 +2365,29 @@ impl ManagerState {
                         download.eta = None;
                     }
 
+                    if download.status == DownloadStatus::Seeding
+                        && seed_limit_reached(download, global_ratio_limit, global_time_limit)
+                    {
+                        stop_seeding = true;
+                        download.status = DownloadStatus::Completed;
+                        download.speed = 0;
+                        download.upload_speed = 0;
+                        download.restart_resume = false;
+                    }
+
                     Some(download.clone())
                 } else {
                     None
                 }
             }; // write lock released
+
+            if stop_seeding {
+                let _ = session.pause(&handle).await;
+                if let Some(snap) = snapshot {
+                    self.update_download(&snap).await;
+                }
+                return;
+            }
 
             // DB write every 5 ticks (seeding: every 5*2=10s, downloading: every 5s)
             db_tick += 1;
@@ -2105,38 +2409,67 @@ impl ManagerState {
     /// Re-add a torrent to librqbit after HTTP mirror download.
     /// Unlike `session_add_and_wait`, this does NOT overwrite filename/save_path/content_path
     /// to preserve arr stack data.
+    async fn torrent_add_source(
+        &self,
+        download: &Download,
+    ) -> anyhow::Result<librqbit::AddTorrent<'static>> {
+        let url = download.url.clone();
+        if url.starts_with("magnet:") {
+            Ok(librqbit::AddTorrent::from_url(url))
+        } else if url.starts_with("torrent://") {
+            let bytes = self
+                .read_persisted_torrent(&download.id)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read persisted torrent file: {}", e))?;
+            Ok(librqbit::AddTorrent::from_bytes(bytes))
+        } else {
+            let bytes =
+                crate::worker::http::fetch_small(&url, crate::worker::http::MAX_TORRENT_FILE_BYTES)
+                    .await?;
+            Ok(librqbit::AddTorrent::from_bytes(bytes))
+        }
+    }
+
+    async fn listed_output_folder(&self, download: &Download) -> anyhow::Result<String> {
+        let add = self.torrent_add_source(download).await?;
+        let session = self.get_torrent_session().await?;
+        let opts = librqbit::AddTorrentOptions {
+            list_only: true,
+            ..Default::default()
+        };
+        let librqbit::AddTorrentResponse::ListOnly(listed) = session
+            .add_torrent(add, Some(opts))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read torrent metadata: {}", e))?
+        else {
+            anyhow::bail!("Failed to read torrent metadata");
+        };
+        let layout = crate::domain::classify_layout(
+            listed
+                .info
+                .iter_file_details()
+                .filter(|f| !f.attrs().padding)
+                .map(|f| f.filename.to_pathbuf()),
+        );
+        Ok(crate::domain::compute_torrent_paths(
+            &download.download_folder,
+            &download.filename,
+            &layout,
+        )
+        .output_folder)
+    }
+
     async fn mirror_readd_torrent(
         self: &Arc<Self>,
         download: &mut Download,
         output_dir: &str,
     ) -> anyhow::Result<usize> {
-        let url = download.url.clone();
-        let add = if url.starts_with("magnet:") {
-            librqbit::AddTorrent::from_url(&url)
-        } else if url.starts_with("torrent://") {
-            let download_dir = self.download_dir().await;
-            let torrent_file = std::path::Path::new(&download_dir)
-                .join(".torrents")
-                .join(format!("{}.torrent", download.id));
-            let bytes = tokio::fs::read(&torrent_file)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to read persisted torrent file: {}", e))?;
-            librqbit::AddTorrent::from_bytes(bytes)
-        } else {
-            let client = reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(15))
-                .read_timeout(std::time::Duration::from_secs(30))
-                .build()?;
-            let resp = client.get(&url).send().await?;
-            let bytes = resp.bytes().await?;
-            librqbit::AddTorrent::from_bytes(bytes)
-        };
+        let add = self.torrent_add_source(download).await?;
 
         let session = self.get_torrent_session().await?;
         let opts = librqbit::AddTorrentOptions {
             overwrite: true,
             output_folder: Some(output_dir.to_string()),
-            force_tracker_interval: Some(std::time::Duration::from_secs(60)),
             ..Default::default()
         };
 
@@ -2165,6 +2498,49 @@ impl ManagerState {
     }
 }
 
+fn seed_limit_reached(d: &Download, ratio_limit: Option<f64>, time_limit: Option<u64>) -> bool {
+    let ratio_limit = match d.ratio_limit {
+        Some(limit) if limit >= 0.0 => Some(limit),
+        Some(_) => None,
+        None => ratio_limit,
+    };
+    let time_limit = match d.seeding_time_limit {
+        Some(limit) if limit >= 0 => Some(limit as u64),
+        Some(_) => None,
+        None => time_limit,
+    };
+    let ratio = d.uploaded_size as f64 / d.total_size.max(1) as f64;
+    let seeded_minutes = d
+        .completed_at
+        .map(|c| (chrono::Utc::now() - c).num_minutes().max(0) as u64)
+        .unwrap_or(0);
+    ratio_limit.is_some_and(|limit| ratio + 0.001 >= limit)
+        || time_limit.is_some_and(|limit| seeded_minutes >= limit)
+}
+
+fn strictly_inside(path: &std::path::Path, folder: &str) -> bool {
+    let folder = std::path::Path::new(folder);
+    let folder = folder
+        .canonicalize()
+        .unwrap_or_else(|_| folder.to_path_buf());
+    path != folder && path.starts_with(&folder)
+}
+
+fn persisted_torrent_path(id: &str) -> std::path::PathBuf {
+    let data_dir = std::env::var("DLOAD_DATA_DIR").unwrap_or_else(|_| "/data".to_string());
+    std::path::Path::new(&data_dir)
+        .join("torrents")
+        .join(format!("{}.torrent", id))
+}
+
+async fn write_persisted_torrent(id: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let path = persisted_torrent_path(id);
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    tokio::fs::write(path, bytes).await
+}
+
 async fn session_add_and_wait(
     state: &Arc<ManagerState>,
     add: librqbit::AddTorrent<'_>,
@@ -2188,86 +2564,71 @@ async fn session_add_and_wait(
     }
     let download_folder = download.download_folder.clone();
 
-    // Phase 1: add paused so librqbit resolves metadata (magnet) or parses it (.torrent bytes)
-    // without writing any content yet. This gives us the layout before we commit to a final
-    // output_folder — necessary for the flat-multi-file case where we wrap into a subfolder.
-    let initial_opts = librqbit::AddTorrentOptions {
-        paused: true,
-        overwrite: true,
+    let magnet_trackers = download
+        .url
+        .starts_with("magnet:")
+        .then(|| librqbit::Magnet::parse(&download.url).ok())
+        .flatten()
+        .map(|m| m.trackers)
+        .filter(|t| !t.is_empty());
+
+    let list_opts = librqbit::AddTorrentOptions {
+        list_only: true,
         output_folder: Some(download_folder.clone()),
-        force_tracker_interval: Some(std::time::Duration::from_secs(60)),
         ..Default::default()
     };
+    let listed = tokio::select! {
+        r = session.add_torrent(add, Some(list_opts)) => r
+            .map_err(|e| anyhow::anyhow!("Failed to add torrent: {}", e))?,
+        _ = cancel_token.cancelled() => return Ok(()),
+    };
+    let librqbit::AddTorrentResponse::ListOnly(listed) = listed else {
+        anyhow::bail!("Failed to read torrent metadata");
+    };
 
-    let mut handle = session
-        .add_torrent(add, Some(initial_opts))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to add torrent: {}", e))?
-        .into_handle()
-        .ok_or_else(|| anyhow::anyhow!("Torrent was a duplicate or couldn't get handle"))?;
-
-    // Extract the torrent's display name (sanitized) and its file layout from metadata.
-    let torrent_name = handle
+    let torrent_name = listed
+        .info
         .name()
         .map(|n| crate::domain::sanitize_filename(&n))
         .unwrap_or_else(|| download.filename.clone());
     download.filename = torrent_name.clone();
 
-    let (layout, torrent_bytes_for_readd) = handle
-        .with_metadata(|m| {
-            let rel_paths: Vec<std::path::PathBuf> = m
-                .file_infos
-                .iter()
-                .filter(|f| !f.attrs.padding)
-                .map(|f| f.relative_filename.clone())
-                .collect();
-            (classify_layout(rel_paths), m.torrent_bytes.clone())
-        })
-        .map_err(|e| anyhow::anyhow!("Failed to read torrent metadata: {}", e))?;
-
+    let layout = classify_layout(
+        listed
+            .info
+            .iter_file_details()
+            .filter(|f| !f.attrs().padding)
+            .map(|f| f.filename.to_pathbuf()),
+    );
     let paths = compute_torrent_paths(&download_folder, &torrent_name, &layout);
 
-    // Flat multi-file torrents need a wrapper folder so librqbit's flat write doesn't spray
-    // files into the shared download folder. Tear down the paused handle and re-add with the
-    // corrected output_folder — no content has been written yet.
-    let needs_wrapper = paths.output_folder != download_folder;
-    if needs_wrapper {
-        // Let the initial paused handle finish initializing before tearing it down. Deleting
-        // mid-init races librqbit's init task, which then errors on every file ("file is None")
-        // and logs "torrent is initializing, can't pause". Waiting first makes teardown clean.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            handle.wait_until_initialized(),
-        )
-        .await;
-        // delete_files: true removes the 0-byte placeholder files librqbit created in the
-        // unwrapped output_folder. Safe because the handle was paused, no real content has
-        // been downloaded yet. Leaving them behind would clutter the shared download folder.
-        if let Err(e) = session
-            .delete(handle.id().into(), /*delete_files*/ true)
-            .await
-        {
-            tracing::warn!(
-                "Failed to remove initial paused handle before wrapper re-add: {}",
-                e
-            );
-        }
-        let wrapped_opts = librqbit::AddTorrentOptions {
-            paused: true,
-            overwrite: true,
-            output_folder: Some(paths.output_folder.clone()),
-            force_tracker_interval: Some(std::time::Duration::from_secs(60)),
-            ..Default::default()
-        };
-        handle = session
-            .add_torrent(
-                librqbit::AddTorrent::TorrentFileBytes(torrent_bytes_for_readd),
-                Some(wrapped_opts),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to re-add torrent into wrapper: {}", e))?
-            .into_handle()
-            .ok_or_else(|| anyhow::anyhow!("Wrapper re-add returned no handle"))?;
+    let add_opts = librqbit::AddTorrentOptions {
+        paused: true,
+        overwrite: true,
+        output_folder: Some(paths.output_folder.clone()),
+        initial_peers: Some(listed.seen_peers),
+        trackers: magnet_trackers,
+        ..Default::default()
+    };
+    let added = tokio::select! {
+        r = session.add_torrent(
+            librqbit::AddTorrent::TorrentFileBytes(listed.torrent_bytes),
+            Some(add_opts),
+        ) => r.map_err(|e| anyhow::anyhow!("Failed to add torrent: {}", e))?,
+        _ = cancel_token.cancelled() => return Ok(()),
+    };
+    let handle = added
+        .into_handle()
+        .ok_or_else(|| anyhow::anyhow!("Torrent was a duplicate or couldn't get handle"))?;
+
+    let owned_elsewhere = state
+        .torrent_handles
+        .read()
+        .await
+        .iter()
+        .any(|(id, tid)| *tid == handle.id() && *id != download.id);
+    if owned_elsewhere {
+        anyhow::bail!("This torrent is already in your downloads");
     }
 
     let torrent_id = handle.id();
@@ -2287,52 +2648,78 @@ async fn session_add_and_wait(
     if download.info_hash.is_none() {
         download.info_hash = Some(hash_str);
     }
+    let resolved = download.clone();
+    state
+        .patch_download(&download.id, |d| {
+            d.filename = resolved.filename.clone();
+            d.save_path = resolved.save_path.clone();
+            d.content_path = resolved.content_path.clone();
+            d.info_hash = resolved.info_hash.clone();
+            d.download_folder = resolved.download_folder.clone();
+        })
+        .await;
 
-    // Race-condition check: the user may have paused or cancelled while metadata was resolving.
-    let current_status = {
-        let downloads = state.downloads.read().await;
-        downloads
-            .get(&download.id)
-            .map(|d| d.status.clone())
-            .unwrap_or(DownloadStatus::Downloading)
+    // CRITICAL: wait for librqbit to finish initializing (checksum) before unpausing.
+    // Calling unpause() while the torrent is still in the Initializing state silently
+    // drops the start request (librqbit logs "no need to start torrent anymore, as it
+    // switched state from initializing"), leaving the torrent paused forever with zero
+    // peers. Re-read the status afterwards: the user may have paused, stopped, demoted
+    // or removed the download while metadata resolved or the checksum ran.
+    let wants_to_run = |status: Option<&DownloadStatus>| {
+        matches!(
+            status,
+            Some(DownloadStatus::Downloading | DownloadStatus::Fetching)
+        )
     };
-
-    if cancel_token.is_cancelled() {
-        let _ = session.delete(handle.id().into(), false).await;
-        let mut handles = state.torrent_handles.write().await;
-        handles.remove(&download.id);
-        return Ok(());
+    loop {
+        tokio::select! {
+            _ = handle.wait_until_initialized() => break,
+            _ = cancel_token.cancelled() => break,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                let downloads = state.downloads.read().await;
+                if !wants_to_run(downloads.get(&download.id).map(|d| &d.status)) {
+                    break;
+                }
+            }
+        }
     }
 
-    if current_status == DownloadStatus::Paused {
-        // Already paused from the initial add; nothing to do.
-        download.status = DownloadStatus::Paused;
-    } else {
-        // CRITICAL: wait for librqbit to finish initializing (checksum) before unpausing.
-        // Calling unpause() while the torrent is still in the Initializing state silently
-        // drops the start request (librqbit logs "no need to start torrent anymore, as it
-        // switched state from initializing"), leaving the torrent paused forever with zero
-        // peers. This is the root cause of ".torrent uploads and the qBittorrent/Sonarr add
-        // path never download": those have metadata immediately, so add_torrent returns mid
-        // init and the unpause races it. Magnet adds masked the bug because add_torrent only
-        // returns once metadata is resolved from peers, by which point init is already past.
-        if let Err(e) = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            handle.wait_until_initialized(),
-        )
-        .await
-        {
-            tracing::warn!(
-                "torrent init exceeded {:?} before unpause; unpausing anyway",
-                e
-            );
+    let current_status = {
+        let downloads = state.downloads.read().await;
+        downloads.get(&download.id).map(|d| d.status.clone())
+    };
+    if cancel_token.is_cancelled() || current_status.is_none() {
+        let superseded = state
+            .cancel_tokens
+            .read()
+            .await
+            .get(&download.id)
+            .is_some_and(|t| !t.is_cancelled());
+        if !superseded {
+            let _ = session.delete(handle.id().into(), false).await;
+            let mut handles = state.torrent_handles.write().await;
+            if handles.get(&download.id) == Some(&torrent_id) {
+                handles.remove(&download.id);
+            }
         }
+        return Ok(());
+    }
+    let run = wants_to_run(current_status.as_ref());
+    if run {
         if let Err(e) = session.unpause(&handle).await {
             tracing::error!("Failed to unpause torrent after metadata resolve: {}", e);
         }
     }
 
-    state.update_download(download).await;
+    if !run {
+        return Ok(());
+    }
+    state
+        .patch_download(&download.id, |d| {
+            d.status = DownloadStatus::Downloading;
+            d.error_message = None;
+        })
+        .await;
 
     let state_clone = Arc::clone(state);
     let dl_id = download.id.clone();
@@ -2370,11 +2757,48 @@ mod tests {
         h
     }
 
+    #[test]
+    fn seed_limits_prefer_torrent_values_over_global() {
+        let mut d = Download::new(
+            "magnet:?xt=urn:btih:0000000000000000000000000000000000000000".into(),
+            "/tmp",
+        );
+        d.total_size = 100;
+        d.uploaded_size = 50;
+        d.completed_at = Some(chrono::Utc::now());
+        assert!(!seed_limit_reached(&d, None, None));
+        assert!(seed_limit_reached(&d, Some(0.5), None));
+        assert!(!seed_limit_reached(&d, Some(1.0), None));
+        d.ratio_limit = Some(-1.0);
+        assert!(!seed_limit_reached(&d, Some(0.0), None));
+        d.ratio_limit = Some(0.25);
+        assert!(seed_limit_reached(&d, None, None));
+        d.ratio_limit = None;
+        d.completed_at = Some(chrono::Utc::now() - chrono::Duration::minutes(30));
+        assert!(seed_limit_reached(&d, None, Some(30)));
+        assert!(!seed_limit_reached(&d, None, Some(31)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn speed_meter_averages_over_window_and_resets_on_counter_drop() {
+        let mut meter = SpeedMeter::default();
+        assert_eq!(meter.sample(0), 0);
+        for (i, bytes) in [10, 40, 50, 80].iter().enumerate() {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let speed = meter.sample(bytes * 1_000_000);
+            if i == 3 {
+                assert_eq!(speed, 20_000_000);
+            }
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(meter.sample(5), 0);
+    }
+
     // ─── extract_client_ip ────────────────────────────────────────────────
 
     #[test]
-    fn prefers_x_forwarded_for_first_hop() {
-        let h = headers(&[("x-forwarded-for", "203.0.113.5, 10.0.0.1, 10.0.0.2")]);
+    fn uses_x_forwarded_for_hop_added_by_proxy() {
+        let h = headers(&[("x-forwarded-for", "1.2.3.4, 203.0.113.5")]);
         assert_eq!(
             extract_client_ip_inner(&h, None, true).unwrap(),
             "203.0.113.5".parse::<IpAddr>().unwrap()
@@ -2410,8 +2834,8 @@ mod tests {
 
     #[test]
     fn ignores_malformed_xff() {
-        let h = headers(&[("x-forwarded-for", "not-an-ip, 10.0.0.1")]);
-        // First token is malformed → extractor returns None from the XFF branch;
+        let h = headers(&[("x-forwarded-for", "10.0.0.1, not-an-ip")]);
+        // Last token is malformed → extractor returns None from the XFF branch;
         // with no X-Real-IP and no peer, we get None overall
         assert_eq!(extract_client_ip_inner(&h, None, true), None);
     }

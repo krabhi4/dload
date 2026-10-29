@@ -7,6 +7,8 @@
     <title>dload</title>
     <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg" />
     <link rel="manifest" href="/manifest.json" />
+    <link rel="preload" href="/ui/fonts/host-grotesk.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/ui/fonts/atkinson-hyperlegible-mono.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/ui/style.css" />
     <script>
       (function () {
@@ -24,15 +26,14 @@
     <a href="#main-content" class="skip-link">Skip to content</a>
     <div id="app-loading" class="app-loading" role="status" aria-label="Loading dload">
       <div class="app-loading-mark">
-        <span class="app-loading-prompt">&#10095;</span>
+        <img class="logo-mark" src="/ui/favicon.svg" width="28" height="28" alt="" />
         <span class="app-loading-word">dload</span>
-        <span class="app-loading-cursor" aria-hidden="true">&#9608;</span>
       </div>
     </div>
     <div id="app">
       <header class="app-header" role="banner">
         <div class="logo">
-          <span class="logo-prompt" aria-hidden="true">&#10095;</span>
+          <img class="logo-mark" src="/ui/favicon.svg" width="22" height="22" alt="" />
           <span class="logo-word">dload</span>
         </div>
         <nav class="nav-tabs" aria-label="Main navigation">
@@ -42,25 +43,26 @@
         </nav>
         <div class="header-right">
           <div class="head-stats" aria-label="Transfer totals">
-            <span class="head-stat dn"><span class="hs-glyph" aria-hidden="true">&#8595;</span> <span id="total-speed" class="stat-val">0 B/s</span></span>
-            <span class="head-stat up" id="upload-stat" style="display:none"><span class="hs-glyph" aria-hidden="true">&#8593;</span> <span id="total-upload" class="stat-val">0 B/s</span></span>
-            <span class="head-stat ac"><span id="active-count" class="stat-val">0</span> active<span id="queue-stat" style="display:none"> &middot; <span id="queued-count" class="stat-val">0</span> queued</span></span>
+            <span class="head-stat dn"><span class="hs-glyph" aria-hidden="true">&#8595;</span><span class="sr-only">Download speed</span> <span id="total-speed" class="stat-val">0 B/s</span></span>
+            <span class="head-stat up" id="upload-stat" style="display:none"><span class="hs-glyph" aria-hidden="true">&#8593;</span><span class="sr-only">Upload speed</span> <span id="total-upload" class="stat-val">0 B/s</span></span>
+            <span class="head-stat ac"><span id="active-count" class="stat-val">0</span> active</span>
+            <span class="head-stat qu" id="queue-stat" style="display:none"><span id="queued-count" class="stat-val">0</span> queued</span>
           </div>
           <a href="#profile" class="user-info" title="Profile">
-            <span class="user-avatar" id="user-avatar" aria-hidden="true">&#9676;</span>
+            <span class="user-avatar" id="user-avatar" aria-hidden="true"></span>
             <span id="username">admin</span>
             <span id="user-role" class="user-role">ADMIN</span>
           </a>
-          <button class="logout-btn" onclick="logout()" aria-label="Sign out" title="Sign out">[ &#10005; ]</button>
-          <button class="hamburger-btn" id="hamburger-btn" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-drawer" onclick="toggleDrawer()">&#8801;</button>
+          <button type="button" class="logout-btn" onclick="logout()">Sign out</button>
+          <button type="button" class="hamburger-btn" id="hamburger-btn" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-drawer" onclick="toggleDrawer()">Menu</button>
         </div>
       </header>
 
       <div id="mobile-drawer" class="mobile-drawer" role="dialog" aria-label="Navigation menu" aria-hidden="true">
-        <button class="mobile-drawer-close" aria-label="Close menu" onclick="closeDrawer()">[ &#10005; ]</button>
+        <button type="button" class="mobile-drawer-close" aria-label="Close menu" onclick="closeDrawer()">Close</button>
         <div class="mobile-drawer-inner">
           <div class="mobile-drawer-account">
-            <span class="mobile-drawer-avatar" id="mobile-drawer-avatar" aria-hidden="true">&#9676;</span>
+            <span class="mobile-drawer-avatar" id="mobile-drawer-avatar" aria-hidden="true"></span>
             <div class="mobile-drawer-account-meta">
               <span id="mobile-drawer-username" class="mobile-drawer-username">admin</span>
               <span id="mobile-drawer-role" class="mobile-drawer-role">ADMIN</span>
@@ -72,7 +74,7 @@
             <a href="#settings" class="mobile-drawer-link" data-page="settings" onclick="closeDrawer()">Settings</a>
             <a href="#profile" class="mobile-drawer-link" data-page="profile" onclick="closeDrawer()">Profile</a>
           </nav>
-          <button class="mobile-drawer-logout" onclick="closeDrawer(); logout()">&#10005; sign out</button>
+          <button type="button" class="mobile-drawer-logout" onclick="closeDrawer(); logout()">Sign out</button>
         </div>
       </div>
       <div class="mobile-drawer-scrim" id="mobile-drawer-scrim" onclick="closeDrawer()" aria-hidden="true"></div>
@@ -83,33 +85,31 @@
     <div id="login-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="login-heading">
       <div class="modal-backdrop"></div>
       <div class="modal-content login-box">
-        <span class="box-label">dload</span>
         <div class="login-logo">
-          <h2 id="login-heading"><span class="login-prompt" aria-hidden="true">&#10095;</span> authenticate</h2>
-          <p class="login-subtitle">sign in to your download server</p>
+          <img class="logo-mark" src="/ui/favicon.svg" width="32" height="32" alt="" />
+          <h2 id="login-heading">dload</h2>
+          <p class="login-subtitle">Sign in to your download server</p>
         </div>
         <form id="login-form">
           <div class="form-field">
-            <label for="login-username">user</label>
+            <label for="login-username">Username</label>
             <input
               type="text"
               id="login-username"
-              placeholder="username"
               required
               autocomplete="username"
             />
           </div>
           <div class="form-field">
-            <label for="login-password">pass</label>
+            <label for="login-password">Password</label>
             <input
               type="password"
               id="login-password"
-              placeholder="password"
               required
               autocomplete="current-password"
             />
           </div>
-          <button type="submit" class="btn-primary btn-full">&#8629; sign in</button>
+          <button type="submit" class="btn-primary btn-full">Sign in</button>
           <p class="login-hint" id="login-hint"></p>
         </form>
       </div>

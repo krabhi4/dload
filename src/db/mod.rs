@@ -68,7 +68,7 @@ impl Database {
         if let Err(e) = conn
             .execute_batch("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;")
         {
-            tracing::warn!("migration token_version failed: {}", e);
+            log_migration_error("token_version", &e);
         }
 
         if let Err(e) = conn.execute_batch(
@@ -76,13 +76,13 @@ impl Database {
              ALTER TABLE downloads ADD COLUMN category TEXT;
              ALTER TABLE downloads ADD COLUMN content_path TEXT;",
         ) {
-            tracing::warn!("migration info_hash/category/content_path failed: {}", e);
+            log_migration_error("info_hash/category/content_path", &e);
         }
         if let Err(e) = conn.execute_batch(
             "ALTER TABLE downloads ADD COLUMN http_mirror_status TEXT;
              ALTER TABLE downloads ADD COLUMN http_mirror_url TEXT;",
         ) {
-            tracing::warn!("migration http_mirror_status/http_mirror_url failed: {}", e);
+            log_migration_error("http_mirror_status/http_mirror_url", &e);
         }
         let _ = conn
             .execute_batch("ALTER TABLE downloads ADD COLUMN restart_resume INTEGER DEFAULT 0;");
@@ -107,14 +107,14 @@ impl Database {
                      AND restart_resume = 0;
                      INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_restart_resume', '1');",
                 ) {
-                    tracing::warn!("migration restart_resume failed: {}", e);
+                    log_migration_error("restart_resume", &e);
                 }
             }
         }
         if let Err(e) = conn.execute_batch(
             "ALTER TABLE downloads ADD COLUMN download_folder TEXT NOT NULL DEFAULT '';",
         ) {
-            tracing::warn!("migration download_folder failed: {}", e);
+            log_migration_error("download_folder", &e);
         }
         // One-time migration: backfill download_folder from existing content_path/save_path.
         // Priority per row: parent(content_path) if set → parent(save_path) if non-empty →
@@ -184,7 +184,7 @@ impl Database {
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
                     rusqlite::params![&"migration_download_folder_backfill", &"1"],
                 ) {
-                    tracing::warn!("migration download_folder backfill marker failed: {}", e);
+                    log_migration_error("download_folder backfill marker", &e);
                 }
             }
         }
@@ -192,7 +192,14 @@ impl Database {
         if let Err(e) =
             conn.execute_batch("ALTER TABLE downloads ADD COLUMN position INTEGER DEFAULT 0;")
         {
-            tracing::warn!("migration position failed: {}", e);
+            log_migration_error("position", &e);
+        }
+        if let Err(e) = conn.execute_batch(
+            "ALTER TABLE downloads ADD COLUMN uploaded_size INTEGER DEFAULT 0;
+             ALTER TABLE downloads ADD COLUMN ratio_limit REAL;
+             ALTER TABLE downloads ADD COLUMN seeding_time_limit INTEGER;",
+        ) {
+            log_migration_error("uploaded_size/ratio_limit/seeding_time_limit", &e);
         }
         // One-time migration: backfill positions from created_at order so existing
         // downloads get a sensible initial ordering.
@@ -212,7 +219,7 @@ impl Database {
                      );
                      INSERT OR IGNORE INTO settings (key, value) VALUES ('migration_position_backfill', '1');",
                 ) {
-                    tracing::warn!("migration position backfill failed: {}", e);
+                    log_migration_error("position backfill", &e);
                 }
             }
         }
@@ -254,14 +261,14 @@ impl Database {
                         "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
                         rusqlite::params![&"download_folders", &folder.to_string()],
                     ) {
-                        tracing::warn!("migration download_folders failed: {}", e);
+                        log_migration_error("download_folders", &e);
                     }
                 }
                 if let Err(e) = conn.execute(
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
                     rusqlite::params![&"migration_download_folders", &"1"],
                 ) {
-                    tracing::warn!("migration download_folders marker failed: {}", e);
+                    log_migration_error("download_folders marker", &e);
                 }
             }
         }
@@ -297,5 +304,13 @@ impl Database {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+}
+
+fn log_migration_error(name: &str, e: &rusqlite::Error) {
+    if e.to_string().contains("duplicate column name") {
+        tracing::debug!("migration {} already applied", name);
+    } else {
+        tracing::warn!("migration {} failed: {}", name, e);
     }
 }

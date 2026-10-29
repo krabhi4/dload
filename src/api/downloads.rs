@@ -42,7 +42,12 @@ struct ReorderRequest {
 
 pub fn router(state: SharedState) -> Router {
     Router::new()
-        .route("/api/downloads", get(list_downloads).post(add_download))
+        .route(
+            "/api/downloads",
+            get(list_downloads)
+                .post(add_download)
+                .layer(axum::extract::DefaultBodyLimit::max(110 * 1024 * 1024)),
+        )
         .route("/api/downloads/reorder", post(reorder_downloads_handler))
         .route("/api/downloads/{id}", delete(remove_download))
         .route("/api/downloads/{id}/pause", post(pause_download))
@@ -130,6 +135,15 @@ async fn add_download(
 
         if let Err(e) = validate_download_url(&url) {
             return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+        if let Some(hash) = crate::worker::extract_info_hash(&url) {
+            if state.has_torrent(&hash).await {
+                return (
+                    StatusCode::CONFLICT,
+                    "This torrent is already in your downloads",
+                )
+                    .into_response();
+            }
         }
 
         let download_dir = {
@@ -280,6 +294,11 @@ async fn handle_add_download_multipart(
     let mut created: Vec<Download> = Vec::new();
 
     for url in urls {
+        if let Some(hash) = crate::worker::extract_info_hash(&url) {
+            if state.has_torrent(&hash).await {
+                continue;
+            }
+        }
         let download = Download::new(url, &download_dir);
         state.add_and_maybe_start(download.clone()).await;
         let actual = {
@@ -313,23 +332,45 @@ async fn handle_add_download_multipart(
     Json(created).into_response()
 }
 
+fn action_error(status: StatusCode, error: &str) -> axum::response::Response {
+    (
+        status,
+        Json(serde_json::json!({ "success": false, "error": error })),
+    )
+        .into_response()
+}
+
+fn auth_error(error: &str) -> axum::response::Response {
+    let status = if error == "Admin access required" {
+        StatusCode::FORBIDDEN
+    } else {
+        StatusCode::UNAUTHORIZED
+    };
+    action_error(status, error)
+}
+
+async fn require_admin_and_download(
+    state: &SharedState,
+    headers: &axum::http::HeaderMap,
+    id: &str,
+) -> Option<axum::response::Response> {
+    if let Err(e) = state.authenticate_admin(extract_token(headers)).await {
+        return Some(auth_error(e));
+    }
+    if state.get_download(id).await.is_none() {
+        return Some(action_error(StatusCode::NOT_FOUND, "Download not found"));
+    }
+    None
+}
+
 async fn remove_download(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     Query(params): Query<DeleteParams>,
     headers: axum::http::HeaderMap,
-) -> Json<serde_json::Value> {
-    let token = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or("");
-
-    if let Err(e) = state.authenticate_admin(token).await {
-        return Json(serde_json::json!({
-            "success": false,
-            "error": e
-        }));
+) -> axum::response::Response {
+    if let Some(resp) = require_admin_and_download(&state, &headers, &id).await {
+        return resp;
     }
 
     if params.delete_files {
@@ -337,28 +378,28 @@ async fn remove_download(
     } else {
         state.remove(&id).await;
     }
-    Json(serde_json::json!({ "success": true }))
+    Json(serde_json::json!({ "success": true })).into_response()
 }
 
 async fn pause_download(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
-) -> Json<serde_json::Value> {
-    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
-        return Json(serde_json::json!({ "success": false, "error": e }));
+) -> axum::response::Response {
+    if let Some(resp) = require_admin_and_download(&state, &headers, &id).await {
+        return resp;
     }
     state.pause_download(&id).await;
-    Json(serde_json::json!({ "success": true }))
+    Json(serde_json::json!({ "success": true })).into_response()
 }
 
 async fn cancel_download(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
-) -> Json<serde_json::Value> {
-    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
-        return Json(serde_json::json!({ "success": false, "error": e }));
+) -> axum::response::Response {
+    if let Some(resp) = require_admin_and_download(&state, &headers, &id).await {
+        return resp;
     }
     state.cancel_download(&id).await;
     let download = {
@@ -369,6 +410,7 @@ async fn cancel_download(
                 d.progress = 100.0;
             } else {
                 d.status = DownloadStatus::Stopped;
+                d.restart_resume = false;
             }
             d.speed = 0;
             d.upload_speed = 0;
@@ -380,27 +422,27 @@ async fn cancel_download(
     if let Some(d) = download {
         state.update_download(&d).await;
     }
-    Json(serde_json::json!({ "success": true }))
+    Json(serde_json::json!({ "success": true })).into_response()
 }
 
 async fn resume_download(
     State(state): State<SharedState>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
-) -> Json<serde_json::Value> {
-    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
-        return Json(serde_json::json!({ "success": false, "error": e }));
+) -> axum::response::Response {
+    if let Some(resp) = require_admin_and_download(&state, &headers, &id).await {
+        return resp;
     }
     state.resume_download(&id).await;
-    Json(serde_json::json!({ "success": true }))
+    Json(serde_json::json!({ "success": true })).into_response()
 }
 
 async fn resume_all_downloads(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
-) -> Json<serde_json::Value> {
+) -> axum::response::Response {
     if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
-        return Json(serde_json::json!({ "success": false, "error": e }));
+        return auth_error(e);
     }
 
     let ids: Vec<String> = state
@@ -424,7 +466,7 @@ async fn resume_all_downloads(
         state_clone.resume_all_downloads(ids, 2).await;
     });
 
-    Json(serde_json::json!({ "success": true, "count": count }))
+    Json(serde_json::json!({ "success": true, "count": count })).into_response()
 }
 
 async fn export_torrent(
@@ -487,10 +529,7 @@ async fn start_http_mirror(
     Json(payload): Json<HttpMirrorRequest>,
 ) -> axum::response::Response {
     if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
-        return axum::response::IntoResponse::into_response((
-            axum::http::StatusCode::UNAUTHORIZED,
-            e,
-        ));
+        return auth_error(e);
     }
 
     let url = payload.url.trim().to_string();
@@ -555,25 +594,33 @@ async fn start_http_mirror(
     ))
 }
 
+const MAX_URL_BYTES: usize = 16 * 1024;
+const MAX_MAGNET_BYTES: usize = 512 * 1024;
+
 pub fn validate_download_url(url: &str) -> Result<(), String> {
     if url.is_empty() {
         return Err("URL is required".to_string());
     }
 
-    if url.len() > 4096 {
-        return Err("URL too long".to_string());
+    if url.starts_with("magnet:") {
+        if url.len() > MAX_MAGNET_BYTES {
+            return Err("Magnet link too long (max 512 KiB)".to_string());
+        }
+        return librqbit::Magnet::parse(url)
+            .map(|_| ())
+            .map_err(|e| format!("Invalid magnet link: {:#}", e));
     }
 
-    // Allow magnet links directly
-    if url.starts_with("magnet:") {
-        return Ok(());
+    if url.len() > MAX_URL_BYTES {
+        return Err("URL too long (max 16 KiB)".to_string());
     }
 
     let parsed = url::Url::parse(url).map_err(|_| "Invalid URL format".to_string())?;
 
     // Whitelist allowed schemes
     match parsed.scheme() {
-        "http" | "https" | "ftp" => {}
+        "http" | "https" => {}
+        "ftp" => return Err("FTP downloads are not supported yet".to_string()),
         _ => return Err(format!("Unsupported protocol: {}", parsed.scheme())),
     }
 
@@ -725,15 +772,39 @@ mod tests {
     // ─── validate_download_url ───────────────────────────────────────────
 
     #[test]
-    fn accepts_public_http_https_ftp() {
+    fn accepts_public_http_https() {
         ok("https://example.com/file.iso");
         ok("http://example.com/file.iso");
-        ok("ftp://ftp.example.com/pub/file.iso");
     }
 
     #[test]
-    fn accepts_magnet_without_further_validation() {
+    fn rejects_ftp_until_supported() {
+        err("ftp://ftp.example.com/pub/file.iso", "FTP");
+    }
+
+    #[test]
+    fn accepts_valid_magnets() {
         ok("magnet:?xt=urn:btih:0000000000000000000000000000000000000000");
+        ok("magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&dn=x");
+    }
+
+    #[test]
+    fn accepts_magnet_with_many_trackers() {
+        let trackers: String = (0..400)
+            .map(|i| format!("&tr=udp%3A%2F%2Ftracker{}.example.org%3A1337%2Fannounce", i))
+            .collect();
+        let magnet = format!(
+            "magnet:?xt=urn:btih:0000000000000000000000000000000000000000&dn=big{}",
+            trackers
+        );
+        assert!(magnet.len() > 20_000);
+        ok(&magnet);
+    }
+
+    #[test]
+    fn rejects_magnet_without_info_hash() {
+        err("magnet:?dn=nothing", "Invalid magnet");
+        err("magnet:?xt=urn:btih:nothex", "Invalid magnet");
     }
 
     #[test]
@@ -779,7 +850,8 @@ mod tests {
     #[test]
     fn rejects_overlength_and_empty() {
         err("", ""); // any error
-        let long = format!("https://example.com/{}", "a".repeat(5000));
+        ok(&format!("https://example.com/{}", "a".repeat(5000)));
+        let long = format!("https://example.com/{}", "a".repeat(17 * 1024));
         err(&long, "too long");
     }
 

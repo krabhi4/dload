@@ -40,9 +40,12 @@ where
         .iter()
         .filter_map(|p| {
             let mut comps = p.components();
-            let first = comps.next()?;
+            let first = match comps.next()? {
+                std::path::Component::Normal(name) => name,
+                _ => return None,
+            };
             if comps.next().is_some() {
-                Some(first.as_os_str().to_string_lossy().to_string())
+                Some(first.to_string_lossy().to_string())
             } else {
                 None
             }
@@ -81,13 +84,12 @@ pub fn compute_torrent_paths(
 
     match layout {
         ContentLayout::SingleFile(rel) => {
-            let raw = rel.to_string_lossy();
-            let rel_str = if raw.trim().is_empty() {
+            let rel_str = sanitize_rel_path(&normalize(&rel.to_string_lossy()));
+            let rel_str = if rel_str.trim().is_empty() {
                 format!("download-{}", uuid::Uuid::new_v4())
             } else {
-                normalize(&raw)
+                rel_str
             };
-            let rel_str = sanitize_rel_path(&rel_str);
             TorrentPaths {
                 output_folder: df.clone(),
                 content_path: join(&df, &rel_str),
@@ -121,7 +123,7 @@ fn normalize(s: &str) -> String {
 fn sanitize_rel_path(rel: &str) -> String {
     rel.split('/')
         .filter(|part| !part.starts_with(".."))
-        .filter(|part| !part.is_empty())
+        .filter(|part| !part.is_empty() && *part != ".")
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -135,6 +137,18 @@ fn join(base: &str, rel: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dot_paths_never_resolve_to_the_download_folder() {
+        let layout = classify_layout(["./a.mkv", "./b.mkv"]);
+        assert_eq!(layout, ContentLayout::MultiFileFlat);
+        let paths = compute_torrent_paths("/downloads", "Show", &layout);
+        assert_eq!(paths.content_path, "/downloads/Show");
+
+        let single =
+            compute_torrent_paths("/downloads", "x", &ContentLayout::SingleFile(".".into()));
+        assert!(single.content_path.starts_with("/downloads/download-"));
+    }
     use std::path::PathBuf;
 
     fn pb(s: &str) -> PathBuf {

@@ -23,6 +23,10 @@ pub struct Settings {
     pub port: u16,
     #[serde(default)]
     pub download_folders: Vec<DownloadFolder>,
+    #[serde(default)]
+    pub seed_ratio_limit: Option<f64>,
+    #[serde(default)]
+    pub seed_time_limit: Option<u64>,
 }
 
 impl Settings {
@@ -57,6 +61,8 @@ impl Default for Settings {
                 path: "/downloads".to_string(),
                 is_default: true,
             }],
+            seed_ratio_limit: None,
+            seed_time_limit: None,
         }
     }
 }

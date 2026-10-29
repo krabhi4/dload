@@ -69,59 +69,98 @@ pub fn ssrf_safe_redirect_policy() -> reqwest::redirect::Policy {
     })
 }
 
-pub(crate) async fn resolve_host_to_public_ip(host: &str, port: u16) -> anyhow::Result<IpAddr> {
-    use std::net::ToSocketAddrs;
-
+pub(crate) async fn resolve_public_ips(host: &str) -> anyhow::Result<Vec<IpAddr>> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_private_ip(&ip) {
             anyhow::bail!("host resolves to private/internal IP: {}", ip);
         }
-        return Ok(ip);
+        return Ok(vec![ip]);
     }
 
-    let socket_addrs = format!("{}:{}", host, port);
-    let resolved: Vec<IpAddr> = tokio::task::spawn_blocking(move || {
-        socket_addrs
-            .to_socket_addrs()
-            .map(|iter| iter.map(|sa| sa.ip()).collect())
-            .unwrap_or_default()
-    })
-    .await?;
+    let resolved: Vec<IpAddr> = tokio::net::lookup_host((host, 0))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to resolve host {}: {}", host, e))?
+        .map(|sa| sa.ip())
+        .collect();
 
-    if resolved.is_empty() {
-        anyhow::bail!("failed to resolve host: {}", host);
+    let public: Vec<IpAddr> = resolved
+        .iter()
+        .copied()
+        .filter(|ip| !is_private_ip(ip))
+        .collect();
+    if public.is_empty() {
+        anyhow::bail!(
+            "host '{}' resolves only to private/internal addresses: {:?}",
+            host,
+            resolved
+        );
     }
-
-    for ip in &resolved {
-        if !is_private_ip(ip) {
-            return Ok(*ip);
-        }
-    }
-
-    anyhow::bail!(
-        "host '{}' resolves only to private/internal addresses: {:?}",
-        host,
-        resolved
-    )
+    Ok(public)
 }
 
-pub(crate) async fn ssrf_safe_client_builder(url: &str) -> anyhow::Result<reqwest::ClientBuilder> {
-    let parsed = url::Url::parse(url)?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
-    let port = parsed.port_or_known_default().unwrap_or(80);
+pub(crate) fn check_target(url: &str) -> anyhow::Result<()> {
+    match redirect_decision(&url::Url::parse(url)?, 0) {
+        RedirectDecision::Follow => Ok(()),
+        RedirectDecision::Block(reason) => anyhow::bail!("{}", reason),
+    }
+}
 
-    let ip = resolve_host_to_public_ip(host, port).await?;
+fn proxy_hosts() -> Vec<String> {
+    [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .filter_map(|value| {
+        url::Url::parse(&value)
+            .ok()?
+            .host_str()
+            .map(str::to_ascii_lowercase)
+    })
+    .collect()
+}
 
-    let mut builder = reqwest::Client::builder()
+struct PublicOnlyResolver {
+    trusted: Vec<String>,
+}
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        let trusted = self.trusted.contains(&host.to_ascii_lowercase());
+        Box::pin(async move {
+            let ips = if trusted {
+                tokio::net::lookup_host((host.as_str(), 0))
+                    .await?
+                    .map(|sa| sa.ip())
+                    .collect()
+            } else {
+                resolve_public_ips(&host).await?
+            };
+            let addrs: reqwest::dns::Addrs =
+                Box::new(ips.into_iter().map(|ip| SocketAddr::new(ip, 0)));
+            Ok(addrs)
+        })
+    }
+}
+
+pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .http1_only()
         .tcp_nodelay(true)
+        .dns_resolver(PublicOnlyResolver {
+            trusted: proxy_hosts(),
+        })
         .redirect(ssrf_safe_redirect_policy())
-        .user_agent(format!("DLoad/{}", env!("CARGO_PKG_VERSION")));
-
-    builder = builder.resolve(host, SocketAddr::new(ip, port));
-
-    Ok(builder)
+        .user_agent(format!("DLoad/{}", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(30))
+        .build()?)
 }
 
 pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
@@ -379,27 +418,49 @@ mod tests {
         ));
     }
 
-    // ─── resolve_host_to_public_ip ──────────────────────────────────────
+    // ─── resolve_public_ips ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn resolve_rejects_literal_private_ip() {
-        assert!(resolve_host_to_public_ip("127.0.0.1", 80).await.is_err());
-        assert!(resolve_host_to_public_ip("10.0.0.1", 80).await.is_err());
-        assert!(resolve_host_to_public_ip("169.254.169.254", 80)
-            .await
-            .is_err());
-        assert!(resolve_host_to_public_ip("::1", 80).await.is_err());
+        assert!(resolve_public_ips("127.0.0.1").await.is_err());
+        assert!(resolve_public_ips("10.0.0.1").await.is_err());
+        assert!(resolve_public_ips("169.254.169.254").await.is_err());
+        assert!(resolve_public_ips("::1").await.is_err());
     }
 
     #[tokio::test]
     async fn resolve_accepts_literal_public_ip() {
-        assert!(resolve_host_to_public_ip("8.8.8.8", 80).await.is_ok());
-        assert!(resolve_host_to_public_ip("1.1.1.1", 80).await.is_ok());
+        assert!(resolve_public_ips("8.8.8.8").await.is_ok());
+        assert!(resolve_public_ips("1.1.1.1").await.is_ok());
+    }
+
+    #[test]
+    fn check_target_blocks_private_literals() {
+        assert!(check_target("http://127.0.0.1/x").is_err());
+        assert!(check_target("http://[::1]/x").is_err());
+        assert!(check_target("http://localhost/x").is_err());
+        assert!(check_target("https://example.com/x").is_ok());
+    }
+
+    #[tokio::test]
+    async fn resolver_trusts_only_proxy_hosts() {
+        use reqwest::dns::Resolve;
+        let resolver = PublicOnlyResolver {
+            trusted: vec!["localhost".to_string()],
+        };
+        assert!(resolver.resolve("localhost".parse().unwrap()).await.is_ok());
+        let strict = PublicOnlyResolver { trusted: vec![] };
+        assert!(strict.resolve("localhost".parse().unwrap()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_localhost_name() {
+        assert!(resolve_public_ips("localhost").await.is_err());
     }
 
     #[tokio::test]
     async fn resolve_rejects_nonexistent_host() {
-        assert!(resolve_host_to_public_ip("nonexistent.invalid.example", 80)
+        assert!(resolve_public_ips("nonexistent.invalid.example")
             .await
             .is_err());
     }

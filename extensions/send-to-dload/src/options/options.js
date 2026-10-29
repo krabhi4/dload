@@ -8,9 +8,8 @@ const $ = (sel) => document.querySelector(sel);
 // Must run from a user gesture — Firefox rejects permissions.request() otherwise.
 async function ensureServerPermission(serverUrl) {
   try {
-    const origin = new URL(serverUrl).origin + "/*";
-    if (await browser.permissions.contains({ origins: [origin] })) return true;
-    return await browser.permissions.request({ origins: [origin] });
+    const u = new URL(serverUrl);
+    return await browser.permissions.request({ origins: [`${u.protocol}//${u.hostname}/*`] });
   } catch (err) {
     console.warn("[send-to-dload] permission request failed:", err);
     return false;
@@ -113,11 +112,13 @@ async function save() {
       notifyOnSkip: $("#notifyOnSkip").checked,
     },
   };
-  if (partial.serverUrl) {
-    await ensureServerPermission(partial.serverUrl);
+  const result = $("#save-result");
+  if (partial.serverUrl && !(await ensureServerPermission(partial.serverUrl))) {
+    result.textContent = "Site-access permission was denied, so nothing was saved. Allow access to the server, then save again.";
+    result.className = "result err";
+    return;
   }
   await saveConfig(partial);
-  const result = $("#save-result");
   result.textContent = "Saved.";
   result.className = "result ok";
   setTimeout(() => {

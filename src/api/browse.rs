@@ -45,10 +45,11 @@ pub fn router(state: SharedState) -> Router {
 }
 
 fn validate_browse_path(path: &str) -> Result<String, String> {
-    let path = path.trim();
-    if !path.starts_with('/') {
+    if !path.trim().starts_with('/') {
         return Err("Path must be absolute".to_string());
     }
+    let path = crate::api::settings::collapse_path(path);
+    let path = path.as_str();
     if path.contains("..") {
         return Err("Path must not contain '..'".to_string());
     }
@@ -204,6 +205,8 @@ mod tests {
         assert!(validate_browse_path("/downloads/..").is_err());
         assert!(validate_browse_path("/../etc").is_err());
         assert!(validate_browse_path("/foo/../bar").is_err());
+        assert!(validate_browse_path("//etc").is_err());
+        assert!(validate_browse_path("/./proc/self").is_err());
     }
 
     #[test]

@@ -51,10 +51,10 @@ async fn main() {
     let manager: manager::SharedState = Arc::new(manager_state);
     let sessions = manager.sessions.clone();
 
-    // Auto-resume torrents that were active before shutdown
+    // Auto-resume downloads that were active before shutdown
     if !auto_resume_ids.is_empty() {
         tracing::info!(
-            "{} torrents will auto-resume after startup",
+            "{} downloads will auto-resume after startup",
             auto_resume_ids.len()
         );
         let mgr = manager.clone();
@@ -109,7 +109,7 @@ async fn main() {
         )
         .route("/manifest.json", get(manifest_json))
         .merge(api::router(manager.clone()))
-        .merge(api::qbit_compat::router(manager, sessions))
+        .merge(api::qbit_compat::router(manager.clone(), sessions))
         .layer(security_headers);
 
     if let Some(cors) = cors {
@@ -124,8 +124,20 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .unwrap();
+    manager.shutdown().await;
+}
+
+async fn shutdown_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("Failed to install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+    }
+    tracing::info!("Shutting down");
 }
 
 async fn index() -> impl IntoResponse {

@@ -1,6 +1,6 @@
 # Send to dload — browser extension
 
-A Manifest V3 browser extension that detects **any** downloadable artifact your browser encounters — HTTP(S)/FTP file downloads, magnet links, `.torrent` file URLs — and forwards them to your self-hosted [dload](https://github.com/krabhi4/dload) server.
+A Manifest V3 browser extension that detects **any** downloadable artifact your browser encounters — HTTP(S) file downloads, magnet links, `.torrent` file URLs — and forwards them to your self-hosted [dload](https://github.com/krabhi4/dload) server.
 
 Targets **Chromium** (Chrome / Edge / Brave / Opera) and **Firefox** from a single source tree.
 
@@ -11,7 +11,7 @@ Targets **Chromium** (Chrome / Edge / Brave / Opera) and **Firefox** from a sing
 ## Features
 
 - **Three detection channels** that work together:
-  1. **Browser download interception** — any HTTP(S)/FTP file the browser tries to save is cancelled and reposted to dload (if dload *permanently* rejects it the browser download is re-issued; transient outages are queued for retry).
+  1. **Browser download interception** — any HTTP(S) file the browser tries to save that passes the filters is cancelled and reposted to dload (if dload *permanently* rejects it, or marks it failed within about 20 seconds, the browser download is re-issued; transient outages are queued for retry). A download the browser finishes before it can be cancelled, which can happen with small files in Firefox, stays in the browser and is not sent.
   2. **Right-click "Send to dload"** — works on magnet links, `.torrent` URLs, and video/audio links.
   3. **Zero-click magnet scanner** — a content script intercepts left-clicks on `a[href^="magnet:"]` and `a[href$=".torrent"]` on every page.
 - **Durable retry queue** — failed sends are persisted to `chrome.storage.local` and retried with exponential backoff (30s → 6h, max 10 attempts) so transient outages don't lose downloads.
@@ -76,7 +76,7 @@ site-access settings. That, not a server env var, is what gates the request.
 | **Excluded extensions** | Skips matching URLs even if in the include list. |
 | **Min / Max size** | Skips downloads outside the size range. Skipped when size unknown. |
 | **Capture magnet links** | Per-kind toggle. |
-| **Capture HTTP/HTTPS/FTP** | Per-kind toggle. |
+| **Capture HTTP/HTTPS** | Per-kind toggle. |
 | **Notification on send / skip** | Optional desktop notifications. |
 
 Defaults: blacklist mode, empty host list, include list `[.torrent, .iso, .zip, .rar, .7z, .tar, .gz, .bz2, .xz, .dmg, .apk, .exe, .msi, .deb, .rpm, .pkg, .mp4, .mkv, .avi, .mov, .webm, .m4v, .mp3, .flac, .ogg, .m4a, .opus, .wav, .pdf, .epub, .mobi]`, exclude `[.html, .htm, .js, .mjs, .css, .png, .jpg, .jpeg, .gif, .svg, .webp, .avif, .ico, .txt, .json, .xml]`.
@@ -148,7 +148,7 @@ The API key is invalid or was revoked. Generate a new one in the dload web UI (P
 - If you see `skipped: not-configured`, the server URL or token isn't set.
 
 ### "Downloaded twice — once by the browser, once by dload"
-The extension cancels the browser download before reposting to dload. If dload *permanently* rejects the request (e.g. a bad token, or a URL dload refuses), the browser download is re-issued so you don't lose the file — that's the one case both sides run. A *transient* failure (server briefly unreachable) is instead queued and retried against dload only, so it won't produce a browser copy. Fix the underlying error in dload to stop seeing duplicates.
+The extension cancels the browser download before reposting to dload. If dload *permanently* rejects the request (e.g. a bad token, or a URL dload refuses), or the download fails on the dload side within about 20 seconds (e.g. the site needs your browser cookies), the browser download is re-issued so you don't lose the file — that's the one case both sides run. A *transient* failure (server briefly unreachable) is instead queued and retried against dload only, so it won't produce a browser copy. Fix the underlying error in dload to stop seeing duplicates.
 
 ### Token storage
 The API key lives in `chrome.storage.local`, which is plaintext on disk inside the browser profile directory. Treat your browser profile like a password manager, and revoke the key in dload if the profile is compromised.

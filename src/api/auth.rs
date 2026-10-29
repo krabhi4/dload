@@ -133,7 +133,7 @@ async fn register(
         password_hash,
         role: Role::Admin,
         created_at: chrono::Utc::now(),
-        token_version: 0,
+        token_version: chrono::Utc::now().timestamp_millis(),
     };
 
     let user_to_insert = user.clone();
@@ -158,18 +158,7 @@ async fn register(
         }
     }
 
-    let claims = Claims {
-        sub: user.username.clone(),
-        role: user.role.as_str().to_string(),
-        exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
-        ver: user.token_version,
-    };
-
-    let token = match jsonwebtoken::encode(
-        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
-        &claims,
-        &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
-    ) {
+    let token = match issue_token(&user) {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("Failed to encode JWT: {}", e);
@@ -210,7 +199,6 @@ async fn login(
         }));
     }
     // Always run bcrypt even on missing user to equalize timing.
-    const DUMMY_HASH: &str = "$2b$12$000000000000000000000uGKWMKFz95uGKWMKFz95uGKWMKFz9.";
     let username_owned = username_trimmed;
     let password_owned = payload.password.clone();
     let auth_result = state
@@ -220,7 +208,7 @@ async fn login(
                     let h = u.password_hash.clone();
                     (Some(u), h)
                 }
-                _ => (None, DUMMY_HASH.to_string()),
+                _ => (None, crate::domain::dummy_password_hash().to_string()),
             };
             let valid = verify(&password_owned, &hash_str).unwrap_or(false) && user.is_some();
             if valid {
@@ -241,18 +229,7 @@ async fn login(
         }
     };
 
-    let claims = Claims {
-        sub: user.username.clone(),
-        role: user.role.as_str().to_string(),
-        exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
-        ver: user.token_version,
-    };
-
-    let token = match jsonwebtoken::encode(
-        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
-        &claims,
-        &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
-    ) {
+    let token = match issue_token(&user) {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("Failed to encode JWT: {}", e);
@@ -413,7 +390,7 @@ async fn create_user(
         password_hash,
         role,
         created_at: chrono::Utc::now(),
-        token_version: 0,
+        token_version: chrono::Utc::now().timestamp_millis(),
     };
 
     let user_to_insert = user.clone();
@@ -508,10 +485,33 @@ async fn change_password(
     // Blow the Basic Auth cache so cached old creds stop working immediately.
     state.basic_auth_cache.invalidate_all().await;
 
+    let username = user.username.clone();
+    let token = state
+        .repo_blocking(move |repo| repo.get_user_by_username(&username))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|fresh| issue_token(&fresh).ok());
+
     Json(serde_json::json!({
         "success": true,
-        "message": "Password changed successfully"
+        "message": "Password changed successfully",
+        "token": token
     }))
+}
+
+fn issue_token(user: &User) -> jsonwebtoken::errors::Result<String> {
+    let claims = Claims {
+        sub: user.username.clone(),
+        role: user.role.as_str().to_string(),
+        exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+        ver: user.token_version,
+    };
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(jwt_secret()),
+    )
 }
 
 async fn delete_user(

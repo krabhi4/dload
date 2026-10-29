@@ -26,13 +26,20 @@ async fn resolve_qbit_download_dir(
     let settings = state.manager.settings.read().await;
     let default_path = settings.default_folder_path().to_string();
 
-    // 1. Check if category maps to a folder
+    // 1. Check if category maps to a folder, by createCategory savePath or by folder label
     if let Some(cat) = category {
         let cats = state.categories.read().await;
         if let Some(Some(folder_id)) = cats.get(cat) {
             if let Some(path) = settings.folder_path_by_id(folder_id) {
                 return path.to_string();
             }
+        }
+        if let Some(f) = settings
+            .download_folders
+            .iter()
+            .find(|f| f.label.eq_ignore_ascii_case(cat))
+        {
+            return f.path.clone();
         }
     }
 
@@ -84,11 +91,10 @@ fn hash_matches(download: &Download, hash: &str) -> bool {
 }
 
 /// Map dload DownloadStatus to qBittorrent state string.
-/// Both Seeding and Completed map to "pausedUP" because:
-/// 1. dload declares max_ratio=0 in preferences (no seeding goal)
-/// 2. Sonarr/Radarr require "pausedUP" or "stoppedUP" for CanMoveFiles=true
-/// 3. This enables auto-import without requiring manual intervention
-fn to_qbit_state(status: &DownloadStatus) -> &'static str {
+/// Seeding maps to "uploading"/"stalledUP" so Sonarr/Radarr import by hardlink or copy and
+/// leave the torrent seeding. Completed (seeding stopped, e.g. a seed limit was reached)
+/// maps to "pausedUP", which is when they may move the files and remove the torrent.
+fn to_qbit_state(status: &DownloadStatus, uploading: bool) -> &'static str {
     match status {
         DownloadStatus::Queued => "queuedDL",
         DownloadStatus::Fetching => "metaDL",
@@ -97,7 +103,8 @@ fn to_qbit_state(status: &DownloadStatus) -> &'static str {
         DownloadStatus::Completed => "pausedUP",
         DownloadStatus::Failed => "error",
         DownloadStatus::Stopped => "pausedDL",
-        DownloadStatus::Seeding => "pausedUP",
+        DownloadStatus::Seeding if uploading => "uploading",
+        DownloadStatus::Seeding => "stalledUP",
     }
 }
 
@@ -180,7 +187,7 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "progress": progress,
         "dlspeed": d.speed,
         "upspeed": d.upload_speed,
-        "state": to_qbit_state(&d.status),
+        "state": to_qbit_state(&d.status, d.upload_speed > 0),
         "category": d.category.as_deref().unwrap_or(""),
         "label": d.category.as_deref().unwrap_or(""),
         "tags": d.tags_to_string(),
@@ -207,14 +214,14 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
     let extra = serde_json::json!({
         "num_complete": d.seeds,
         "num_incomplete": d.peers,
-        "ratio": 0.0,
-        "ratio_limit": -2,
+        "ratio": d.uploaded_size as f64 / d.total_size.max(1) as f64,
+        "ratio_limit": d.ratio_limit.unwrap_or(-2.0),
         "seeding_time": seeding_time,
-        "seeding_time_limit": -2,
+        "seeding_time_limit": d.seeding_time_limit.unwrap_or(-2),
         "inactive_seeding_time_limit": -2,
         "last_activity": now.timestamp(),
         "downloaded": d.downloaded_size,
-        "uploaded": 0,
+        "uploaded": d.uploaded_size,
         "dl_limit": -1,
         "up_limit": -1,
         "amount_left": amount_left,
@@ -229,12 +236,12 @@ fn to_qbit_torrent(d: &Download) -> serde_json::Value {
         "auto_tmm": false,
         "availability": if progress >= 1.0 { -1.0 } else { progress },
         "force_start": false,
-        "max_ratio": -1,
-        "max_seeding_time": -1,
+        "max_ratio": d.ratio_limit.filter(|l| *l >= 0.0).unwrap_or(-1.0),
+        "max_seeding_time": d.seeding_time_limit.filter(|l| *l >= 0).unwrap_or(-1),
         "max_inactive_seeding_time": -1,
         "seen_complete": completion_on,
         "downloaded_session": d.downloaded_size,
-        "uploaded_session": 0,
+        "uploaded_session": d.uploaded_size,
     });
 
     if let (Some(base_map), Some(extra_map)) = (base.as_object_mut(), extra.as_object()) {
@@ -411,7 +418,7 @@ pub async fn properties(
                 "up_speed_avg": d.upload_speed,
                 "eta": d.eta.as_ref().map(|e| parse_eta_to_secs(e)).unwrap_or(8640000),
                 "total_downloaded": d.downloaded_size,
-                "total_uploaded": 0,
+                "total_uploaded": d.uploaded_size,
                 "total_size": d.total_size,
                 "nb_connections": d.connections,
                 "nb_connections_limit": 100,
@@ -419,7 +426,7 @@ pub async fn properties(
                 "peers_total": d.peers,
                 "seeds": d.seeds,
                 "seeds_total": d.seeds,
-                "share_ratio": 0,
+                "share_ratio": d.uploaded_size as f64 / d.total_size.max(1) as f64,
                 "time_elapsed": elapsed,
                 "seeding_time": seeding_time,
                 "amount_left": amount_left,
@@ -846,6 +853,47 @@ pub async fn create_category(State(state): State<QbitState>, body: String) -> im
     (StatusCode::OK, "Ok.")
 }
 
+fn parse_ratio_limit(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|r| r.is_finite() && *r != -2.0)
+}
+
+fn parse_seeding_time_limit(value: &str) -> Option<i64> {
+    value.trim().parse::<i64>().ok().filter(|t| *t != -2)
+}
+
+pub async fn set_share_limits(State(state): State<QbitState>, body: String) -> impl IntoResponse {
+    let params: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
+        .into_owned()
+        .collect();
+    let get = |key: &str| {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    let hashes = get("hashes").unwrap_or("");
+    let ratio_limit = get("ratioLimit")
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| (v != -2.0).then_some(v));
+    let seeding_time_limit = get("seedingTimeLimit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .map(|v| (v != -2).then_some(v));
+    for d in state.manager.get_all().await {
+        let selected = hashes == "all" || hashes.split('|').any(|h| hash_matches(&d, h.trim()));
+        if selected && d.protocol == Protocol::Torrent {
+            state
+                .manager
+                .set_share_limits(&d.id, ratio_limit, seeding_time_limit)
+                .await;
+        }
+    }
+    (StatusCode::OK, "Ok.")
+}
+
 pub async fn add(
     State(state): State<QbitState>,
     headers: axum::http::HeaderMap,
@@ -897,9 +945,15 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
     let mut category: Option<String> = None;
     let mut savepath: Option<String> = None;
     let mut tags: Vec<String> = Vec::new();
+    let mut ratio_limit: Option<f64> = None;
+    let mut seeding_time_limit: Option<i64> = None;
 
     for (k, v) in params {
         match k.as_str() {
+            "ratioLimit" => ratio_limit = parse_ratio_limit(&v),
+            "seedingTimeLimit" | "inactiveSeedingTimeLimit" => {
+                seeding_time_limit = parse_seeding_time_limit(&v)
+            }
             "urls" => {
                 for line in v.lines() {
                     let line = line.trim();
@@ -939,19 +993,33 @@ async fn handle_add_urlencoded(state: QbitState, bytes: axum::body::Bytes) -> an
         anyhow::bail!("Too many URLs (max 100 per request)");
     }
 
+    let mut added = 0usize;
     for url in urls {
+        let info_hash = crate::worker::extract_info_hash(&url);
+        if let Some(hash) = &info_hash {
+            if state.manager.has_torrent(hash).await {
+                tracing::info!("qBit compat: skipping duplicate torrent {}", hash);
+                continue;
+            }
+        }
         let mut download = Download::new(url.clone(), &download_dir);
         download.protocol = Protocol::Torrent;
-        download.info_hash = crate::worker::extract_info_hash(&url);
+        download.info_hash = info_hash;
         download.category = category.clone();
         // Leave content_path unset — session_add_and_wait writes the authoritative value
         // after librqbit delivers the metadata. Pre-metadata status is Queued/Fetching,
         // which *arr treats as non-completed, so no import will fire against a stale path.
         download.content_path = None;
         download.tags = tags.clone();
+        download.ratio_limit = ratio_limit;
+        download.seeding_time_limit = seeding_time_limit;
         state.manager.add_and_maybe_start(download).await;
+        added += 1;
     }
 
+    if added == 0 {
+        anyhow::bail!("No new torrents were added");
+    }
     Ok(())
 }
 
@@ -965,10 +1033,16 @@ async fn handle_add_multipart(
     let mut savepath: Option<String> = None;
     let mut tags: Vec<String> = Vec::new();
     let mut total_torrent_bytes: usize = 0;
+    let mut ratio_limit: Option<f64> = None;
+    let mut seeding_time_limit: Option<i64> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
+            "ratioLimit" => ratio_limit = parse_ratio_limit(&field.text().await?),
+            "seedingTimeLimit" | "inactiveSeedingTimeLimit" => {
+                seeding_time_limit = parse_seeding_time_limit(&field.text().await?)
+            }
             "urls" => {
                 let text = field.text().await?;
                 for line in text.lines() {
@@ -1039,16 +1113,27 @@ async fn handle_add_multipart(
     }
 
     // Process magnet links / URLs
+    let mut added = 0usize;
     for url in urls {
+        let info_hash = crate::worker::extract_info_hash(&url);
+        if let Some(hash) = &info_hash {
+            if state.manager.has_torrent(hash).await {
+                tracing::info!("qBit compat: skipping duplicate torrent {}", hash);
+                continue;
+            }
+        }
         let mut download = Download::new(url.clone(), &download_dir);
         download.protocol = Protocol::Torrent;
-        download.info_hash = crate::worker::extract_info_hash(&url);
+        download.info_hash = info_hash;
         download.category = category.clone();
         // See handle_add_urlencoded for the rationale — content_path is written once
         // metadata is in hand, not at submission time.
         download.content_path = None;
         download.tags = tags.clone();
+        download.ratio_limit = ratio_limit;
+        download.seeding_time_limit = seeding_time_limit;
         state.manager.add_and_maybe_start(download).await;
+        added += 1;
     }
 
     // Process uploaded .torrent files via the shared manager helper so we get
@@ -1056,12 +1141,24 @@ async fn handle_add_multipart(
     // helper logs and returns None for any blob it can't parse; we continue so
     // Sonarr/Radarr don't see a batch failure if one of several torrents is bad.
     for bytes in torrent_bytes {
-        let _ = state
+        if let Some(d) = state
             .manager
             .add_torrent_from_bytes(bytes, &download_dir, category.clone())
-            .await;
+            .await
+        {
+            if ratio_limit.is_some() || seeding_time_limit.is_some() {
+                state
+                    .manager
+                    .set_share_limits(&d.id, Some(ratio_limit), Some(seeding_time_limit))
+                    .await;
+            }
+            added += 1;
+        }
     }
 
+    if added == 0 {
+        anyhow::bail!("No new torrents were added");
+    }
     Ok(())
 }
 
@@ -1249,12 +1346,13 @@ mod tests {
 
     #[test]
     fn qbit_state_completed_enables_can_move_files() {
-        assert_eq!(to_qbit_state(&DownloadStatus::Completed), "pausedUP");
+        assert_eq!(to_qbit_state(&DownloadStatus::Completed, false), "pausedUP");
     }
 
     #[test]
     fn qbit_state_seeding_enables_can_move_files() {
-        assert_eq!(to_qbit_state(&DownloadStatus::Seeding), "pausedUP");
+        assert_eq!(to_qbit_state(&DownloadStatus::Seeding, false), "stalledUP");
+        assert_eq!(to_qbit_state(&DownloadStatus::Seeding, true), "uploading");
     }
 
     #[test]
@@ -1409,7 +1507,7 @@ mod tests {
             DownloadStatus::Seeding,
         ];
         for status in &all {
-            let state = to_qbit_state(status);
+            let state = to_qbit_state(status, false);
             assert!(
                 valid.contains(&state),
                 "Invalid qBit state '{}' for {:?}",
@@ -1478,6 +1576,22 @@ mod tests {
         let dir =
             resolve_qbit_download_dir(&state, None, None, &["Movies".into(), "TV".into()]).await;
         assert_eq!(dir, "/media/movies");
+    }
+
+    #[tokio::test]
+    async fn category_matching_folder_label_routes_there() {
+        let settings = crate::domain::Settings {
+            download_folders: make_folders(),
+            ..crate::domain::Settings::default()
+        };
+        let state = make_qbit_state(settings);
+        let mut cats = std::collections::HashMap::new();
+        cats.insert("Movies".into(), None);
+        *state.categories.write().await = cats;
+        let dir = resolve_qbit_download_dir(&state, Some("movies"), None, &[]).await;
+        assert_eq!(dir, "/media/movies");
+        let dir = resolve_qbit_download_dir(&state, Some("radarr"), None, &[]).await;
+        assert_eq!(dir, "/downloads");
     }
 
     #[tokio::test]

@@ -47,19 +47,25 @@ async function mutateQueue(mutator) {
     const queue = await readQueue();
     const next = mutator(queue) || queue;
     await writeQueue(next);
+    await syncAlarm(next);
     return next;
   });
 }
 
-export async function ensureAlarm() {
+async function syncAlarm(queue) {
   try {
-    const existing = await browser.alarms.get(ALARM_NAME);
-    if (!existing) {
+    if (queue.length === 0) {
+      await browser.alarms.clear(ALARM_NAME);
+    } else if (!(await browser.alarms.get(ALARM_NAME))) {
       await browser.alarms.create(ALARM_NAME, { periodInMinutes: ALARM_PERIOD_MIN });
     }
   } catch (err) {
-    logger.warn("ensureAlarm failed:", err);
+    logger.warn("syncAlarm failed:", err);
   }
+}
+
+export function ensureAlarm() {
+  return runExclusive(async () => syncAlarm(await readQueue()));
 }
 
 export async function enqueue(payload, lastError) {
@@ -73,7 +79,6 @@ export async function enqueue(payload, lastError) {
     });
     return queue;
   });
-  await ensureAlarm();
 }
 
 export async function peek() {
@@ -96,8 +101,9 @@ export async function size() {
 let ticking = false;
 
 /** Run one tick: POST every due item, removing on success and backing off on
- *  failure. Returns { tried, succeeded, failed }. */
-export async function tick(sendFn) {
+ *  failure (permanent failures are dropped at once). onGiveUp(payload, error)
+ *  runs for every dropped item. Returns { tried, succeeded, failed }. */
+export async function tick(sendFn, onGiveUp) {
   if (ticking) return { tried: 0, succeeded: 0, failed: 0, skipped: true };
   ticking = true;
   try {
@@ -115,11 +121,13 @@ export async function tick(sendFn) {
       } catch (err) {
         failed++;
         const msg = String(err && err.message ? err.message : err).slice(0, 200);
+        let gaveUp = false;
         await mutateQueue((queue) => {
           const idx = queue.findIndex((it) => it.id === item.id);
           if (idx < 0) return queue;
-          if (queue[idx].attempts >= MAX_ATTEMPTS) {
-            logger.error("retry: giving up on", item.id, "after", queue[idx].attempts, "attempts");
+          if ((err && err.permanent) || queue[idx].attempts >= MAX_ATTEMPTS) {
+            logger.error("retry: giving up on", item.id, "after", queue[idx].attempts, "attempts:", msg);
+            gaveUp = true;
             return queue.filter((it) => it.id !== item.id);
           }
           queue[idx].attempts++;
@@ -127,6 +135,7 @@ export async function tick(sendFn) {
           queue[idx].nextAttemptAt = Date.now() + backoffMs(queue[idx].attempts - 1);
           return queue;
         });
+        if (gaveUp && onGiveUp) onGiveUp(item.payload, msg);
       }
     }
 

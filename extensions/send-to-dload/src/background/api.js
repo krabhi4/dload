@@ -4,12 +4,21 @@
 import { loadConfig, normalizeServerUrl } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
 
+const FETCH_TIMEOUT_MS = 15 * 1000;
+
+function timeoutSignal() {
+  if (typeof AbortSignal.timeout === "function") return AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  return ctrl.signal;
+}
+
 // Only checks the grant; requesting it must happen from a user gesture (the
 // options page), which Firefox requires and the background can't provide.
 export async function ensureHostPermission(serverUrl) {
   try {
     const u = new URL(serverUrl);
-    const origin = `${u.protocol}//${u.host}/*`;
+    const origin = `${u.protocol}//${u.hostname}/*`;
     return await browser.permissions.contains({ origins: [origin] });
   } catch (err) {
     logger.warn("ensureHostPermission check failed:", err);
@@ -32,6 +41,7 @@ export async function verifyToken(serverUrl, apiKey) {
     body: JSON.stringify(apiKey),
     credentials: "omit",
     mode: "cors",
+    signal: timeoutSignal(),
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
@@ -46,11 +56,11 @@ export async function sendToDload({ url, filename, folderId }) {
 
   const cfg = await loadConfig();
   const serverUrl = normalizeServerUrl(cfg.serverUrl);
-  if (!serverUrl) throw new Error("Server URL not configured");
-  if (!cfg.apiKey) throw new Error("API key not configured");
+  if (!serverUrl) throw permanentError("Server URL not configured");
+  if (!cfg.apiKey) throw permanentError("API key not configured");
 
   const ok = await ensureHostPermission(serverUrl);
-  if (!ok) throw new Error("Host permission denied for dload server");
+  if (!ok) throw permanentError("Host permission denied for dload server");
 
   // JSON body — dload's JSON branch honors {url, folder_id} (the server ignores
   // filename for now; it's sent for forward-compat).
@@ -70,9 +80,10 @@ export async function sendToDload({ url, filename, folderId }) {
       }),
       credentials: "omit",
       mode: "cors",
+      signal: timeoutSignal(),
     });
   } catch (err) {
-    // Connection-level failure (server down, DNS, TLS): transient, leave to retry.
+    // Connection-level failure (server down, DNS, TLS, timeout): transient, leave to retry.
     throw new Error(`Network error: ${err && err.message ? err.message : err}`);
   }
 
@@ -91,6 +102,20 @@ export async function sendToDload({ url, filename, folderId }) {
   } catch {
     return { ok: true };
   }
+}
+
+export async function fetchDownload(id) {
+  const cfg = await loadConfig();
+  const serverUrl = normalizeServerUrl(cfg.serverUrl);
+  const resp = await fetch(`${serverUrl}/api/downloads`, {
+    headers: { "Authorization": `Bearer ${cfg.apiKey}`, "Accept": "application/json" },
+    credentials: "omit",
+    mode: "cors",
+    signal: timeoutSignal(),
+  });
+  if (!resp.ok) throw new Error(`dload ${resp.status}`);
+  const list = await resp.json();
+  return (Array.isArray(list) && list.find((d) => d.id === id)) || null;
 }
 
 function permanentError(message) {

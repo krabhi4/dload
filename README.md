@@ -16,7 +16,7 @@ A fast, lightweight download manager built in Rust that streams directly to disk
 ## Features
 
 - **Low Memory Usage**: Streams chunks directly to disk (~20-50MB vs aria2's 100-500MB+)
-- **HTTP/HTTPS Support**: Fast async downloading with progress tracking
+- **HTTP/HTTPS Support**: Multi-connection downloads that resume after a pause or restart
 - **BitTorrent / Magnet Links**: Torrent support via `librqbit`
 - **Multiple Download Folders**: Configure multiple folders with labels, set a default, and map qBittorrent categories to specific folders for Sonarr/Radarr integration
 - **Web UI**: Modern browser-based interface
@@ -87,7 +87,25 @@ migrated automatically.
 
 Configure multiple download folders in Settings, each with a label and path. One folder is the default for manual downloads. When adding a download via the UI, a folder dropdown appears (hidden if only one folder is configured).
 
-For Sonarr/Radarr integration, map qBittorrent categories to specific folders via the `createCategory` API with `savePath`. Downloads with that category are automatically routed to the mapped folder.
+For Sonarr/Radarr integration, give a download folder the same label as the client's category (for example a folder labelled `tv-sonarr` at `/downloads/tv`, and one labelled `radarr` at `/downloads/movies`). Downloads with that category go to that folder. Mapping a category with the `createCategory` API and a matching `savePath` also works.
+
+### Sonarr and Radarr
+
+Add dload in Sonarr/Radarr as a **qBittorrent** download client: host and port of dload, and a dload admin username and password.
+
+dload works with them the way qBittorrent does:
+- **After a download finishes**, the torrent keeps seeding. Sonarr/Radarr import it into your library, by **hardlink** when the download folder and the library are on the same filesystem and by copy otherwise. A hardlink is a second name for the same file, so it uses no extra space.
+- **When a seed limit is reached**, the torrent stops and Sonarr/Radarr remove it if "Remove Completed" is on.
+- **Where limits come from**: set global limits in dload's Settings (**Stop seeding at ratio**, **Stop seeding after**). An indexer's Seed Ratio or Seed Time in Sonarr/Radarr overrides them for torrents grabbed from that indexer.
+
+For hardlinks, mount one shared folder at the same path in dload, Sonarr and Radarr, and keep downloads and the library inside it:
+
+```yaml
+# dload:          ./media:/media   (download folders /media/torrents/tv and /media/torrents/movies)
+# sonarr, radarr: ./media:/media   (root folders /media/library/tv and /media/library/movies)
+```
+
+Label the dload folders `tv-sonarr` and `radarr` (the default categories) so each app's downloads land in its own folder.
 
 ## API Endpoints
 

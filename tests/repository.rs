@@ -47,6 +47,18 @@ fn delete_download_removes_it() {
     assert_eq!(all[0].id, "b");
 }
 
+#[test]
+fn update_download_persists_protocol() {
+    let r = repo();
+    let mut d = sample_download("m", 0);
+    r.insert_download(&d).unwrap();
+    d.protocol = Protocol::Torrent;
+    d.status = DownloadStatus::Seeding;
+    r.update_download(&d).unwrap();
+    let loaded = r.get_all_downloads().unwrap();
+    assert_eq!(loaded[0].protocol, Protocol::Torrent);
+}
+
 // ─── update_positions tx atomicity ────────────────────────────────────────
 
 #[test]
@@ -416,4 +428,14 @@ fn insert_history_is_idempotent_on_same_id() {
     // INSERT OR IGNORE — second call must not error and must not duplicate
     r.insert_history(&d).unwrap();
     assert_eq!(r.get_history_page(100, 0).unwrap().len(), 1);
+}
+
+#[test]
+fn insert_user_persists_token_version() {
+    let r = repo();
+    let mut u = sample_user("bob", Role::User);
+    u.token_version = 1_700_000_000_000;
+    r.insert_user(&u).unwrap();
+    let loaded = r.get_user_by_username("bob").unwrap().unwrap();
+    assert_eq!(loaded.token_version, 1_700_000_000_000);
 }

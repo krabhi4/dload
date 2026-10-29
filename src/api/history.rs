@@ -48,8 +48,8 @@ async fn delete_history_item(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if state.authenticate(extract_token(&headers)).await.is_err() {
-        return Json(serde_json::json!({ "success": false, "error": "Authentication required" }));
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
+        return Json(serde_json::json!({ "success": false, "error": e }));
     }
     state.delete_history(&id).await;
     Json(serde_json::json!({ "success": true }))
@@ -59,8 +59,8 @@ async fn clear_history(
     State(state): State<SharedState>,
     headers: axum::http::HeaderMap,
 ) -> Json<serde_json::Value> {
-    if state.authenticate(extract_token(&headers)).await.is_err() {
-        return Json(serde_json::json!({ "success": false, "error": "Authentication required" }));
+    if let Err(e) = state.authenticate_admin(extract_token(&headers)).await {
+        return Json(serde_json::json!({ "success": false, "error": e }));
     }
     state.delete_all_history().await;
     Json(serde_json::json!({ "success": true }))

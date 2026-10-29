@@ -130,7 +130,7 @@ function showDialog(opts) {
     var backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
     backdrop.addEventListener("click", function () {
-      finalize(opts.cancelValue);
+      if (opts.dismissible !== false) finalize(opts.cancelValue);
     });
     modal.appendChild(backdrop);
 
@@ -213,7 +213,7 @@ function showDialog(opts) {
       btn.addEventListener("click", function () {
         var v = a.value;
         if (typeof v === "function") v = v();
-        finalize(v);
+        if (!a.keepOpen) finalize(v);
       });
       if (a.variant === "primary" || a.variant === "danger") primaryBtn = btn;
       if (a.variant === "ghost" || !a.variant) ghostBtn = btn;
@@ -228,6 +228,7 @@ function showDialog(opts) {
     var state = {
       modal: modal,
       cancelValue: opts.cancelValue,
+      dismissible: opts.dismissible !== false,
       finalize: finalize,
     };
     activeDialog = state;
@@ -311,7 +312,7 @@ function showPrompt(opts) {
 }
 
 function closeActiveDialog() {
-  if (!activeDialog) return false;
+  if (!activeDialog || !activeDialog.dismissible) return false;
   activeDialog.finalize(activeDialog.cancelValue);
   return true;
 }
@@ -354,10 +355,22 @@ async function apiRequest(endpoint, options) {
     var errText = await response.text().catch(function () {
       return "Unknown error";
     });
+    try {
+      var parsed = JSON.parse(errText);
+      if (parsed && parsed.error) errText = parsed.error;
+    } catch (_) {}
     throw new Error(errText || "Request failed (" + response.status + ")");
   }
 
   return response.json();
+}
+
+async function apiAction(endpoint, options) {
+  var result = await apiRequest(endpoint, options);
+  if (result && result.success === false) {
+    throw new Error(result.error || "Request failed");
+  }
+  return result;
 }
 
 // ─── Safe DOM helpers ───────────────────────────────
@@ -393,13 +406,16 @@ function formatSpeed(bytesPerSec) {
 var currentPage = "downloads";
 var currentFilter = "all";
 var rawDownloads = [];
+var pendingRebuild = false;
+var downloadsSeq = 0;
+var downloadsInFlight = 0;
 
 function showDownloads() {
   return (
     '<div class="toolbar">' +
     '<form id="add-download-form" class="add-form">' +
     '<label for="download-url" class="sr-only">Download URL</label>' +
-    '<input type="text" id="download-url" placeholder="Paste a URL or magnet link, or attach a .torrent">' +
+    '<input type="text" id="download-url" placeholder="Paste URLs or magnet links, or attach a .torrent">' +
     '<select id="download-folder" class="folder-select" title="Download folder" style="display:none"></select>' +
     '<input type="file" id="torrent-file-input" accept=".torrent,application/x-bittorrent" multiple hidden>' +
     '<button type="button" id="attach-torrent-btn" class="btn-secondary" title="Attach .torrent file">Attach .torrent</button>' +
@@ -563,10 +579,17 @@ function showSettings() {
     '<input type="number" id="settings-min-split" value="20" min="1" max="1024">' +
     '<span class="hint">Smallest chunk before a file is split across connections</span>' +
     "</div>" +
+    "</div>" +
+    '<div class="form-row">' +
     '<div class="form-field-half">' +
-    '<label for="settings-port">Listen port</label>' +
-    '<input type="number" id="settings-port" value="8080" min="1" max="65535">' +
-    '<span class="hint">Restart required for a port change to take effect</span>' +
+    '<label for="settings-seed-ratio">Stop seeding at ratio</label>' +
+    '<input type="number" id="settings-seed-ratio" min="0" step="0.1" placeholder="Never">' +
+    '<span class="hint">Blank seeds forever. 0 stops right after the download, so Sonarr and Radarr move the files instead of linking them</span>' +
+    "</div>" +
+    '<div class="form-field-half">' +
+    '<label for="settings-seed-time">Stop seeding after (minutes)</label>' +
+    '<input type="number" id="settings-seed-time" min="0" step="1" placeholder="Never">' +
+    '<span class="hint">Blank seeds forever. Torrents stop at whichever limit comes first</span>' +
     "</div>" +
     "</div>" +
     '<div class="settings-actions">' +
@@ -872,7 +895,7 @@ function buildDownloadItem(d, index) {
     + ' tabindex="0" role="button" aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
     + ' aria-label="' + safeName + ' \u2014 ' + safeStatus + '"'
     + ' onclick="toggleDetail(\'' + safeId + '\', event)"'
-    + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();toggleDetail(\'' + safeId + '\', event)}">'
+    + ' onkeydown="if(event.target===this&&(event.key===\'Enter\'||event.key===\' \')){event.preventDefault();toggleDetail(\'' + safeId + '\', event)}">'
     + '<div class="download-row">'
     + '<span class="drag-handle"' + (isCompleted ? ' aria-hidden="true"' : ' title="Drag to reorder"') + '>' + (isCompleted ? '' : '⠿') + '</span>'
     + '<div class="download-info">'
@@ -1154,7 +1177,7 @@ function finishDrop(targetEl, clientY) {
   if (!dragSrcId || dragSrcId === targetId) return;
 
   var container = document.getElementById('downloads-list');
-  var items = Array.from(container.querySelectorAll('.download-item'));
+  var items = Array.from(container.querySelectorAll('.download-item[draggable="true"]'));
   var ids = items.map(function (el) { return el.getAttribute('data-id'); });
 
   var srcIdx = ids.indexOf(dragSrcId);
@@ -1182,7 +1205,13 @@ function finishDrop(targetEl, clientY) {
 
   isDragging = false;
   dragSrcId = null;
-  sendReorder(ids);
+  var visible = new Set(ids);
+  var k = 0;
+  var fullOrder = rawDownloads
+    .filter(function (d) { return d.status !== 'Completed'; })
+    .sort(function (a, b) { return (a.position || 0) - (b.position || 0); })
+    .map(function (d) { return visible.has(d.id) ? ids[k++] : d.id; });
+  sendReorder(fullOrder);
 }
 
 var reorderTimer = null;
@@ -1211,22 +1240,24 @@ function renderDownloads(downloads) {
     var msg = filtering ? "No " + currentFilter + " downloads." : "Ready when you are.";
     var sub = filtering
       ? "Nothing matches this filter right now."
-      : "Paste an HTTP, FTP, SFTP or magnet link above, or attach a .torrent file.";
+      : "Paste HTTP(S) or magnet links above, or attach a .torrent file.";
     renderHtml(container, '<div class="empty-state"><p>' + msg + '</p><span>' + sub + '</span></div>');
     lastDownloads = filtered;
     return;
   }
 
   // Check if the set of download IDs, statuses, or positions changed — if so, full rebuild
-  var currentIds = filtered.map(function (d) { return d.id + ':' + d.status + ':' + (d.position || 0); }).join(',');
-  var prevIds = lastDownloads.map(function (d) { return d.id + ':' + d.status + ':' + (d.position || 0); }).join(',');
+  var currentIds = filtered.map(function (d) { return d.id + ':' + d.status + ':' + (d.position || 0) + ':' + (d.http_mirror_status || ''); }).join(',');
+  var prevIds = lastDownloads.map(function (d) { return d.id + ':' + d.status + ':' + (d.position || 0) + ':' + (d.http_mirror_status || ''); }).join(',');
 
-  if (currentIds !== prevIds) {
+  if (currentIds !== prevIds || pendingRebuild) {
     // Skip full rebuild if a menu is open or user is dragging
     if (openMenuId || openMoreMenuId || isDragging) {
       lastDownloads = filtered;
+      pendingRebuild = true;
       return;
     }
+    pendingRebuild = false;
 
     // Detect newly completed downloads for flash animation
     var newlyCompleted = [];
@@ -1392,24 +1423,33 @@ async function clearCompletedDownloads() {
   }
   var completed = rawDownloads.filter(function (d) { return d.status === "Completed"; });
   if (completed.length === 0) return;
-  try {
-    await Promise.all(
-      completed.map(function (d) {
-        return apiRequest("/downloads/" + encodeURIComponent(d.id), { method: "DELETE" });
-      }),
-    );
-    lastDownloads = [];
-    loadDownloads();
-  } catch (e) {
-    showToast("error", "Failed to clear completed", e.message);
+  var results = await Promise.allSettled(
+    completed.map(function (d) {
+      return apiAction("/downloads/" + encodeURIComponent(d.id), { method: "DELETE" });
+    }),
+  );
+  var failed = results.filter(function (r) {
+    return r.status === "rejected" && !/not found/i.test(r.reason && r.reason.message);
+  });
+  if (failed.length > 0) {
+    showToast("error", "Failed to clear completed", failed.length + " of " + completed.length + " could not be removed: " + failed[0].reason.message);
   }
+  lastDownloads = [];
+  loadDownloads();
 }
 
 // ─── Data Loading ───────────────────────────────────
 
+function pollDownloads() {
+  if (downloadsInFlight === 0) loadDownloads();
+}
+
 async function loadDownloads() {
+  var seq = ++downloadsSeq;
+  downloadsInFlight++;
   try {
     var downloads = await apiRequest("/downloads");
+    if (seq !== downloadsSeq) return;
     rawDownloads = downloads;
     // Detect newly failed downloads
     if (lastDownloads.length > 0) {
@@ -1432,6 +1472,8 @@ async function loadDownloads() {
     updateStats(downloads);
   } catch (e) {
     // Silently ignore polling errors to avoid toast spam
+  } finally {
+    downloadsInFlight--;
   }
 }
 
@@ -1487,6 +1529,10 @@ async function changePassword() {
     });
 
     if (result.success) {
+      if (result.token) {
+        token = result.token;
+        localStorage.setItem("dload_token", token);
+      }
       showToast(
         "success",
         "Password updated",
@@ -1600,14 +1646,15 @@ async function createApiKey() {
     showDialog({
       title: "Your new API key, shown only once",
       message: key,
+      dismissible: false,
       actions: [
         { label: "Done", variant: "ghost", value: false },
         {
           label: "Copy",
           variant: "primary",
+          keepOpen: true,
           value: function () {
             copyToClipboard(key);
-            return true;
           },
         },
       ],
@@ -1742,8 +1789,10 @@ async function loadSettings() {
     if (el) el.value = settings.max_connections_per_file;
     el = document.getElementById("settings-min-split");
     if (el) el.value = Math.max(1, Math.round((settings.min_split_size || 20971520) / 1048576));
-    el = document.getElementById("settings-port");
-    if (el) el.value = settings.port || 8080;
+    el = document.getElementById("settings-seed-ratio");
+    if (el) el.value = settings.seed_ratio_limit == null ? "" : settings.seed_ratio_limit;
+    el = document.getElementById("settings-seed-time");
+    if (el) el.value = settings.seed_time_limit == null ? "" : settings.seed_time_limit;
 
     // Load user management for admin users
     if (window.currentUserRole === "ADMIN") {
@@ -1925,7 +1974,7 @@ async function deleteUser(id) {
 
 async function loadHistory() {
   try {
-    var history = await apiRequest("/history");
+    var history = await apiRequest("/history?limit=1000");
     rawHistory = history || [];
     renderHistory(rawHistory);
   } catch (e) {
@@ -2093,7 +2142,7 @@ function updateSelectedBtn() {
 
 async function deleteHistoryItem(id) {
   try {
-    await apiRequest("/history/" + encodeURIComponent(id), {
+    await apiAction("/history/" + encodeURIComponent(id), {
       method: "DELETE",
     });
     selectedHistoryIds.delete(id);
@@ -2108,7 +2157,7 @@ async function deleteSelectedHistory() {
   if (ids.length === 0) return;
   try {
     await Promise.all(ids.map(function (id) {
-      return apiRequest("/history/" + encodeURIComponent(id), {
+      return apiAction("/history/" + encodeURIComponent(id), {
         method: "DELETE",
       });
     }));
@@ -2134,7 +2183,7 @@ async function clearAllHistory() {
   });
   if (!ok) return;
   try {
-    await apiRequest("/history", { method: "DELETE" });
+    await apiAction("/history", { method: "DELETE" });
     selectedHistoryIds.clear();
     showToast("success", "History cleared");
     loadHistory();
@@ -2240,7 +2289,12 @@ async function addTorrentFiles(files, optionalUrl) {
     }
     var folderId = getSelectedFolderId();
     if (folderId) form.append("folder_id", folderId);
-    await apiRequest("/downloads", { method: "POST", body: form });
+    var created = await apiRequest("/downloads", { method: "POST", body: form });
+    var expected = files.length + (optionalUrl ? optionalUrl.split("\n").length : 0);
+    var skipped = expected - (Array.isArray(created) ? created.length : 0);
+    if (skipped > 0) {
+      showToast("error", "Some items were not added", skipped + " of " + expected + " were invalid or already in your downloads");
+    }
     attachedTorrents = [];
     renderTorrentChips();
     // Re-picking the same file after a submit needs the input's value reset.
@@ -2417,21 +2471,21 @@ async function downloadTorrent(event, id) {
 function showMirrorForm(event, id) {
   event.stopPropagation();
   closeAllMenus();
-  var form = document.getElementById('mirror-form-' + CSS.escape(id));
+  var form = document.getElementById('mirror-form-' + id);
   if (form) {
     form.style.display = form.style.display === 'none' ? 'block' : 'none';
   }
 }
 
 function hideMirrorForm(id) {
-  var form = document.getElementById('mirror-form-' + CSS.escape(id));
+  var form = document.getElementById('mirror-form-' + id);
   if (form) form.style.display = 'none';
 }
 
 function startMirror(event, id) {
   event.stopPropagation();
-  var urlInput = document.getElementById('mirror-url-' + CSS.escape(id));
-  var seedCheckbox = document.getElementById('mirror-seed-' + CSS.escape(id));
+  var urlInput = document.getElementById('mirror-url-' + id);
+  var seedCheckbox = document.getElementById('mirror-seed-' + id);
   var url = urlInput ? urlInput.value.trim() : '';
   var keepSeeding = seedCheckbox ? seedCheckbox.checked : true;
 
@@ -2479,7 +2533,7 @@ async function deleteDownload(id, deleteFiles) {
   openMenuId = null;
   try {
     var qs = deleteFiles ? "?delete_files=true" : "";
-    await apiRequest("/downloads/" + encodeURIComponent(id) + qs, {
+    await apiAction("/downloads/" + encodeURIComponent(id) + qs, {
       method: "DELETE",
     });
     lastDownloads = [];
@@ -2491,7 +2545,7 @@ async function deleteDownload(id, deleteFiles) {
 
 async function downloadAction(id, action) {
   try {
-    await apiRequest("/downloads/" + encodeURIComponent(id) + "/" + action, {
+    await apiAction("/downloads/" + encodeURIComponent(id) + "/" + action, {
       method: "POST",
     });
     lastDownloads = [];
@@ -2516,7 +2570,7 @@ async function resumeAllDownloads() {
     btn.textContent = "Resuming\u2026";
   }
   try {
-    var result = await apiRequest("/downloads/resume-all", { method: "POST" });
+    var result = await apiAction("/downloads/resume-all", { method: "POST" });
     showToast("success", "Resume All", "Resuming " + (result.count || 0) + " downloads");
     lastDownloads = [];
     loadDownloads();
@@ -2606,16 +2660,24 @@ function showFolderBrowser(path) {
   content.appendChild(list);
   content.appendChild(actions);
   modal.appendChild(content);
+  if (!folderBrowserModal) folderBrowserReturnFocus = document.activeElement;
   document.body.appendChild(modal);
   folderBrowserModal = modal;
+  selectBtn.focus();
 
   loadBrowserDir(path);
 }
+
+var folderBrowserReturnFocus = null;
 
 function closeFolderBrowser() {
   if (folderBrowserModal) {
     folderBrowserModal.remove();
     folderBrowserModal = null;
+    if (folderBrowserReturnFocus && typeof folderBrowserReturnFocus.focus === "function") {
+      folderBrowserReturnFocus.focus();
+    }
+    folderBrowserReturnFocus = null;
   }
 }
 
@@ -2685,6 +2747,10 @@ async function loadBrowserDir(path) {
         ? "Empty directory"
         : "No subdirectories";
       listEl.appendChild(empty);
+    }
+    if (folderBrowserModal && folderBrowserModal.contains(document.activeElement) === false) {
+      var firstItem = listEl.querySelector(".folder-item");
+      (firstItem || document.getElementById("browser-select-btn")).focus();
     }
   } catch (e) {
     listEl.textContent = "";
@@ -2761,11 +2827,20 @@ async function saveSettings() {
         var e = document.getElementById("settings-min-split");
         return e ? Math.min(1024, Math.max(1, parseInt(e.value) || 20)) * 1048576 : current.min_split_size || 20971520;
       })(),
-      username: current.username || "",
-      port: (function () {
-        var e = document.getElementById("settings-port");
-        return e ? Math.min(65535, Math.max(1, parseInt(e.value) || 8080)) : current.port || 8080;
+      seed_ratio_limit: (function () {
+        var e = document.getElementById("settings-seed-ratio");
+        if (!e) return current.seed_ratio_limit == null ? null : current.seed_ratio_limit;
+        var v = parseFloat(e.value);
+        return e.value.trim() === "" || isNaN(v) ? null : Math.max(0, v);
       })(),
+      seed_time_limit: (function () {
+        var e = document.getElementById("settings-seed-time");
+        if (!e) return current.seed_time_limit == null ? null : current.seed_time_limit;
+        var v = parseInt(e.value, 10);
+        return e.value.trim() === "" || isNaN(v) ? null : Math.max(0, v);
+      })(),
+      username: current.username || "",
+      port: current.port || 8080,
       download_folders: settingsFolders,
     };
 
@@ -2875,6 +2950,13 @@ function navigate(hash) {
   }
 }
 
+function splitLinks(text) {
+  return text
+    .split(/\s+(?=(?:https?|magnet|ftp):)/i)
+    .map(function (s) { return s.trim(); })
+    .filter(Boolean);
+}
+
 function bindForms() {
   var addForm = document.getElementById("add-download-form");
   if (addForm) {
@@ -2894,15 +2976,29 @@ function bindForms() {
       });
     }
 
+    var urlField = document.getElementById("download-url");
+    if (urlField) {
+      urlField.addEventListener("paste", function (e) {
+        var text = e.clipboardData ? e.clipboardData.getData("text") : "";
+        if (!/[\r\n]/.test(text)) return;
+        e.preventDefault();
+        var joined = splitLinks(text).join(" ");
+        var start = urlField.selectionStart;
+        var end = urlField.selectionEnd;
+        urlField.value = urlField.value.slice(0, start) + joined + urlField.value.slice(end);
+        urlField.selectionStart = urlField.selectionEnd = start + joined.length;
+      });
+    }
+
     addForm.addEventListener("submit", function (e) {
       e.preventDefault();
       var input = document.getElementById("download-url");
-      var url = input ? input.value.trim() : "";
-      if (attachedTorrents.length > 0) {
-        addTorrentFiles(attachedTorrents.slice(), url || null);
+      var urls = input ? splitLinks(input.value) : [];
+      if (attachedTorrents.length > 0 || urls.length > 1) {
+        addTorrentFiles(attachedTorrents.slice(), urls.join("\n") || null);
         if (input) input.value = "";
-      } else if (url) {
-        addDownload(url);
+      } else if (urls.length === 1) {
+        addDownload(urls[0]);
         input.value = "";
       } else {
         showToast("error", "Nothing to add", "Paste a URL or attach a .torrent file");
@@ -3060,7 +3156,7 @@ async function init() {
             await updateUserInformation();
             startApp();
           } else {
-            showToast("error", "Login failed", "Invalid username or password");
+            showToast("error", "Login failed", result.error || "Invalid username or password");
             document.getElementById("login-password").value = "";
             document.getElementById("login-password").focus();
           }
@@ -3115,16 +3211,16 @@ async function startApp() {
   }
 
   if (refreshInterval) clearInterval(refreshInterval);
-  refreshInterval = setInterval(loadDownloads, 1000);
+  refreshInterval = setInterval(pollDownloads, 1000);
 
   // Pause polling when tab is hidden to save battery/bandwidth
   if (!window._visibilityListenerAdded) {
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) {
         if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
-      } else {
+      } else if (token) {
         loadDownloads();
-        if (!refreshInterval) { refreshInterval = setInterval(loadDownloads, 1000); }
+        if (!refreshInterval) { refreshInterval = setInterval(pollDownloads, 1000); }
       }
     });
     window._visibilityListenerAdded = true;
@@ -3221,8 +3317,9 @@ document.addEventListener('keydown', function (e) {
     }
   }
   // Focus trap for confirm / prompt dialog
-  if (activeDialog && e.key === 'Tab') {
-    var dlgFocusable = activeDialog.modal.querySelectorAll('input:not([type="hidden"]), button, [tabindex]:not([tabindex="-1"])');
+  var trapModal = activeDialog ? activeDialog.modal : folderBrowserModal;
+  if (trapModal && e.key === 'Tab') {
+    var dlgFocusable = trapModal.querySelectorAll('input:not([type="hidden"]), button, [tabindex]:not([tabindex="-1"])');
     if (dlgFocusable.length === 0) return;
     var dlgFirst = dlgFocusable[0];
     var dlgLast = dlgFocusable[dlgFocusable.length - 1];

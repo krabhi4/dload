@@ -1,7 +1,7 @@
 // tests/unit/filters.test.mjs
 import { describe, it, expect } from "vitest";
 import { classify } from "../../src/shared/classify.js";
-import { shouldCapture, applyHostFilter } from "../../src/background/filters.js";
+import { shouldCapture, applyHostFilter, downloadSize } from "../../src/background/filters.js";
 
 const RULES = {
   enabled: true,
@@ -212,5 +212,15 @@ describe("shouldCapture() — query string is not treated as the extension", () 
   it("still matches a real extension before the query string", () => {
     const it_ = { url: "https://site.example/movie.mp4?token=abc#t=1", kind: "http-download" };
     expect(shouldCapture(it_, { ...RULES3, extensionList: { include: [".mp4"], exclude: [] } }).capture).toBe(true);
+  });
+});
+describe("downloadSize()", () => {
+  it("prefers totalBytes, which Firefox knows before the download completes", () => {
+    expect(downloadSize({ totalBytes: 4096, fileSize: -1 })).toBe(4096);
+  });
+
+  it("falls back to fileSize, and to undefined when neither is known", () => {
+    expect(downloadSize({ totalBytes: -1, fileSize: 2048 })).toBe(2048);
+    expect(downloadSize({ totalBytes: -1, fileSize: -1 })).toBeUndefined();
   });
 });

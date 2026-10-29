@@ -29,6 +29,21 @@ describe("classify()", () => {
     expect(r.kind).toBe("torrent");
   });
 
+  it("returns torrent when the .torrent name is in the query string", () => {
+    expect(classify({ url: "https://t.example/download.php?file=ubuntu.torrent&x=1" }).kind).toBe("torrent");
+    expect(classify({ url: "https://t.example/get?u=https%3A%2F%2Fx%2Fa.torrent" }).kind).toBe("torrent");
+  });
+
+  it("detects magnets case-insensitively", () => {
+    expect(classify({ url: "MAGNET:?xt=urn:btih:abcdef" }).kind).toBe("magnet");
+  });
+
+  it("does not capture ftp URLs even with a known extension", () => {
+    const r = classify({ url: "ftp://ftp.example.com/pub/file.iso" });
+    expect(r.kind).toBe("unknown");
+    expect(r.reason).toBe("scheme:ftp:");
+  });
+
   it("returns http-download for archives", () => {
     expect(classify({ url: "https://example.com/x.zip" }).kind).toBe("http-download");
     expect(classify({ url: "https://example.com/x.iso" }).kind).toBe("http-download");

@@ -1,9 +1,10 @@
 // background/index.js — service-worker (Chrome) / event-page (Firefox) entry.
 
 import "../shared/polyfill.js"; // defines `browser` on the Chromium SW — do not remove
-import { onCandidate } from "./detector.js";
+import { onCandidate, notify } from "./detector.js";
 import { verifyToken, sendToDload } from "./api.js";
-import { loadConfig } from "../shared/config.js";
+import { loadConfig, logActivity } from "../shared/config.js";
+import { downloadSize } from "./filters.js";
 import * as retry from "./retry.js";
 import { MSG, REPLY } from "./messaging.js";
 import { logger } from "../shared/logger.js";
@@ -11,10 +12,11 @@ import { logger } from "../shared/logger.js";
 const MENU_LINK_ID = "send-to-dload-link";
 const MENU_PAGE_ID = "send-to-dload-page";
 
+retry.ensureAlarm();
+
 browser.runtime.onInstalled.addListener(async () => {
   await loadConfig(); // seeds defaults
   await registerContextMenus();
-  await retry.ensureAlarm();
   logger.info("installed");
 });
 
@@ -23,12 +25,12 @@ const onStartup = browser.runtime.onStartup;
 if (onStartup && typeof onStartup.addListener === "function") {
   onStartup.addListener(async () => {
     await registerContextMenus();
-    await retry.ensureAlarm();
     logger.info("started");
   });
 }
 
 async function registerContextMenus() {
+  if (!browser.contextMenus) return;
   try {
     await browser.contextMenus.removeAll();
   } catch {
@@ -50,7 +52,7 @@ async function registerContextMenus() {
   }
 }
 
-browser.contextMenus.onClicked.addListener(async (info) => {
+browser.contextMenus?.onClicked.addListener(async (info) => {
   let url = "";
   if (info.menuItemId === MENU_LINK_ID) {
     url = info.linkUrl || info.srcUrl || "";
@@ -67,8 +69,8 @@ browser.contextMenus.onClicked.addListener(async (info) => {
 });
 
 // Channel 1: intercept browser downloads. Register exactly ONE listener.
-// Chrome's onDeterminingFilename can cancel before commit; Firefox lacks it, so
-// onCreated only observes (the file lands in the browser AND gets forwarded).
+// Chrome uses onDeterminingFilename, Firefox (which lacks it) uses onCreated.
+// Either way the download is only cancelled once the filters decide to capture it.
 if (browser.downloads?.onDeterminingFilename) {
   browser.downloads.onDeterminingFilename.addListener((item, suggest) => {
     handleInterceptedDownload(item, suggest);
@@ -76,58 +78,72 @@ if (browser.downloads?.onDeterminingFilename) {
   });
 } else if (browser.downloads?.onCreated) {
   browser.downloads.onCreated.addListener((item) => {
-    onCandidate({
-      url: item.finalUrl || item.url || "",
-      source: "download",
-      filename: item.filename || undefined,
-      mime: item.mime || undefined,
-      size: typeof item.fileSize === "number" ? item.fileSize : undefined,
-      referer: item.referrer || undefined,
-      wasCancellingBrowserDownload: false,
-    });
+    handleInterceptedDownload(item, () => {});
   });
 }
 
-async function handleInterceptedDownload(item, suggest) {
+async function cancelDownload(id) {
   try {
-    // A download we re-issued after a failed POST: let the browser save it,
-    // else we'd re-intercept and cancel our own fallback in a loop.
-    if (item.byExtensionId && item.byExtensionId === browser.runtime.id) {
-      suggest();
-      return;
-    }
-
-    const cfg = await loadConfig();
-    if (!cfg.serverUrl || !cfg.apiKey || !cfg.rules.enabled) {
-      suggest();
-      return;
-    }
-
-    const url = item.finalUrl || item.url || "";
-    if (!url || url.startsWith("blob:") || url.startsWith("data:")) {
-      suggest();
-      return;
-    }
-
-    suggest({ cancel: true });
-
-    await onCandidate({
-      url,
-      source: "download",
-      filename: item.filename || undefined,
-      mime: item.mime || undefined,
-      size: typeof item.fileSize === "number" ? item.fileSize : undefined,
-      referer: item.referrer || undefined,
-      wasCancellingBrowserDownload: true,
-    });
+    await browser.downloads.cancel(id);
   } catch (err) {
-    logger.error("handleInterceptedDownload threw:", err);
+    logger.warn("downloads.cancel failed:", err);
+    return false;
+  }
+  try {
+    await browser.downloads.erase({ id });
+  } catch (err) {
+    logger.warn("downloads.erase failed:", err);
+  }
+  return true;
+}
+
+async function handleInterceptedDownload(item, suggest) {
+  let suggested = false;
+  const release = () => {
+    if (suggested) return;
+    suggested = true;
     try {
       suggest();
     } catch {
       /* ignore */
     }
+  };
+  try {
+    // A download we re-issued after a failed POST: let the browser save it,
+    // else we'd re-intercept and cancel our own fallback in a loop.
+    if (item.byExtensionId && item.byExtensionId === browser.runtime.id) return;
+
+    const cfg = await loadConfig();
+    if (!cfg.serverUrl || !cfg.apiKey || !cfg.rules.enabled) return;
+
+    const url = item.finalUrl || item.url || "";
+    if (!url || url.startsWith("blob:") || url.startsWith("data:")) return;
+
+    await onCandidate(
+      {
+        url,
+        source: "download",
+        filename: String(item.filename || "").split(/[\\/]/).pop() || undefined,
+        mime: item.mime || undefined,
+        size: downloadSize(item),
+        referer: item.referrer || undefined,
+      },
+      {
+        cancelBrowserDownload: () => {
+          release();
+          return cancelDownload(item.id);
+        },
+      },
+    );
+  } catch (err) {
+    logger.error("handleInterceptedDownload threw:", err);
+  } finally {
+    release();
   }
+}
+
+function fromExtensionPage(sender) {
+  return typeof sender.url === "string" && sender.url.startsWith(browser.runtime.getURL(""));
 }
 
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -143,6 +159,13 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then((result) => sendResponse({ ok: result.ok, reason: result.reason }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true; // keep the async message channel open
+  }
+
+  if (
+    (msg.type === MSG.FROM_POPUP_TEST || msg.type === MSG.FROM_POPUP_STATUS || msg.type === MSG.FROM_POPUP_RESEND) &&
+    !fromExtensionPage(sender)
+  ) {
+    return false;
   }
 
   if (msg.type === MSG.FROM_POPUP_TEST) {
@@ -185,7 +208,14 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 browser.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== "send-to-dload-retry") return;
   try {
-    await retry.tick(sendToDload);
+    const deliver = async (payload) => {
+      const result = await sendToDload(payload);
+      await logActivity({ kind: "retry", url: payload.url, decision: "sent", reason: "retry-delivered" });
+      return result;
+    };
+    await retry.tick(deliver, (payload, reason) =>
+      notify("dload: gave up on a queued send", `${String(payload.url || "").slice(0, 80)} (${reason})`),
+    );
   } catch (err) {
     logger.error("retry tick threw:", err);
   }

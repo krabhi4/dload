@@ -4,7 +4,7 @@
 // download URLs (e.g. /download?id=123) are still caught.
 
 const TORRENT_MIME = "application/x-bittorrent";
-const MAGNET_PREFIX = "magnet:";
+const MAGNET_RE = /^magnet:/i;
 
 const TORRENT_FILENAME_RE = /\.torrent(\?|#|$)/i;
 const ARCHIVE_RE = /\.(zip|rar|7z|tar|gz|bz2|xz|iso|dmg|apk|exe|msi|deb|rpm|pkg|appx|msix|cab)(\?|#|$)/i;
@@ -56,7 +56,7 @@ export function classify({ url, mime = "", filename = "" }) {
     return { kind: "unknown", reason: "empty-url", hostname: "", pathname: "" };
   }
 
-  if (url.startsWith(MAGNET_PREFIX)) {
+  if (MAGNET_RE.test(url)) {
     return { kind: "magnet", reason: "magnet-scheme", hostname: "", pathname: url };
   }
 
@@ -67,7 +67,7 @@ export function classify({ url, mime = "", filename = "" }) {
     return { kind: "unknown", reason: "bad-url", hostname: "", pathname: url };
   }
 
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.protocol !== "ftp:") {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return {
       kind: "unknown",
       reason: `scheme:${parsed.protocol}`,
@@ -82,7 +82,8 @@ export function classify({ url, mime = "", filename = "" }) {
   // Torrent: by MIME, by .torrent in the URL, or by the suggested filename.
   if (
     mlc.startsWith(TORRENT_MIME) ||
-    TORRENT_FILENAME_RE.test(parsed.search + pathname) ||
+    TORRENT_FILENAME_RE.test(pathname) ||
+    [...parsed.searchParams.values()].some((v) => TORRENT_FILENAME_RE.test(v)) ||
     TORRENT_FILENAME_RE.test(filename)
   ) {
     return {

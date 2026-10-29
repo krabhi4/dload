@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-10-29
 
 A redesign of the web UI and the browser extension's pages, a rewritten HTTP download engine, qBittorrent-style seeding for Sonarr/Radarr, and a round of torrent, queue and security fixes. Upgrading is an image swap: the database gains three columns automatically and no configuration changes are needed. Before upgrading, know that:
 
@@ -26,7 +26,7 @@ A redesign of the web UI and the browser extension's pages, a rewritten HTTP dow
 - **Accessibility.** Visible focus rings on every control, field edges at 3:1 contrast, reduced-motion support, and the closed mobile drawer no longer takes keyboard focus.
 - Labels and buttons use sentence case without terminal glyphs.
 - **Smaller container image.** The image is now Alpine with a static musl binary (using the mimalloc allocator) instead of Debian, down from 180 MB to 38 MB (12 MB compressed). `su-exec` replaces `gosu`; `PUID`/`PGID` work as before.
-- **`latest` now tracks releases.** Images are pushed to GHCR only from `vX.Y.Z` tags (as `X.Y.Z`, `X.Y`, `X` and `latest`), with signed SLSA provenance and an SBOM. `main` and pull requests build the image without publishing it, so the per-commit `sha-*` tags are gone.
+- **`latest` now tracks releases.** Images are pushed to GHCR only from `vX.Y.Z` tags (as `X.Y.Z`, `X.Y`, `X` and `latest`), and the tag is created automatically when the version in `Cargo.toml` changes on `main`, with signed SLSA provenance and an SBOM. `main` and pull requests build the image without publishing it, so the per-commit `sha-*` tags are gone.
 
 ### Added
 - **Seeding that works with Sonarr and Radarr the way qBittorrent does.**

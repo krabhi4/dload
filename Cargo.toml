@@ -35,7 +35,7 @@ regex = "1.13.1"
 futures = "0.3.34"
 tokio-util = "0.7.20"
 bytes = "1.12.1"
-zip = "9.5.0"
+zip = "9.5.1"
 mimalloc = "0.1.52"
 librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls", "http-api-client"] }
 
